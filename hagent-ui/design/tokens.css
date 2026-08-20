@@ -1,0 +1,245 @@
+/* ============================================================
+   HAgent Design Tokens — 单一令牌源
+   门户暗色 (.portal-dark) × 后台浅色 (.admin-light)
+   共用 brand / spacing / radius / motion / font 令牌，
+   仅切换 surface / text / border 语义层。
+   ============================================================ */
+
+:root {
+  /* ---------- Brand: HAgent Iris ---------- */
+  --brand-50:  #EEF0FB;
+  --brand-100: #DDE0F7;
+  --brand-200: #BEC4EF;
+  --brand-300: #9BA3E5;
+  --brand-400: #7C85DC;   /* 暗色下链接/强调 */
+  --brand-500: #5E6AD2;   /* 品牌主色 */
+  --brand-600: #4C56C0;   /* antd colorPrimary */
+  --brand-700: #3D44A0;
+  --brand-800: #2F3378;
+  --brand-900: #222450;
+
+  /* ---------- Semantic (portal dark) ---------- */
+  --success-dark: #4CC38A;
+  --warning-dark: #F5A524;
+  --danger-dark:  #F2555A;
+
+  /* ---------- Semantic (admin light) ---------- */
+  --success-light: #16A34A;
+  --warning-light: #D97706;
+  --danger-light:  #DC2626;
+
+  /* ---------- Typography ---------- */
+  --font-display: "Playfair Display", "Noto Serif SC", Georgia, serif;
+  --font-body: "Inter", "Noto Sans SC", -apple-system, BlinkMacSystemFont,
+               "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", Consolas, "Courier New", monospace;
+
+  --text-display: 3.5rem;    /* 56px */
+  --text-h1: 2.5rem;         /* 40px */
+  --text-h2: 1.75rem;        /* 28px */
+  --text-h3: 1.25rem;        /* 20px */
+  --text-article: 1.0625rem; /* 17px，文章正文（可升至 18px） */
+  --text-body: 1rem;         /* 16px */
+  --text-small: 0.875rem;    /* 14px */
+  --text-micro: 0.75rem;     /* 12px */
+  --text-code: 0.875rem;     /* 14px */
+
+  --leading-display: 1.1;
+  --leading-title: 1.2;
+  --leading-heading: 1.35;
+  --leading-article: 1.75;   /* 长文阅读 */
+  --leading-body: 1.6;
+  --leading-code: 1.7;
+
+  /* ---------- Spacing ---------- */
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 16px;
+  --space-lg: 24px;
+  --space-xl: 32px;
+  --space-2xl: 48px;
+  --space-3xl: 64px;
+  --space-4xl: 96px;         /* 杂志留白：区块分隔 */
+
+  /* ---------- Radius ---------- */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-full: 999px;
+
+  /* ---------- Motion ---------- */
+  --duration-fast: 120ms;
+  --duration-base: 200ms;
+  --duration-slow: 320ms;
+  --ease-out: cubic-bezier(.16, 1, .3, 1);
+
+  /* ---------- Layout ---------- */
+  --container-max: 1120px;
+  --reading-max: 680px;      /* 文章阅读列 */
+  --nav-height: 64px;
+
+  /* ---------- Z-index ---------- */
+  --z-dropdown: 100;
+  --z-sticky: 200;
+  --z-modal: 300;
+  --z-toast: 400;
+}
+
+/* ============================================================
+   Portal —— 柔雾暗色语义层（Soft Dark，类 GitHub Dark Dimmed）
+   v2：纯黑 #08090A 抬升至 #15171C，文字对比柔化，降低阅读疲劳
+   ============================================================ */
+.portal-dark,
+:root {
+  --bg: #15171C;
+  --surface: #1E2128;
+  --surface-raised: #262A33;
+  --code-bg: #121419;                 /* 代码深色岛：比卡片更深 */
+
+  --border: rgba(255, 255, 255, .10);
+  --border-strong: rgba(255, 255, 255, .18);
+
+  --text: #E8EAED;                    /* 柔化纯白，降低对比疲劳 */
+  --text-secondary: #9BA1AB;
+  --text-tertiary: #7E8590;                 /* 提亮后 WCAG AA ≈ 4.5:1 */
+
+  --accent: #8B93E0;                  /* 柔暗底上的品牌紫，AA 对比度 */
+  --accent-strong: var(--brand-400);
+  --accent-soft: rgba(94, 106, 210, .16);
+
+  --success: var(--success-dark);
+  --warning: var(--warning-dark);
+  --danger: var(--danger-dark);
+  --info: var(--brand-500);
+
+  --shadow-raised: 0 1px 2px rgba(0, 0, 0, .4);
+  --shadow-floating: 0 8px 24px rgba(0, 0, 0, .5);
+  --shadow-overlay: 0 16px 48px rgba(0, 0, 0, .6);
+
+  --focus-ring: 0 0 0 2px var(--accent-soft);
+
+  --hover-bg: rgba(255, 255, 255, .05);
+
+  color-scheme: dark;
+}
+
+/* ============================================================
+   Portal —— 米白编辑风语义层（Warm Editorial Light）
+   奶油纸感底 + 墨色文字 + 衬线排版；代码块保留深色岛
+   ============================================================ */
+.portal-light {
+  --bg: #FAF7F2;
+  --surface: #FFFFFF;
+  --surface-raised: #F3EFE7;
+  --code-bg: #15171C;                 /* 代码深色岛：浅底上的深色对比 */
+
+  --border: #E8E2D6;
+  --border-strong: #D5CEC0;
+
+  --text: #1C1917;
+  --text-secondary: #6B6259;
+  --text-tertiary: #8A8378;
+
+  --accent: var(--brand-600);         /* #4C56C0 */
+  --accent-strong: var(--brand-700);
+  --accent-soft: rgba(94, 106, 210, .10);
+
+  --success: var(--success-light);
+  --warning: var(--warning-light);
+  --danger: var(--danger-light);
+  --info: var(--brand-600);
+
+  --shadow-raised: 0 1px 3px rgba(28, 25, 23, .07);
+  --shadow-floating: 0 4px 12px rgba(28, 25, 23, .09);
+  --shadow-overlay: 0 8px 24px rgba(28, 25, 23, .12);
+
+  --focus-ring: 0 0 0 2px rgba(76, 86, 192, .16);
+
+  --hover-bg: rgba(28, 25, 23, .05);
+
+  color-scheme: light;
+}
+
+/* ============================================================
+   Admin —— 浅色语义层（与 antd-theme.json 对齐）
+   ============================================================ */
+.admin-light {
+  --bg: #F5F5F7;
+  --surface: #FFFFFF;
+  --surface-raised: #FFFFFF;
+  --code-bg: #F7F8FA;
+
+  --border: #E5E6EB;
+  --border-strong: #C9CDD4;
+
+  --text: #1F2329;
+  --text-secondary: #646A73;
+  --text-tertiary: #8F959E;
+
+  --accent: var(--brand-600);         /* #4C56C0 */
+  --accent-strong: var(--brand-700);
+  --accent-soft: var(--brand-50);
+
+  --success: var(--success-light);
+  --warning: var(--warning-light);
+  --danger: var(--danger-light);
+  --info: var(--brand-500);
+
+  --shadow-raised: 0 1px 3px rgba(0, 0, 0, .08);
+  --shadow-floating: 0 4px 12px rgba(0, 0, 0, .10);
+  --shadow-overlay: 0 8px 24px rgba(0, 0, 0, .14);
+
+  --focus-ring: 0 0 0 2px rgba(76, 86, 192, .16);
+
+  /* 旧 --color-* 别名在后台语义层下的映射（覆盖 global.css 兼容层的默认值） */
+  --color-bg: #F5F5F7;
+  --color-bg-subtle: #F7F8FA;
+  --color-text: #1F2329;
+  --color-text-secondary: #646A73;
+  --color-text-muted: #8F959E;
+  --color-border: #E5E6EB;
+  --color-border-light: #EFF0F2;
+  --color-card-bg: #FFFFFF;
+  --color-header-bg: rgba(255, 255, 255, .9);
+  --color-accent: var(--brand-600);
+  --color-accent-hover: var(--brand-500);
+  --color-accent-light: var(--brand-50);
+  --color-chat-user: var(--brand-600);
+  --color-chat-ai-bg: #F5F5F7;
+
+  color-scheme: light;
+}
+
+/* ============================================================
+   文章页阅读排版基元（门户）
+   ============================================================ */
+.prose-hagent {
+  max-width: var(--reading-max);
+  font-family: var(--font-body);
+  font-size: var(--text-article);
+  line-height: var(--leading-article);
+  color: var(--text);
+}
+.prose-hagent h1,
+.prose-hagent h2 {
+  font-family: var(--font-display);
+  line-height: var(--leading-title);
+}
+.prose-hagent pre {
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px 20px;
+  font-family: var(--font-mono);
+  font-size: var(--text-code);
+  line-height: var(--leading-code);
+}
+
+/* ---------- Responsive ---------- */
+@media (max-width: 640px) {
+  :root {
+    --text-display: 2.25rem;  /* 36px */
+    --text-h1: 1.75rem;
+    --space-4xl: 48px;        /* 移动端留白减半 */
+  }
+}

@@ -1,0 +1,51 @@
+# ==================== IDE ====================
+.idea/
+*.iml
+*.iws
+*.ipr
+.vscode/
+.qoder/
+.omo/
+.opencode/
+.specify/
+
+# ==================== Java ====================
+**/target/
+*.class
+*.jar
+*.war
+*.ear
+hs_err_pid*
+
+# ==================== Node.js ====================
+**/node_modules/
+**/dist/
+**/.cache/
+**/coverage/
+
+# ==================== Maven ====================
+.mvn/
+mvnw
+mvnw.cmd
+
+# ==================== Logs ====================
+**/logs/
+**/*.log
+
+# ==================== OS ====================
+.DS_Store
+Thumbs.db
+
+# ==================== Environment ====================
+.env
+*.local
+# 本地开发配置（含远程 Redis/OSS/数据库凭据，不提交 Git）
+hagent-back/hagent-server/src/main/resources/application-dev.yml
+
+# ==================== Docker ====================
+docker-compose.override.yml
+/.codebuddy/
+/.codegraph/
+/.trae/
+/.workbuddy/
+/.playwright-mcp/

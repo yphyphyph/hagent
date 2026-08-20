@@ -1,0 +1,46 @@
+# ============================================================
+# HAgent Backend - Docker Ignore
+# ============================================================
+
+# IDE
+.idea/
+.vscode/
+*.iml
+*.iws
+*.ipr
+
+# Git
+.git/
+.gitignore
+
+# Build outputs
+target/
+*.class
+*.jar
+*.war
+
+# Logs
+*.log
+logs/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Docker
+Dockerfile
+.dockerignore
+docker-compose*.yml
+
+# Documentation
+docs/
+*.md
+LICENSE
+
+# Test
+**/src/test/
+
+# Maven wrapper (if exists)
+.mvn/
+mvnw
+mvnw.cmd

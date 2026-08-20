@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.hagent</groupId>
+        <artifactId>hagent-back</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>hagent-server</artifactId>
+    <name>hagent-server</name>
+    <description>HAgent 启动模块 - 负责应用启动，并基于 Sa-Token 统一鉴权</description>
+
+    <dependencies>
+        <!-- Internal: hagent-common -->
+        <dependency>
+            <groupId>com.hagent</groupId>
+            <artifactId>hagent-common</artifactId>
+        </dependency>
+
+        <!-- Internal: hagent-ai -->
+        <dependency>
+            <groupId>com.hagent</groupId>
+            <artifactId>hagent-ai</artifactId>
+        </dependency>
+
+        <!-- Internal: hagent-module-knowledge -->
+        <dependency>
+            <groupId>com.hagent</groupId>
+            <artifactId>hagent-module-knowledge</artifactId>
+        </dependency>
+
+        <!-- Sa-Token 鉴权 -->
+        <dependency>
+            <groupId>cn.dev33</groupId>
+            <artifactId>sa-token-spring-boot4-starter</artifactId>
+        </dependency>
+        <!-- Sa-Token Redis 会话与权限数据存储 -->
+        <dependency>
+            <groupId>cn.dev33</groupId>
+            <artifactId>sa-token-redis-template</artifactId>
+        </dependency>
+
+        <!-- Spring Boot Actuator -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+
+        <!-- SpringDoc OpenAPI 接口文档 -->
+        <dependency>
+            <groupId>org.springdoc</groupId>
+            <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+            <version>${springdoc.version}</version>
+        </dependency>
+
+        <!-- H2 内存数据库（仅测试环境使用） -->
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!-- Spring Boot 打包插件 -->
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>

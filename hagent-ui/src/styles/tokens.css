@@ -1,0 +1,181 @@
+/* ============================================================
+   HAgent v2 Design Tokens — AI-Native, Dark-First
+   Code dark + run green. Not pure black: deep blue-slate.
+   Theme switching: <html data-theme="dark|light" data-accent="green|blue|purple|amber">
+   ============================================================ */
+
+:root {
+  /* ---------- 字体 ---------- */
+  --font-sans: 'Inter Variable', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI',
+    'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, 'Cascadia Code', Consolas, monospace;
+
+  /* ---------- 字号 ---------- */
+  --text-xs: 0.75rem;     /* 12 */
+  --text-sm: 0.8125rem;   /* 13 */
+  --text-base: 0.9375rem; /* 15 */
+  --text-md: 1.0625rem;   /* 17 */
+  --text-lg: 1.25rem;     /* 20 */
+  --text-xl: 1.625rem;    /* 26 */
+  --text-2xl: 2.125rem;   /* 34 */
+  --text-3xl: 2.75rem;    /* 44 */
+  --text-4xl: 3.625rem;   /* 58 */
+
+  /* ---------- 间距（4px 基准） ---------- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --space-8: 64px;
+  --space-9: 96px;
+
+  /* ---------- 圆角 ---------- */
+  --radius-sm: 8px;
+  --radius-md: 14px;
+  --radius-lg: 20px;
+  --radius-full: 999px;
+
+  /* ---------- 阴影 ---------- */
+  --shadow-sm: 0 1px 3px rgba(2, 6, 23, 0.3);
+  --shadow-md: 0 6px 20px rgba(2, 6, 23, 0.4);
+  --shadow-lg: 0 16px 48px rgba(2, 6, 23, 0.5);
+  --shadow-accent: 0 0 0 1px var(--accent), 0 8px 32px -8px var(--accent-soft);
+  --shadow-glow: 0 0 24px var(--accent-soft), 0 0 64px var(--accent-soft);
+
+  /* ---------- 玻璃态（毛玻璃卡片） ---------- */
+  --glass-blur: 12px;
+  --glass-saturate: 160%;
+  --glass-bg: rgba(15, 23, 42, 0.55);
+  --glass-border: rgba(148, 163, 184, 0.2);
+
+  /* ---------- Aurora 动态背景 ---------- */
+  --aurora-base: linear-gradient(165deg, #0b1222 0%, #111c33 45%, #0d1526 75%, #0a1120 100%);
+  --aurora-accent: rgba(34, 197, 94, 0.28);   /* 主光晕核心（随强调色） */
+  --aurora-glow-2: rgba(56, 189, 248, 0.18);  /* 冷蓝辅助光晕 */
+  --aurora-glow-3: rgba(139, 92, 246, 0.16);  /* 紫罗兰辅助光晕 */
+
+  /* ---------- 工具卡片青色点缀（与项目卡片区分） ---------- */
+  --cyan-soft: rgba(56, 189, 248, 0.15);
+
+  /* ---------- 动效 ---------- */
+  --dur-fast: 120ms;
+  --dur: 200ms;
+  --dur-slow: 350ms;
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-out: cubic-bezier(0, 0, 0.2, 1);
+
+  /* ---------- 布局 ---------- */
+  --nav-height: 64px;
+  --container: 1120px;
+
+  /* ---------- 层级（z-index scale，禁止再写魔法数字） ---------- */
+  --z-bg-aurora: -2;      /* Aurora 背景（最底） */
+  --z-bg-particles: -1;   /* 粒子层 */
+  --z-sticky: 100;        /* 吸顶导航 */
+  --z-fab: 999;           /* 浮动按钮局部层 */
+  --z-ripple: 9998;       /* 点击涟漪 / 返回顶部 */
+  --z-progress: 9999;     /* 顶部进度条 */
+  --z-preloader: 10000;   /* 首屏 Preloader */
+  --z-palette: 10001;     /* 命令面板 */
+  --z-crt: 10002;         /* CRT 彩蛋叠加层（最顶） */
+
+  /* ---------- 状态色（语义） ---------- */
+  --danger: #ef4444;
+  --warning: #f59e0b;
+  --info: #38bdf8;
+  --success: #22c55e;
+
+  /* ---------- 暗色主题（默认） ---------- */
+  --bg: #0f172a;
+  --bg-elevated: #1b2336;
+  --bg-hover: #232e47;
+  --bg-active: #2b3752;
+  --border: rgba(148, 163, 184, 0.16);
+  --border-strong: rgba(148, 163, 184, 0.3);
+  --text-1: #f8fafc;
+  --text-2: #94a3b8;
+  --text-3: #64748b;
+  --accent: #22c55e;
+  --accent-hover: #4ade80;
+  --accent-soft: rgba(34, 197, 94, 0.12);
+  --accent-border: rgba(34, 197, 94, 0.35);
+  --overlay: rgba(2, 6, 23, 0.6);
+}
+
+/* ---------- 浅色主题 ---------- */
+[data-theme='light'] {
+  --bg: #f8fafc;
+  --bg-elevated: #ffffff;
+  --bg-hover: #f1f5f9;
+  --bg-active: #e2e8f0;
+  --border: rgba(15, 23, 42, 0.12);
+  --border-strong: rgba(15, 23, 42, 0.22);
+  --text-1: #0f172a;
+  --text-2: #475569;
+  --text-3: #94a3b8;
+  --accent: #16a34a;
+  --accent-hover: #22c55e;
+  --accent-soft: rgba(22, 163, 74, 0.1);
+  --accent-border: rgba(22, 163, 74, 0.3);
+  --overlay: rgba(15, 23, 42, 0.4);
+  --shadow-sm: 0 1px 3px rgba(15, 23, 42, 0.08);
+  --shadow-md: 0 6px 20px rgba(15, 23, 42, 0.1);
+  --shadow-lg: 0 16px 48px rgba(15, 23, 42, 0.14);
+
+  /* 浅色玻璃态：白玻璃 + 深色描边 */
+  --glass-bg: rgba(255, 255, 255, 0.6);
+  --glass-border: rgba(15, 23, 42, 0.1);
+
+  /* 浅色 Aurora：整体更亮、光晕更淡 */
+  --aurora-base: linear-gradient(165deg, #f8fafc 0%, #edf3fb 45%, #f8fafc 100%);
+  --aurora-accent: rgba(22, 163, 74, 0.16);
+  --aurora-glow-2: rgba(56, 189, 248, 0.18);
+  --aurora-glow-3: rgba(139, 92, 246, 0.14);
+}
+
+/* ---------- 强调色切换（green 为默认；统一 Tailwind 500 级色阶，明度一致协调） ---------- */
+[data-accent='blue'] {
+  --accent: #3b82f6;
+  --accent-hover: #60a5fa;
+  --accent-soft: rgba(59, 130, 246, 0.12);
+  --accent-border: rgba(59, 130, 246, 0.35);
+  --aurora-accent: rgba(59, 130, 246, 0.28);
+}
+[data-accent='purple'] {
+  --accent: #8b5cf6;
+  --accent-hover: #a78bfa;
+  --accent-soft: rgba(139, 92, 246, 0.12);
+  --accent-border: rgba(139, 92, 246, 0.35);
+  --aurora-accent: rgba(139, 92, 246, 0.28);
+}
+[data-accent='amber'] {
+  --accent: #f59e0b;
+  --accent-hover: #fbbf24;
+  --accent-soft: rgba(245, 158, 11, 0.12);
+  --accent-border: rgba(245, 158, 11, 0.35);
+  --aurora-accent: rgba(245, 158, 11, 0.26);
+}
+
+/* 浅色主题下强调色加深一级（600 级），保证与浅色背景的对比度 */
+[data-theme='light'][data-accent='green'] {
+  --accent: #16a34a;
+  --accent-hover: #22c55e;
+}
+[data-theme='light'][data-accent='blue'] {
+  --accent: #2563eb;
+  --accent-hover: #3b82f6;
+  --aurora-accent: rgba(37, 99, 235, 0.16);
+}
+[data-theme='light'][data-accent='purple'] {
+  --accent: #7c3aed;
+  --accent-hover: #8b5cf6;
+  --aurora-accent: rgba(124, 58, 237, 0.15);
+}
+[data-theme='light'][data-accent='amber'] {
+  --accent: #d97706;
+  --accent-hover: #f59e0b;
+  --aurora-accent: rgba(217, 119, 6, 0.15);
+}

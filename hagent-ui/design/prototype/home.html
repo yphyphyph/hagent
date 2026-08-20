@@ -1,0 +1,909 @@
+<!DOCTYPE html>
+<!--
+  HAgent Portal Home Prototype v1.0 | Design: Linear-dark × Editorial | 生成日期 2026-08-06
+  ============================================================
+  HAgent 门户首页原型（home.html）
+  设计系统：HAgent Design System v1（DESIGN.md / tokens.css）
+  方向：Linear 风深空暗色基底 × 杂志编辑排版
+  模板类型：web-prototype（门户展示面）
+  单文件可运行：tokens.css 已内嵌，字体走 Google Fonts CDN
+  ============================================================
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HAgent — 探索技术，记录成长，拥抱 AI</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,600;0,700;1,600&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Noto+Sans+SC:wght@400;500&family=Noto+Serif+SC:wght@600;700&display=swap" rel="stylesheet">
+<style>
+/* ============================================================
+   Design Tokens —— 内嵌自 tokens.css（门户 .portal-dark 语义层）
+   ============================================================ */
+:root {
+  /* Brand: HAgent Iris */
+  --brand-50:  #EEF0FB;
+  --brand-100: #DDE0F7;
+  --brand-200: #BEC4EF;
+  --brand-300: #9BA3E5;
+  --brand-400: #7C85DC;
+  --brand-500: #5E6AD2;
+  --brand-600: #4C56C0;
+  --brand-700: #3D44A0;
+  --brand-800: #2F3378;
+  --brand-900: #222450;
+
+  /* Typography */
+  --font-display: "Playfair Display", "Noto Serif SC", Georgia, serif;
+  --font-body: "Inter", "Noto Sans SC", -apple-system, BlinkMacSystemFont,
+               "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", Consolas, "Courier New", monospace;
+
+  --text-display: 3.5rem;    /* 56px */
+  --text-h1: 2.5rem;         /* 40px */
+  --text-h2: 1.75rem;        /* 28px */
+  --text-h3: 1.25rem;        /* 20px */
+  --text-article: 1.0625rem; /* 17px */
+  --text-body: 1rem;
+  --text-small: 0.875rem;
+  --text-micro: 0.75rem;
+
+  --leading-display: 1.1;
+  --leading-heading: 1.35;
+  --leading-article: 1.75;
+  --leading-body: 1.6;
+
+  /* Spacing */
+  --space-xs: 4px;  --space-sm: 8px;  --space-md: 16px; --space-lg: 24px;
+  --space-xl: 32px; --space-2xl: 48px; --space-3xl: 64px; --space-4xl: 96px;
+
+  /* Radius */
+  --radius-sm: 6px; --radius-md: 8px; --radius-lg: 12px; --radius-full: 999px;
+
+  /* Motion */
+  --duration-fast: 120ms;
+  --duration-base: 200ms;
+  --duration-slow: 320ms;
+  --ease-out: cubic-bezier(.16, 1, .3, 1);
+
+  /* Layout */
+  --container-max: 1120px;
+  --reading-max: 680px;
+  --nav-height: 64px;
+
+  /* Portal Dark 语义层 */
+  --bg: #08090A;
+  --surface: #101213;
+  --surface-raised: #16181A;
+  --code-bg: #0B0D0F;
+  --border: rgba(255, 255, 255, .08);
+  --border-strong: rgba(255, 255, 255, .16);
+  --text: #F7F8F8;
+  --text-secondary: #8A8F98;
+  --text-tertiary: #767B84;
+  --accent: var(--brand-400);
+  --accent-strong: var(--brand-500);
+  --accent-soft: rgba(94, 106, 210, .14);
+  --shadow-raised: 0 1px 2px rgba(0, 0, 0, .4);
+  color-scheme: dark;
+}
+
+/* ============================================================
+   Base
+   ============================================================ */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+@media (prefers-reduced-motion: no-preference) {
+  html { scroll-behavior: smooth; }
+}
+
+/* 键盘可达性：统一可见焦点环 */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+a { color: inherit; text-decoration: none; }
+
+.container {
+  max-width: var(--container-max);
+  margin: 0 auto;
+  padding: 0 var(--space-xl);
+}
+
+/* 元信息行：12px uppercase + .08em 字距（杂志手法核心基元） */
+.meta-line {
+  font-family: var(--font-body);
+  font-size: var(--text-micro);
+  font-weight: 500;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+/* ============================================================
+   Navigation —— 64px 毛玻璃顶栏 + 底部 1px border
+   ============================================================ */
+.site-nav {
+  position: sticky;
+  top: 0;
+  z-index: 200;
+  height: var(--nav-height);
+  background: rgba(8, 9, 10, .72);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border);
+}
+.site-nav .container {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+/* Logo：几何无衬线 H，横杠嵌入品牌紫短线 */
+.brand-mark {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  font-weight: 600;
+  font-size: 15px;
+  color: var(--text);
+  position: relative;
+  line-height: 1;
+}
+.brand-mark::after {
+  content: "";
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  top: 50%;
+  height: 2px;
+  transform: translateY(-50%);
+  background: var(--brand-500);
+}
+.brand-name {
+  font-weight: 600;
+  font-size: 15px;
+  letter-spacing: .02em;
+}
+.nav-links {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xl);
+  list-style: none;
+}
+.nav-links a {
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+  padding: 6px 2px;
+  position: relative;
+  transition: color var(--duration-fast) var(--ease-out);
+}
+.nav-links a:hover { color: var(--text); }
+/* active 项：文字高亮 + 底部 2px 紫线指示 */
+.nav-links a.active {
+  color: var(--text);
+}
+.nav-links a.active::after {
+  content: "";
+  position: absolute;
+  left: 0; right: 0; bottom: -4px;
+  height: 2px;
+  background: var(--brand-500);
+}
+.nav-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+}
+/* 移动端抽屉导航（checkbox hack，纯 CSS 无 JS） */
+.nav-toggle {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+.nav-burger {
+  display: none;
+  width: 44px;              /* 触摸目标 ≥ 44px */
+  height: 44px;
+  margin: -10px -10px -10px 0;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  cursor: pointer;
+  border-radius: var(--radius-md);
+}
+.nav-burger span {
+  display: block;
+  width: 18px;
+  height: 2px;
+  background: var(--text);
+  border-radius: 1px;
+  transition: transform var(--duration-base) var(--ease-out),
+              opacity var(--duration-fast) var(--ease-out);
+}
+/* 展开时三线变 X */
+.nav-toggle:checked ~ .nav-burger span:nth-child(1) { transform: translateY(7px) rotate(45deg); }
+.nav-toggle:checked ~ .nav-burger span:nth-child(2) { opacity: 0; }
+.nav-toggle:checked ~ .nav-burger span:nth-child(3) { transform: translateY(-7px) rotate(-45deg); }
+.nav-github {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+  transition: color var(--duration-fast) var(--ease-out);
+}
+.nav-github:hover { color: var(--text); }
+
+/* Buttons */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-body);
+  font-size: var(--text-small);
+  font-weight: 500;
+  border-radius: var(--radius-md);
+  padding: 10px 20px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background var(--duration-fast) var(--ease-out),
+              border-color var(--duration-fast) var(--ease-out),
+              color var(--duration-fast) var(--ease-out);
+}
+.btn-primary {
+  background: var(--brand-600);
+  color: #FFF;
+}
+.btn-primary:hover { background: var(--brand-500); }
+.btn-secondary {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--text);
+}
+.btn-secondary:hover {
+  border-color: var(--border-strong);
+  background: rgba(255, 255, 255, .04);
+}
+.btn-sm { padding: 7px 14px; }
+
+/* ============================================================
+   Hero —— 杂志式超大衬线标题 + 元信息行 + H 水印
+   ============================================================ */
+.hero {
+  position: relative;
+  padding: 128px 0 var(--space-4xl);
+  overflow: hidden;
+}
+/* 品牌符号 "H" 水印：opacity 0.03–0.05，仅 Hero 区使用 */
+.hero-watermark {
+  position: absolute;
+  right: -4%;
+  top: 50%;
+  transform: translateY(-52%);
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 34rem;
+  line-height: 1;
+  color: var(--text);
+  opacity: .04;
+  pointer-events: none;
+  user-select: none;
+}
+.hero .container { position: relative; }
+.hero-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  margin-bottom: var(--space-xl);
+}
+.hero-meta .rule {
+  width: 32px;
+  height: 1px;
+  background: var(--border-strong);
+}
+.hero-title {
+  font-family: var(--font-display);
+  font-size: var(--text-display);
+  font-weight: 700;
+  line-height: var(--leading-display);
+  letter-spacing: -.01em;
+  max-width: 14em;
+  margin-bottom: var(--space-lg);
+}
+.hero-title em {
+  font-style: italic;
+  color: var(--accent);
+}
+.hero-sub {
+  font-size: var(--text-article);
+  color: var(--text-secondary);
+  max-width: 34em;
+  line-height: var(--leading-article);
+  margin-bottom: var(--space-2xl);
+}
+.hero-sub .mono {
+  font-family: var(--font-mono);
+  font-size: .92em;
+  color: var(--text);
+}
+.hero-cta {
+  display: flex;
+  gap: var(--space-md);
+  flex-wrap: wrap;
+}
+
+/* ============================================================
+   Section 通用 —— 96px 区块留白纪律
+   ============================================================ */
+.section { padding: var(--space-4xl) 0; }
+.section + .section { border-top: 1px solid var(--border); }
+.section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-lg);
+  margin-bottom: var(--space-2xl);
+}
+.section-title {
+  font-family: var(--font-display);
+  font-size: var(--text-h2);
+  font-weight: 600;
+  line-height: var(--leading-heading);
+  margin-top: var(--space-sm);
+}
+.section-link {
+  font-size: var(--text-small);
+  color: var(--accent);
+  white-space: nowrap;
+  transition: color var(--duration-fast) var(--ease-out);
+}
+.section-link:hover { color: var(--brand-300); }
+.section-link .arrow { transition: transform var(--duration-base) var(--ease-out); display: inline-block; }
+.section-link:hover .arrow { transform: translateX(3px); }
+
+/* ============================================================
+   精选文章 —— 杂志列表排版：序号 / 标题 / 摘要 / 日期 / 标签
+   ============================================================ */
+.post-list { list-style: none; }
+.post-item {
+  display: grid;
+  grid-template-columns: 64px 1fr auto;
+  gap: var(--space-xl);
+  align-items: baseline;
+  padding: var(--space-xl) 0;
+  border-top: 1px solid var(--border);
+  transition: background var(--duration-base) var(--ease-out);
+}
+.post-item:first-child { border-top: none; padding-top: 0; }
+.post-index {
+  font-family: var(--font-display);
+  font-size: var(--text-h2);
+  font-weight: 600;
+  color: var(--text-tertiary);
+  line-height: 1;
+  transition: color var(--duration-base) var(--ease-out);
+}
+.post-item:hover .post-index { color: var(--accent); }
+.post-title {
+  font-family: var(--font-display);
+  font-size: var(--text-h3);
+  font-weight: 600;
+  line-height: var(--leading-heading);
+  margin-bottom: var(--space-sm);
+  transition: color var(--duration-fast) var(--ease-out);
+}
+.post-item:hover .post-title { color: var(--accent); }
+.post-excerpt {
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+  line-height: 1.7;
+  max-width: 40em;
+}
+.post-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-sm);
+}
+.post-date {
+  font-family: var(--font-mono);
+  font-size: var(--text-micro);
+  color: var(--text-tertiary);
+}
+.tag {
+  display: inline-block;
+  font-size: var(--text-micro);
+  font-weight: 500;
+  letter-spacing: .04em;
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  padding: 3px 10px;
+}
+
+/* ============================================================
+   技术栈 / 能力区 —— 克制呈现：等宽字体清单 + 明度阶梯面
+   ============================================================ */
+.stack-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-lg);
+}
+.stack-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-lg);
+  transition: border-color var(--duration-base) var(--ease-out),
+              transform var(--duration-base) var(--ease-out);
+}
+/* hover：边框增强 + 上移 2px，禁发光阴影 */
+.stack-card:hover {
+  border-color: var(--border-strong);
+  transform: translateY(-2px);
+}
+.stack-label {
+  font-family: var(--font-mono);
+  font-size: var(--text-micro);
+  font-weight: 500;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  margin-bottom: var(--space-md);
+}
+.stack-name {
+  font-size: var(--text-h3);
+  font-weight: 600;
+  margin-bottom: var(--space-sm);
+}
+.stack-desc {
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+  line-height: 1.7;
+  margin-bottom: var(--space-lg);
+}
+.stack-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+  font-family: var(--font-mono);
+  font-size: var(--text-micro);
+  color: var(--text-tertiary);
+}
+.stack-tags span::before { content: "· "; }
+.stack-tags span:first-child::before { content: ""; }
+
+/* ============================================================
+   项目数据区 —— 编辑感数字排版（衬线大数字 + 元信息标签）
+   ============================================================ */
+.stats-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--space-lg);
+}
+.stat-cell {
+  padding: var(--space-lg) 0;
+  border-top: 1px solid var(--border-strong);
+}
+.stat-value {
+  font-family: var(--font-display);
+  font-size: 3rem;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -.01em;
+  margin-bottom: var(--space-sm);
+}
+.stat-value .unit {
+  font-size: var(--text-h3);
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-left: 2px;
+}
+.stat-label {
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+  margin-bottom: var(--space-xs);
+}
+.stat-note {
+  font-family: var(--font-mono);
+  font-size: var(--text-micro);
+  color: var(--text-tertiary);
+}
+
+/* ============================================================
+   Footer —— 暗色简洁，Playfair "H" 编辑落款
+   ============================================================ */
+.site-footer {
+  border-top: 1px solid var(--border);
+  padding: var(--space-3xl) 0 var(--space-2xl);
+}
+.footer-grid {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: var(--space-2xl);
+  flex-wrap: wrap;
+}
+.footer-brand .footer-mark {
+  font-family: var(--font-display);
+  font-size: 2.5rem;
+  font-weight: 700;
+  line-height: 1;
+  margin-bottom: var(--space-md);
+}
+.footer-brand p {
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+  max-width: 26em;
+  line-height: 1.7;
+}
+.footer-cols {
+  display: flex;
+  gap: var(--space-3xl);
+}
+.footer-col h4 {
+  font-size: var(--text-micro);
+  font-weight: 500;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  margin-bottom: var(--space-md);
+}
+.footer-col ul { list-style: none; display: grid; gap: var(--space-sm); }
+.footer-col a {
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+  transition: color var(--duration-fast) var(--ease-out);
+}
+.footer-col a:hover { color: var(--text); }
+.footer-bottom {
+  margin-top: var(--space-2xl);
+  padding-top: var(--space-lg);
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-md);
+  flex-wrap: wrap;
+  font-size: var(--text-micro);
+  color: var(--text-tertiary);
+}
+.footer-bottom .mono { font-family: var(--font-mono); }
+
+/* ============================================================
+   Responsive —— 桌面优先；<640px 单列、Display 36px、留白减半
+   ============================================================ */
+@media (max-width: 1024px) {
+  .stack-grid { grid-template-columns: repeat(2, 1fr); }
+  .stats-row { grid-template-columns: repeat(2, 1fr); row-gap: var(--space-2xl); }
+}
+@media (max-width: 640px) {
+  :root {
+    --text-display: 2.25rem;  /* 36px */
+    --space-4xl: 48px;        /* 移动端留白减半 */
+  }
+  .hero { padding: var(--space-3xl) 0 var(--space-4xl); }
+  .hero-watermark { font-size: 16rem; right: -20%; }
+  /* 移动端导航：hamburger + 下拉抽屉 */
+  .nav-burger { display: flex; }
+  .nav-github span { display: none; }
+  .site-nav .container { position: relative; }
+  .nav-links {
+    position: absolute;
+    top: var(--nav-height);
+    left: 0;
+    right: 0;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: var(--space-sm) var(--space-xl) var(--space-md);
+    opacity: 0;
+    visibility: hidden;
+    transform: translateY(-8px);
+    transition: opacity var(--duration-base) var(--ease-out),
+                transform var(--duration-base) var(--ease-out),
+                visibility var(--duration-base);
+  }
+  .nav-toggle:checked ~ nav .nav-links {
+    opacity: 1;
+    visibility: visible;
+    transform: translateY(0);
+  }
+  .nav-links a {
+    display: block;
+    padding: 14px 2px;        /* 行高撑出 ≥44px 触摸目标 */
+    font-size: var(--text-body);
+  }
+  .nav-links a.active::after { display: none; }
+  .stats-row { grid-template-columns: 1fr; row-gap: var(--space-xl); }
+  .stack-grid { grid-template-columns: 1fr; }
+  .post-item { grid-template-columns: 1fr; gap: var(--space-md); }
+  .post-side { flex-direction: row; align-items: center; }
+  .section-head { flex-direction: column; align-items: flex-start; gap: var(--space-md); }
+}
+</style>
+</head>
+<body>
+
+<!-- ==================== Navigation ==================== -->
+<header class="site-nav">
+  <div class="container">
+    <a class="brand" href="#">
+      <span class="brand-mark" aria-hidden="true">H</span>
+      <span class="brand-name">HAgent</span>
+    </a>
+    <input type="checkbox" id="nav-toggle" class="nav-toggle" aria-label="切换导航菜单">
+    <nav aria-label="主导航">
+      <ul class="nav-links">
+        <li><a href="#" class="active">首页</a></li>
+        <li><a href="#">博客</a></li>
+        <li><a href="#">关于</a></li>
+      </ul>
+    </nav>
+    <div class="nav-actions">
+      <a class="nav-github" href="#">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+          <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/>
+        </svg>
+        <span>GitHub</span>
+      </a>
+      <a class="btn btn-secondary btn-sm" href="#">进入后台</a>
+    </div>
+    <label for="nav-toggle" class="nav-burger" aria-label="打开导航菜单">
+      <span></span><span></span><span></span>
+    </label>
+  </div>
+</header>
+
+<main>
+  <!-- ==================== Hero ==================== -->
+  <section class="hero">
+    <span class="hero-watermark" aria-hidden="true">H</span>
+    <div class="container">
+      <p class="hero-meta meta-line">
+        <span class="rule" aria-hidden="true"></span>
+        Full-Stack Developer · Java / Vue / AI
+      </p>
+      <h1 class="hero-title">
+        探索技术，记录成长，<br>拥抱 <em>AI</em>。
+      </h1>
+      <p class="hero-sub">
+        一个全栈开发者的数字自留地：用 <span class="mono">Java</span> 与
+        <span class="mono">Spring Boot</span> 构建后端，用 <span class="mono">Vue 3</span>
+        打磨前端，并把 SSE 流式对话、RAG 知识检索、MCP 工具调用这些 AI 工程实践，
+        一篇一篇写成可以复现的技术笔记。
+      </p>
+      <div class="hero-cta">
+        <a class="btn btn-primary" href="#">阅读技术博客</a>
+        <a class="btn btn-secondary" href="#">了解这个站点</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- ==================== 精选文章 ==================== -->
+  <section class="section" id="posts">
+    <div class="container">
+      <div class="section-head">
+        <div>
+          <p class="meta-line">Featured Writing</p>
+          <h2 class="section-title">精选文章</h2>
+        </div>
+        <a class="section-link" href="#">查看全部文章 <span class="arrow">→</span></a>
+      </div>
+
+      <ol class="post-list">
+        <li class="post-item">
+          <span class="post-index" aria-hidden="true">01</span>
+          <div>
+            <h3 class="post-title"><a href="#">从 0 到 1 实现 SSE 流式 AI 对话：Spring Boot 与 Vue 3 的全栈实践</a></h3>
+            <p class="post-excerpt">
+              为什么选 SSE 而不是 WebSocket？从 SseEmitter 的线程模型讲起，到前端
+              fetch ReadableStream 的逐帧渲染，完整拆解一次流式对话的链路与坑点。
+            </p>
+          </div>
+          <div class="post-side">
+            <time class="post-date" datetime="2025-05-18">2025-05-18</time>
+            <span class="tag">AI 工程</span>
+          </div>
+        </li>
+        <li class="post-item">
+          <span class="post-index" aria-hidden="true">02</span>
+          <div>
+            <h3 class="post-title"><a href="#">给博客装上 RAG：向量检索 + 大模型重排的实现笔记</a></h3>
+            <p class="post-excerpt">
+              把三年的技术文章切分成 chunk、写入向量库，再用检索结果约束大模型回答。
+              记录一次从"玩具 Demo"到"真能答对"的调优过程。
+            </p>
+          </div>
+          <div class="post-side">
+            <time class="post-date" datetime="2025-04-02">2025-04-02</time>
+            <span class="tag">RAG</span>
+          </div>
+        </li>
+        <li class="post-item">
+          <span class="post-index" aria-hidden="true">03</span>
+          <div>
+            <h3 class="post-title"><a href="#">MCP 协议上手：把本地工具变成大模型的"手脚"</a></h3>
+            <p class="post-excerpt">
+              Model Context Protocol 到底解决了什么问题？用 Java 实现一个最小可用的
+              MCP Server，让模型自己调用文件系统和数据库工具。
+            </p>
+          </div>
+          <div class="post-side">
+            <time class="post-date" datetime="2025-03-11">2025-03-11</time>
+            <span class="tag">MCP</span>
+          </div>
+        </li>
+        <li class="post-item">
+          <span class="post-index" aria-hidden="true">04</span>
+          <div>
+            <h3 class="post-title"><a href="#">Vue 3 组合式 API 一年后：我沉淀下来的 7 个工程习惯</a></h3>
+            <p class="post-excerpt">
+              从 Options API 迁移到 Composition API 不只是写法变化。关于逻辑复用、
+              状态边界和 composable 设计的一些可落地经验。
+            </p>
+          </div>
+          <div class="post-side">
+            <time class="post-date" datetime="2025-01-26">2025-01-26</time>
+            <span class="tag">前端</span>
+          </div>
+        </li>
+      </ol>
+    </div>
+  </section>
+
+  <!-- ==================== 技术栈 / 能力 ==================== -->
+  <section class="section" id="stack">
+    <div class="container">
+      <div class="section-head">
+        <div>
+          <p class="meta-line">Stack &amp; Focus</p>
+          <h2 class="section-title">我在构建什么</h2>
+        </div>
+      </div>
+
+      <div class="stack-grid">
+        <article class="stack-card">
+          <p class="stack-label">Backend</p>
+          <h3 class="stack-name">后端工程</h3>
+          <p class="stack-desc">
+            以 Java 生态为主力：Spring Boot 全家桶打底，关注接口设计、
+            异步处理与可观测性，把"能跑"的代码写成"好维护"的系统。
+          </p>
+          <p class="stack-tags">
+            <span>Java 17</span><span>Spring Boot 3</span><span>MyBatis-Plus</span><span>MySQL</span><span>Redis</span>
+          </p>
+        </article>
+        <article class="stack-card">
+          <p class="stack-label">Frontend</p>
+          <h3 class="stack-name">前端体验</h3>
+          <p class="stack-desc">
+            Vue 3 + Vite 的现代工作流，重视设计系统与细节手感——
+            这个站点本身就是一次"设计令牌驱动开发"的完整练习。
+          </p>
+          <p class="stack-tags">
+            <span>Vue 3</span><span>Vite</span><span>TypeScript</span><span>Pinia</span><span>Ant Design Vue</span>
+          </p>
+        </article>
+        <article class="stack-card">
+          <p class="stack-label">AI Engineering</p>
+          <h3 class="stack-name">AI 工程实践</h3>
+          <p class="stack-desc">
+            不止于调 API：SSE 流式输出、RAG 知识检索、MCP 工具编排、
+            Prompt 工程，全部落地为这个站点上真实可用的功能。
+          </p>
+          <p class="stack-tags">
+            <span>SSE 流式对话</span><span>RAG 检索增强</span><span>MCP 工具</span><span>向量数据库</span>
+          </p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- ==================== 项目数据 ==================== -->
+  <section class="section" id="stats">
+    <div class="container">
+      <div class="section-head">
+        <div>
+          <p class="meta-line">By the Numbers</p>
+          <h2 class="section-title">这个站点的一些数字</h2>
+        </div>
+      </div>
+
+      <div class="stats-row">
+        <div class="stat-cell">
+          <p class="stat-value">48<span class="unit">篇</span></p>
+          <p class="stat-label">技术文章</p>
+          <p class="stat-note">持续更新中</p>
+        </div>
+        <div class="stat-cell">
+          <p class="stat-value">12<span class="unit">个</span></p>
+          <p class="stat-label">MCP 工具</p>
+          <p class="stat-note">已接入站点 AI 助手</p>
+        </div>
+        <div class="stat-cell">
+          <p class="stat-value">3<span class="unit">大</span></p>
+          <p class="stat-label">AI 核心模块</p>
+          <p class="stat-note">对话 / 工具 / 知识库</p>
+        </div>
+        <div class="stat-cell">
+          <p class="stat-value">2023</p>
+          <p class="stat-label">开始记录至今</p>
+          <p class="stat-note">hagent · est.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<!-- ==================== Footer ==================== -->
+<footer class="site-footer">
+  <div class="container">
+    <div class="footer-grid">
+      <div class="footer-brand">
+        <p class="footer-mark" aria-hidden="true">H</p>
+        <p>
+          HAgent 是一个全栈开发者的个人技术网站——在这里记录日常技术积累，
+          也展示 AI 工程实践的完整作品。由 Java 与 Vue 驱动，由好奇心维护。
+        </p>
+      </div>
+      <div class="footer-cols">
+        <div class="footer-col">
+          <h4>导航</h4>
+          <ul>
+            <li><a href="#">首页</a></li>
+            <li><a href="#">博客</a></li>
+            <li><a href="#">关于</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <h4>功能</h4>
+          <ul>
+            <li><a href="#">AI 对话</a></li>
+            <li><a href="#">AI 工具箱</a></li>
+            <li><a href="#">知识库检索</a></li>
+            <li><a href="#">数据分析</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <h4>联系</h4>
+          <ul>
+            <li><a href="#">GitHub</a></li>
+            <li><a href="#">RSS 订阅</a></li>
+            <li><a href="#">邮件联系</a></li>
+          </ul>
+        </div>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <span>© 2025 HAgent · 保留所有权利</span>
+      <span class="mono">Built with Spring Boot 3 + Vue 3</span>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

@@ -1,0 +1,115 @@
+{
+  "_comment": "Ant Design Vue 4.2 ConfigProvider theme 配置。用法: <a-config-provider :theme=\"theme\">，theme 即本文件内容（去掉 _comment 字段）。与 tokens.css 的 .admin-light 语义层一一对应。",
+  "token": {
+    "colorPrimary": "#4C56C0",
+    "colorInfo": "#5E6AD2",
+    "colorLink": "#4C56C0",
+    "colorLinkHover": "#5E6AD2",
+    "colorLinkActive": "#3D44A0",
+
+    "colorSuccess": "#16A34A",
+    "colorWarning": "#D97706",
+    "colorError": "#DC2626",
+
+    "colorBgLayout": "#F5F5F7",
+    "colorBgContainer": "#FFFFFF",
+    "colorBgElevated": "#FFFFFF",
+    "colorBgSpotlight": "#FFFFFF",
+
+    "colorBorder": "#E5E6EB",
+    "colorBorderSecondary": "#EFF0F2",
+
+    "colorText": "#1F2329",
+    "colorTextSecondary": "#646A73",
+    "colorTextTertiary": "#8F959E",
+    "colorTextQuaternary": "#B4B9C0",
+    "colorTextPlaceholder": "#8F959E",
+
+    "colorFill": "#EFF0F2",
+    "colorFillSecondary": "#F5F5F7",
+    "colorFillTertiary": "#F7F8FA",
+    "colorPrimaryBg": "#EEF0FB",
+    "colorPrimaryBgHover": "#DDE0F7",
+    "colorPrimaryBorder": "#BEC4EF",
+    "colorPrimaryHover": "#5E6AD2",
+    "colorPrimaryActive": "#3D44A0",
+
+    "borderRadius": 6,
+    "borderRadiusSM": 4,
+    "borderRadiusLG": 8,
+
+    "fontFamily": "\"Inter\", \"Noto Sans SC\", -apple-system, BlinkMacSystemFont, \"PingFang SC\", \"Microsoft YaHei\", sans-serif",
+    "fontFamilyCode": "\"JetBrains Mono\", \"SF Mono\", Consolas, \"Courier New\", monospace",
+    "fontSize": 14,
+    "fontSizeHeading1": 32,
+    "fontSizeHeading2": 24,
+    "fontSizeHeading3": 20,
+    "fontSizeHeading4": 16,
+    "fontSizeHeading5": 14,
+    "lineHeight": 1.6,
+
+    "controlHeight": 36,
+    "controlHeightSM": 28,
+    "controlHeightLG": 44,
+
+    "padding": 16,
+    "paddingSM": 12,
+    "paddingLG": 24,
+    "margin": 16,
+    "marginSM": 12,
+    "marginLG": 24,
+
+    "motionDurationFast": "0.12s",
+    "motionDurationMid": "0.2s",
+    "motionDurationSlow": "0.32s",
+    "motionEaseOut": "cubic-bezier(0.16, 1, 0.3, 1)",
+
+    "boxShadow": "0 1px 3px rgba(0, 0, 0, 0.08)",
+    "boxShadowSecondary": "0 4px 12px rgba(0, 0, 0, 0.10)",
+    "boxShadowTertiary": "0 8px 24px rgba(0, 0, 0, 0.14)"
+  },
+  "components": {
+    "Layout": {
+      "headerBg": "#FFFFFF",
+      "siderBg": "#FFFFFF",
+      "bodyBg": "#F5F5F7",
+      "headerHeight": 56,
+      "headerPadding": "0 24px"
+    },
+    "Menu": {
+      "itemSelectedBg": "#EEF0FB",
+      "itemSelectedColor": "#4C56C0",
+      "itemHoverBg": "#F5F5F7",
+      "activeBarBorderWidth": 0
+    },
+    "Button": {
+      "primaryShadow": "none",
+      "fontWeight": 500
+    },
+    "Table": {
+      "headerBg": "#F7F8FA",
+      "headerColor": "#646A73",
+      "rowHoverBg": "#F5F5F7",
+      "borderColor": "#EFF0F2"
+    },
+    "Card": {
+      "borderRadiusLG": 8,
+      "boxShadowTertiary": "none"
+    },
+    "Input": {
+      "activeShadow": "0 0 0 2px rgba(76, 86, 192, 0.16)"
+    },
+    "Select": {
+      "optionSelectedBg": "#EEF0FB"
+    },
+    "Tabs": {
+      "inkBarColor": "#4C56C0",
+      "itemSelectedColor": "#4C56C0"
+    },
+    "Tag": {
+      "defaultBg": "#F5F5F7"
+    }
+  },
+  "cssVar": true,
+  "hashed": false
+}

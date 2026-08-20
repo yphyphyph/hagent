@@ -1,0 +1,54 @@
+spring:
+  application:
+    name: hagent-server
+  profiles:
+    active: dev
+  datasource:
+    # 数据源占位，实际值见 application-dev.yml / application-prod.yml
+    url: ${DB_URL:}
+  data:
+    redis:
+      # Redis 占位，实际值见 application-dev.yml；AI 向量库与 Token 黑名单使用 Jedis 客户端
+      client-type: jedis
+      host: ${REDIS_HOST:}
+      port: ${REDIS_PORT:6379}
+  ai:
+    # 仅为满足 spring-ai-openai 自动配置的启动校验；实际 ChatModel/EmbeddingModel 由 AI 模块
+    # AiModelProvider 依据数据库 ai.* 配置自建，这里不参与真实调用
+    openai:
+      api-key: ${OPENAI_API_KEY:sk-placeholder-for-autoconfig}
+      base-url: ${OPENAI_BASE_URL:https://api.xiaomimimo.com/v1}
+
+# JWT 占位配置（HAgent 主鉴权使用 Sa-Token；此处仅为满足 common 模块 JwtProperties 启动校验）
+hui:
+  jwt:
+    secret-key: ${JWT_SECRET_KEY:hagent-dev-secret-key-change-in-production-2026-0123456789abcdef}
+    ttl: ${JWT_TTL:7200000}
+    token-name: Authorization
+
+# Sa-Token 配置
+sa-token:
+  token-name: Authorization
+  timeout: 2592000
+  is-concurrent: true
+  is-share: false
+  token-style: simple-uuid
+  is-log: false
+  is-print: false
+
+# MyBatis-Plus
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+  global-config:
+    db-config:
+      logic-delete-field: deleted
+      logic-delete-value: 1
+      logic-not-delete-value: 0
+
+# SpringDoc 开关
+springdoc:
+  api-docs:
+    enabled: true
+  swagger-ui:
+    enabled: true
