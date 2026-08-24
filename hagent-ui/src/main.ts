@@ -8,6 +8,8 @@ import '@fontsource/jetbrains-mono/400.css'
 import '@fontsource/jetbrains-mono/500.css'
 import '@fontsource/jetbrains-mono/700.css'
 import './styles/tokens.css'
+/* highlight.js 主题（仅提供 token 配色；代码块底色由 global.css 深色岛变量控制） */
+import 'highlight.js/styles/github-dark.css'
 import './styles/global.css'
 
 const app = createApp(App)

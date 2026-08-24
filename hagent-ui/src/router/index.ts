@@ -4,25 +4,41 @@ import { isViewTransitionSupported, startViewTransition } from '@/composables/us
 import { isLoggedIn } from '@/utils/auth'
 
 /**
- * HAgent 独立 AI 管理端路由：
- * 仅保留登录页与 AI 管理后台（AI 对话 / AI 工具 / 工具执行 / 知识库 / 设置）。
+ * HAgent 路由：
+ * - `/` 公开门户：对话即产品，访客免登录直接聊（临时会话）
+ * - `/admin/*` 管理后台：AI 对话（全功能）/ AI 工具 / 知识库 / 设置
  */
 const routes: RouteRecordRaw[] = [
-  { path: '/login', name: 'Login', component: () => import('@/views/LoginView.vue'), meta: { title: '登录', public: true } },
   {
     path: '/',
-    component: () => import('@/layouts/AdminLayout.vue'),
-    redirect: '/ai/chat',
+    component: () => import('@/layouts/PortalLayout.vue'),
+    meta: { public: true },
     children: [
-      { path: 'ai/chat', name: 'AdminAiChat', component: () => import('@/views/admin/AiChatView.vue'), meta: { title: 'AI 对话' } },
-      { path: 'ai/tools', name: 'AdminAiTools', component: () => import('@/views/admin/AiToolsView.vue'), meta: { title: 'AI 工具' } },
-      { path: 'ai/tools/execute/:key', name: 'AdminAiToolExecute', component: () => import('@/views/admin/AiToolExecuteView.vue'), meta: { title: '工具执行' } },
-      { path: 'ai/knowledge', name: 'AdminKnowledge', component: () => import('@/views/admin/KnowledgeView.vue'), meta: { title: '知识库' } },
-      { path: 'ai/settings', name: 'AdminSettings', component: () => import('@/views/admin/SettingsView.vue'), meta: { title: '设置' } },
+      {
+        path: '',
+        name: 'PortalChat',
+        component: () => import('@/views/portal/PortalChatView.vue'),
+        meta: { title: 'HAgent · AI 智能助手' },
+      },
     ],
   },
-  { path: '/:pathMatch(.*)*', redirect: '/ai/chat' },
+  { path: '/login', name: 'Login', component: () => import('@/views/LoginView.vue'), meta: { title: '登录', public: true } },
+  {
+    path: '/admin',
+    component: () => import('@/layouts/AdminLayout.vue'),
+    redirect: '/admin/chat',
+    children: [
+      { path: 'chat', name: 'AdminAiChat', component: () => import('@/views/admin/AiChatView.vue'), meta: { title: 'AI 对话' } },
+      { path: 'tools', name: 'AdminAiTools', component: () => import('@/views/admin/AiToolsView.vue'), meta: { title: 'AI 工具' } },
+      { path: 'tools/execute/:key', name: 'AdminAiToolExecute', component: () => import('@/views/admin/AiToolExecuteView.vue'), meta: { title: '工具执行' } },
+      { path: 'knowledge', name: 'AdminKnowledge', component: () => import('@/views/admin/KnowledgeView.vue'), meta: { title: '知识库' } },
+      { path: 'settings', name: 'AdminSettings', component: () => import('@/views/admin/SettingsView.vue'), meta: { title: '设置' } },
+    ],
+  },
+  { path: '/:pathMatch(.*)*', redirect: '/' },
 ]
+
+const ADMIN_HOME = '/admin/chat'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -32,17 +48,17 @@ const router = createRouter({
   },
 })
 
-/* 导航守卫：未登录访问管理端跳转登录页，已登录访问登录页跳转 AI 对话 */
+/* 导航守卫：未登录访问管理端跳转登录页，已登录访问登录页跳转管理台首页 */
 router.beforeEach((to, _from, next) => {
-  const title = to.meta.title as string
-  if (title) document.title = `${title} · HAgent`
+  const title = to.meta.title as string | undefined
+  if (title) document.title = `${title}`
   const publicPage = to.meta.public === true
   if (!publicPage && !isLoggedIn()) {
     next({ path: '/login', query: { redirect: to.fullPath } })
     return
   }
   if (to.path === '/login' && isLoggedIn()) {
-    next({ path: '/ai/chat' })
+    next({ path: ADMIN_HOME })
     return
   }
   window.dispatchEvent(new Event('hs:route-start'))

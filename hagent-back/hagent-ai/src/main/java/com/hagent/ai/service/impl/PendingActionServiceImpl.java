@@ -8,23 +8,27 @@ import com.hagent.ai.model.entity.ChatPendingAction;
 import com.hagent.ai.model.enums.PendingActionStatusEnum;
 import com.hagent.ai.model.vo.PendingActionVO;
 import com.hagent.ai.service.PendingActionService;
+import com.hagent.ai.service.TextToSqlService;
 import com.hagent.common.PageResult;
 import com.hagent.common.exception.BusinessException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import tools.jackson.core.type.TypeReference;
+import tools.jackson.databind.ObjectMapper;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 /**
  * AI待确认操作服务实现
  * 处理待确认操作的查询、确认、取消与执行流程
  * <p>
- * 说明：订单相关操作已随订单模块移除，executeAction 暂不支持任何目标类型，
- * 后续新增其他业务操作时在 executeAction 中扩展分发逻辑。
+ * 支持的目标类型：SQL_QUERY（Text-to-SQL 先确认后执行）。
  *
  * @author H
  */
@@ -33,6 +37,9 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class PendingActionServiceImpl extends ServiceImpl<ChatPendingActionMapper, ChatPendingAction>
         implements PendingActionService {
+
+    private final JdbcTemplate jdbcTemplate;
+    private final ObjectMapper objectMapper;
 
     @Override
     @Transactional(readOnly = true)
@@ -128,16 +135,60 @@ public class PendingActionServiceImpl extends ServiceImpl<ChatPendingActionMappe
         log.info("待确认操作已取消: id={}, userId={}", id, userId);
     }
 
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public ChatPendingAction createAction(ChatPendingAction action, int expireHours) {
+        if (expireHours > 0) {
+            action.setExpireTime(LocalDateTime.now().plusHours(expireHours));
+        }
+        action.setStatus(PendingActionStatusEnum.PENDING.getCode());
+        super.save(action);
+        log.info("待确认操作已创建: id={}, targetType={}, conversationId={}",
+                action.getId(), action.getTargetType(), action.getConversationId());
+        return action;
+    }
+
     /**
      * 执行实际操作，根据目标类型和载荷分发到对应处理器
      * <p>
-     * 当前订单模块已移除，暂无支持的目标类型。后续新增业务操作时在此扩展分发逻辑。
+     * 当前支持：SQL_QUERY（Text-to-SQL 确认后执行，结果写回载荷供前端展示）。
+     * 后续新增其他业务操作时在此扩展分发逻辑。
      *
      * @param action 待确认操作实体
      * @throws BusinessException 当目标类型不支持时抛出
      */
     private void executeAction(ChatPendingAction action) {
+        if (TextToSqlService.TARGET_TYPE_SQL_QUERY.equals(action.getTargetType())) {
+            executeSqlQuery(action);
+            return;
+        }
         throw new BusinessException("不支持的目标类型: " + action.getTargetType());
+    }
+
+    /**
+     * 执行待确认的 SQL 查询，并把行数与结果数据写回载荷 JSON
+     *
+     * @param action 待确认操作实体（payloadJson 含 sql/question 字段）
+     */
+    private void executeSqlQuery(ChatPendingAction action) {
+        try {
+            Map<String, Object> payload = objectMapper.readValue(
+                    action.getPayloadJson(),
+                    new TypeReference<Map<String, Object>>() { });
+            String sql = String.valueOf(payload.get("sql"));
+            log.info("执行待确认SQL: pendingActionId={}", action.getId());
+
+            List<Map<String, Object>> rows = jdbcTemplate.queryForList(sql);
+
+            payload.put("rowCount", rows.size());
+            // 限制回传数据量，防止超大结果撑爆消息体（最多100行）
+            payload.put("data", rows.size() > 100 ? rows.subList(0, 100) : rows);
+            payload.put("truncated", rows.size() > 100);
+            action.setPayloadJson(objectMapper.writeValueAsString(payload));
+        } catch (Exception e) {
+            log.error("待确认SQL执行失败: pendingActionId={}", action.getId(), e);
+            throw new BusinessException("SQL执行失败: " + e.getMessage());
+        }
     }
 
     /**

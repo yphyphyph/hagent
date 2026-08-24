@@ -77,7 +77,7 @@
 import { nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { site, skillGroups } from '@/data/site'
-import { streamChat } from '@/api/chat'
+import { streamChat, PORTAL_CHAT_ENDPOINT } from '@/api/chat'
 import { isLoggedIn } from '@/utils/auth'
 
 interface ChatEntry {
@@ -107,9 +107,9 @@ const COMMANDS: { cmd: string; desc: string }[] = [
 ]
 
 const ROUTE_MAP: Record<string, string> = {
-  tools: '/ai/tools',
-  knowledge: '/ai/knowledge',
-  settings: '/ai/settings',
+  tools: '/admin/tools',
+  knowledge: '/admin/knowledge',
+  settings: '/admin/settings',
 }
 
 const router = useRouter()
@@ -158,21 +158,23 @@ function startChat(question: string) {
   const entry: ChatEntry = { kind: 'chat', text: '', streaming: true }
   output.value.push(entry)
   streamEntry = entry
-  chatAbort = streamChat(question, {
+  chatAbort = streamChat(PORTAL_CHAT_ENDPOINT, question, {
     scene: 1,
-    onChunk: (text) => {
-      if (streamEntry) streamEntry.text += text
-    },
-    onDone: () => {
-      if (streamEntry) streamEntry.streaming = false
-      streamEntry = null
-      chatAbort = null
-    },
-    onError: (msg) => {
-      if (streamEntry) streamEntry.streaming = false
-      streamEntry = null
-      chatAbort = null
-      output.value.push({ kind: 'err', text: msg })
+    handlers: {
+      onToken: (text) => {
+        if (streamEntry) streamEntry.text += text
+      },
+      onDone: () => {
+        if (streamEntry) streamEntry.streaming = false
+        streamEntry = null
+        chatAbort = null
+      },
+      onError: (msg) => {
+        if (streamEntry) streamEntry.streaming = false
+        streamEntry = null
+        chatAbort = null
+        output.value.push({ kind: 'err', text: msg })
+      },
     },
   })
   scrollBottom()

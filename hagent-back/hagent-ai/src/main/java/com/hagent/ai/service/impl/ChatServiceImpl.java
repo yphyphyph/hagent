@@ -144,10 +144,14 @@ public class ChatServiceImpl implements ChatService {
      */
     private Flux<String> doChat(Long userId, ChatRequest request,
                                 ToolCallback[] toolCallbacks, String defaultSystemPrompt) {
-        // 1. 获取或创建会话
+        // 1. 获取或创建会话（访客匿名模式：userId为空时不落库，使用内存临时会话）
         Long conversationId = request.getConversationId();
         ChatConversation conversation;
-        if (conversationId == null) {
+        if (userId == null) {
+            // 访客模式：忽略传入conversationId，消息仅保留在前端内存，不创建会话
+            conversation = null;
+            conversationId = null;
+        } else if (conversationId == null) {
             ConversationVO conv = conversationService.createConversation(userId, request.getScene());
             conversationId = conv.getId();
             conversation = conversationService.getById(conversationId);
@@ -163,7 +167,7 @@ public class ChatServiceImpl implements ChatService {
                 return Flux.just(wrapError("会话不存在"));
             }
         }
-        if (conversation == null) {
+        if (conversation == null && userId != null) {
             return Flux.just(wrapError("会话创建失败"));
         }
 
@@ -171,11 +175,13 @@ public class ChatServiceImpl implements ChatService {
         log.info("聊天请求: userId={}, conversationId={}, message={}",
                 userId, finalConversationId, request.getMessage());
 
-        // 2. 保存用户消息
-        saveMessage(finalConversationId, MessageRoleEnum.USER.getCode(), request.getMessage(), null);
+        // 2. 保存用户消息（访客模式跳过持久化）
+        if (userId != null) {
+            saveMessage(finalConversationId, MessageRoleEnum.USER.getCode(), request.getMessage(), null);
+        }
 
-        // 3. 首条消息自动生成标题
-        if (DEFAULT_TITLE.equals(conversation.getTitle())) {
+        // 3. 首条消息自动生成标题（访客模式无会话，跳过）
+        if (userId != null && DEFAULT_TITLE.equals(conversation.getTitle())) {
             String newTitle = request.getMessage().length() > TITLE_MAX_LENGTH
                     ? request.getMessage().substring(0, TITLE_MAX_LENGTH) + "..."
                     : request.getMessage();
@@ -187,17 +193,19 @@ public class ChatServiceImpl implements ChatService {
         UserContextHolder.setConversationId(finalConversationId);
 
         try {
-            // 5. 构建系统提示词
+            // 5. 构建系统提示词（访客模式无会话，直接使用默认提示词）
             String systemPrompt = defaultSystemPrompt;
-            if (conversation.getSystemPrompt() != null && !conversation.getSystemPrompt().isBlank()) {
+            if (conversation != null && conversation.getSystemPrompt() != null && !conversation.getSystemPrompt().isBlank()) {
                 systemPrompt += "\n\n附加上下文: " + conversation.getSystemPrompt();
             }
 
-            // 6. 构建消息历史（滑动窗口，保留最近N条，防止上下文超限）
+            // 6. 构建消息历史（滑动窗口，保留最近N条，防止上下文超限；访客模式无历史）
             List<Message> messages = new ArrayList<>();
             messages.add(new SystemMessage(systemPrompt));
 
-            List<ChatMessage> history = chatMessageMapper.selectList(
+            List<ChatMessage> history = finalConversationId == null
+                    ? new ArrayList<>()
+                    : chatMessageMapper.selectList(
                     new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<ChatMessage>()
                             .eq(ChatMessage::getConversationId, finalConversationId)
                             .orderByDesc(ChatMessage::getCreatedAt)
@@ -242,8 +250,9 @@ public class ChatServiceImpl implements ChatService {
                     .toolCallbacks(toolCallbacks)
                     .build();
 
-            // 8. 阶段1：同步执行工具循环
-            callWithTools(messages, toolOptions, chatModel, toolCallbacks);
+            // 8. 阶段1：同步执行工具循环（收集工具/待确认事件，meta后统一发出）
+            List<String> preStreamEvents = new ArrayList<>();
+            callWithTools(messages, toolOptions, chatModel, toolCallbacks, preStreamEvents);
 
             // 9. 阶段2：构建不带工具回调的流式Options，避免流式阶段触发工具调用导致空文本
             OpenAiChatOptions streamOptions = OpenAiChatOptions.builder()
@@ -254,8 +263,9 @@ public class ChatServiceImpl implements ChatService {
 
             log.info("开始流式输出: conversationId={}", finalConversationId);
 
-            // 元数据消息（第一个SSE事件，结构化JSON：包含type和conversationId）
-            String metaJson = "{\"type\":\"meta\",\"conversationId\":\"" + finalConversationId + "\"}";
+            // 元数据消息（第一个SSE事件，结构化JSON：包含type和conversationId；访客模式返回guest标识）
+            String metaJson = "{\"type\":\"meta\",\"conversationId\":\""
+                    + (finalConversationId != null ? finalConversationId : "guest") + "\"}";
 
             Flux<String> tokenStream = chatModel.stream(new Prompt(messages, streamOptions))
                     .mapNotNull(response -> {
@@ -278,9 +288,9 @@ public class ChatServiceImpl implements ChatService {
                         },
                         error -> {
                             log.error("流式输出异常: conversationId={}", finalConversationId, error);
-                            // 异常时保存已生成的部分文本，保证历史上下文完整
+                            // 异常时保存已生成的部分文本，保证历史上下文完整（访客模式跳过）
                             String partialText = fullText.toString();
-                            if (!partialText.isEmpty()) {
+                            if (finalConversationId != null && !partialText.isEmpty()) {
                                 saveMessage(finalConversationId, MessageRoleEnum.ASSISTANT.getCode(),
                                         partialText, null);
                                 conversationService.updateStats(finalConversationId, partialText.length() / 4);
@@ -290,9 +300,9 @@ public class ChatServiceImpl implements ChatService {
                             sink.complete();
                         },
                         () -> {
-                            // 流完成，保存完整回复到DB
+                            // 流完成，保存完整回复到DB（访客模式跳过）
                             String finalText = fullText.toString();
-                            if (!finalText.isEmpty()) {
+                            if (finalConversationId != null && !finalText.isEmpty()) {
                                 saveMessage(finalConversationId, MessageRoleEnum.ASSISTANT.getCode(),
                                         finalText, null);
                                 int tokenCount = finalText.length() / 4;
@@ -307,8 +317,10 @@ public class ChatServiceImpl implements ChatService {
                 );
             });
 
-            // concat保证顺序：元数据 → token流
-            return Flux.just(metaJson).concatWith(saveTrigger);
+            // concat保证顺序：元数据 → 工具/待确认事件 → token流
+            return Flux.just(metaJson)
+                    .concatWith(Flux.fromIterable(preStreamEvents))
+                    .concatWith(saveTrigger);
 
         } catch (Exception e) {
             log.error("聊天失败: conversationId={}", finalConversationId, e);
@@ -331,7 +343,7 @@ public class ChatServiceImpl implements ChatService {
      * @param toolCallbacks  当前可用工具回调
      */
     private void callWithTools(List<Message> messages, OpenAiChatOptions options, ChatModel chatModel,
-                               ToolCallback[] toolCallbacks) {
+                               ToolCallback[] toolCallbacks, List<String> preStreamEvents) {
         for (int i = 0; i < MAX_TOOL_ITERATIONS; i++) {
             ChatResponse response = chatModel.call(new Prompt(messages, options));
             AssistantMessage assistantMsg = response.getResult().getOutput();
@@ -353,7 +365,12 @@ public class ChatServiceImpl implements ChatService {
                         toolCall.arguments().length() > 100
                                 ? toolCall.arguments().substring(0, 100) + "..."
                                 : toolCall.arguments());
+                // 收集工具事件（meta后发出，前端渲染工具调用徽章/步骤）
+                preStreamEvents.add("{\"type\":\"tool\",\"name\":"
+                        + objectMapper.writeValueAsString(toolCall.name()) + "}");
                 String result = executeTool(toolCallbacks, toolCall.name(), toolCall.arguments());
+                // 待确认操作：解析工具结果，向流中注入结构化确认卡片事件
+                collectPendingActionEvent(result, preStreamEvents);
                 // 截断过长的工具结果，防止撑爆上下文
                 String truncatedResult = truncateResult(result);
                 log.info("  工具结果: length={}, 截断后length={}",
@@ -369,6 +386,37 @@ public class ChatServiceImpl implements ChatService {
             }
         }
         log.warn("工具调用达到最大迭代次数: {}", MAX_TOOL_ITERATIONS);
+    }
+
+    /**
+     * 解析工具结果中的待确认操作信息，向前置事件列表注入确认卡片事件
+     * 事件格式：{"type":"pending_action","id":123,"sql":"...","question":"..."}
+     *
+     * @param toolResult      工具原始结果JSON字符串
+     * @param preStreamEvents 前置事件收集器
+     */
+    private void collectPendingActionEvent(String toolResult, List<String> preStreamEvents) {
+        if (toolResult == null || !toolResult.contains("\"pendingActionId\"")) {
+            return;
+        }
+        try {
+            var node = objectMapper.readTree(toolResult);
+            if (node.get("pendingActionId") == null || node.get("pendingActionId").isNull()) {
+                return;
+            }
+            StringBuilder json = new StringBuilder("{\"type\":\"pending_action\",\"id\":")
+                    .append(node.get("pendingActionId").asLong());
+            if (node.get("sql") != null && !node.get("sql").isNull()) {
+                json.append(",\"sql\":").append(objectMapper.writeValueAsString(node.get("sql").asString()));
+            }
+            if (node.get("question") != null && !node.get("question").isNull()) {
+                json.append(",\"question\":").append(objectMapper.writeValueAsString(node.get("question").asString()));
+            }
+            json.append("}");
+            preStreamEvents.add(json.toString());
+        } catch (Exception e) {
+            log.warn("解析待确认操作事件失败，跳过确认卡片推送", e);
+        }
     }
 
     /**
@@ -449,6 +497,10 @@ public class ChatServiceImpl implements ChatService {
      * @param toolName       工具名称（非工具消息为null）
      */
     private void saveMessage(Long conversationId, Integer role, String content, String toolName) {
+        // 访客临时会话无持久化目标，直接跳过
+        if (conversationId == null) {
+            return;
+        }
         ChatMessage msg = new ChatMessage();
         msg.setConversationId(conversationId);
         msg.setRole(role);

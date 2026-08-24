@@ -47,7 +47,8 @@ public class SaTokenConfig implements WebMvcConfigurer {
             // 其余请求统一校验登录状态
             StpUtil.checkLogin();
         })).addPathPatterns("/**")
-                .excludePathPatterns("/auth/**", "/error")
+                /* 门户端 AI 对话对访客开放（匿名可聊，接口自带 @RateLimit 限流保护） */
+                .excludePathPatterns("/auth/**", "/error", "/admin/ai/portal/chat")
                 .order(1);
 
         // 2. 用户上下文拦截器

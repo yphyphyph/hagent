@@ -79,4 +79,30 @@ public class ConversationController {
         conversationService.deleteConversation(id, userId);
         return Result.success();
     }
+
+    /**
+     * 重命名会话（校验归属权）
+     */
+    @PutMapping("/{id}/title")
+    @Operation(summary = "重命名会话", description = "更新指定会话的标题，并校验会话归属权")
+    @ApiResponse(responseCode = "200", description = "重命名成功")
+    public Result<Void> rename(
+            @Parameter(description = "会话ID", required = true) @PathVariable Long id,
+            @RequestBody RenameRequest body) {
+        Long userId = UserContext.getUserId();
+        // 先经归属权校验，再更新标题（复用 getConversationById 的校验逻辑）
+        conversationService.getConversationById(id, userId);
+        String title = body.title() == null ? "" : body.title().trim();
+        if (title.isEmpty()) {
+            return Result.error("标题不能为空");
+        }
+        conversationService.updateTitle(id, title);
+        return Result.success();
+    }
+
+    /**
+     * 重命名请求体
+     */
+    public record RenameRequest(String title) {
+    }
 }

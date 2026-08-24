@@ -3,7 +3,7 @@
     <!-- ===== 页头 ===== -->
     <div class="exec-head">
       <div class="exec-head__left">
-        <router-link to="/ai/tools" class="exec-head__back">← 返回工具列表</router-link>
+        <router-link to="/admin/tools" class="exec-head__back">← 返回工具列表</router-link>
         <h2 class="exec-head__title">{{ tool?.name || '工具执行' }}</h2>
         <span class="exec-head__key mono">{{ toolKey }}</span>
       </div>
@@ -128,7 +128,7 @@ onMounted(async () => {
     tool.value = list.find((t) => t.key === toolKey.value) ?? null
     if (!tool.value) {
       message.warning(`未找到工具：${toolKey.value}`)
-      router.replace('/ai/tools')
+      router.replace('/admin/tools')
       return
     }
     // 初始化参数表单

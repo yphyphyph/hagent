@@ -12,7 +12,7 @@
         @expand="collapsed = false"
       >
         <div class="admin-side">
-          <router-link to="/ai/chat" class="admin-logo">
+          <router-link to="/admin/chat" class="admin-logo">
             <span class="admin-logo__mark">H</span>
             <span v-if="!collapsed" class="admin-logo__text">HAgent 控制台</span>
           </router-link>
@@ -30,6 +30,9 @@
         <n-layout-header bordered class="admin-header">
           <div class="admin-header__title">{{ route.meta.title }}</div>
           <div class="admin-header__actions">
+            <router-link to="/" class="admin-header__portal">
+              <n-button size="small" quaternary>前往前台</n-button>
+            </router-link>
             <HsThemeToggle />
             <n-button size="small" quaternary @click="onLogout">退出</n-button>
           </div>
@@ -64,10 +67,10 @@ function renderIcon(icon: ReturnType<typeof h>) {
 }
 
 const menuOptions: MenuOption[] = [
-  { label: 'AI 对话', key: '/ai/chat', icon: renderIcon(h(MessageOutlined)) },
-  { label: 'AI 工具', key: '/ai/tools', icon: renderIcon(h(ToolOutlined)) },
-  { label: '知识库', key: '/ai/knowledge', icon: renderIcon(h(DatabaseOutlined)) },
-  { label: '设置', key: '/ai/settings', icon: renderIcon(h(SettingOutlined)) },
+  { label: 'AI 对话', key: '/admin/chat', icon: renderIcon(h(MessageOutlined)) },
+  { label: 'AI 工具', key: '/admin/tools', icon: renderIcon(h(ToolOutlined)) },
+  { label: '知识库', key: '/admin/knowledge', icon: renderIcon(h(DatabaseOutlined)) },
+  { label: '设置', key: '/admin/settings', icon: renderIcon(h(SettingOutlined)) },
 ]
 
 const activeKey = computed(() => route.path)
@@ -132,6 +135,9 @@ async function onLogout() {
 }
 .admin-header__title {
   font-weight: 600;
+}
+.admin-header__portal {
+  text-decoration: none;
 }
 .admin-header__actions {
   display: flex;

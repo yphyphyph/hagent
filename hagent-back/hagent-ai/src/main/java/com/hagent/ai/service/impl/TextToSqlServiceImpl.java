@@ -3,6 +3,9 @@ package com.hagent.ai.service.impl;
 import com.hagent.ai.core.AiModelProvider;
 import com.hagent.ai.core.DatabaseSchemaProvider;
 import com.hagent.ai.core.SqlSecurityValidator;
+import com.hagent.ai.core.UserContextHolder;
+import com.hagent.ai.model.entity.ChatPendingAction;
+import com.hagent.ai.service.PendingActionService;
 import com.hagent.ai.service.TextToSqlService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -38,6 +41,8 @@ public class TextToSqlServiceImpl implements TextToSqlService {
     private final DatabaseSchemaProvider schemaProvider;
     private final SqlSecurityValidator sqlValidator;
     private final JdbcTemplate jdbcTemplate;
+    private final PendingActionService pendingActionService;
+    private final tools.jackson.databind.ObjectMapper objectMapper;
 
     /** 系统提示词模板 */
     private static final String SYSTEM_PROMPT_TEMPLATE = """
@@ -59,6 +64,7 @@ public class TextToSqlServiceImpl implements TextToSqlService {
             """;
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public Map<String, Object> queryByNaturalLanguage(String question) {
         Map<String, Object> result = new LinkedHashMap<>();
 
@@ -85,22 +91,33 @@ public class TextToSqlServiceImpl implements TextToSqlService {
             String sanitizedSql = validation.getSanitizedSql();
             log.info("校验后的SQL: {}", sanitizedSql);
 
-            // 3. 执行查询
-            List<Map<String, Object>> rows = jdbcTemplate.queryForList(sanitizedSql);
+            // 3. 创建待确认操作（不直接执行，由用户在确认卡片上确认后执行）
+            ChatPendingAction action = new ChatPendingAction();
+            action.setConversationId(UserContextHolder.getConversationId());
+            action.setUserId(UserContextHolder.getUserId());
+            action.setActionType(3); // 知识库/数据类操作
+            action.setTargetType(TextToSqlService.TARGET_TYPE_SQL_QUERY);
+            Map<String, Object> payload = new LinkedHashMap<>();
+            payload.put("sql", sanitizedSql);
+            payload.put("question", question);
+            action.setPayloadJson(objectMapper.writeValueAsString(payload));
+            action.setPreviewText(question);
+            ChatPendingAction saved = pendingActionService.createAction(action, 24);
 
-            // 4. 构建返回结果
+            // 4. 构建返回结果：告知AI已生成SQL等待确认
             result.put("success", true);
+            result.put("pendingConfirmation", true);
+            result.put("pendingActionId", saved.getId());
             result.put("sql", sanitizedSql);
             result.put("question", question);
-            result.put("rowCount", rows.size());
-            result.put("data", rows);
+            result.put("message", "SQL已生成并通过安全校验，等待用户确认后执行");
 
-            log.info("查询成功: question={}, rowCount={}", question, rows.size());
+            log.info("SQL待确认操作已创建: pendingActionId={}, question={}", saved.getId(), question);
 
         } catch (Exception e) {
-            log.error("Text to SQL 查询失败: question={}", question, e);
+            log.error("Text to SQL 处理失败: question={}", question, e);
             result.put("success", false);
-            result.put("message", "查询执行失败: " + e.getMessage());
+            result.put("message", "查询处理失败: " + e.getMessage());
         }
 
         return result;

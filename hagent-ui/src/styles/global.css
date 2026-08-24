@@ -304,6 +304,67 @@ a:hover {
   text-underline-offset: 2px;
 }
 
+/* ---------- 代码块：深色岛 + 语言标签栏 + 复制按钮 ----------
+   结构由 utils/markdown.ts 自定义 renderer 输出；
+   "深色岛原则"：代码块底色恒定深色（#0B0D0F），明暗主题下均比所在卡片更深 */
+.md-body .code-block {
+  margin: var(--space-3) 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  background: #0b0d0f;
+}
+.md-body .code-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+.md-body .code-lang {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #8a8f98;
+}
+.md-body .code-copy {
+  font-size: 12px;
+  color: #8a8f98;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 2px 8px;
+  border-radius: 5px;
+  transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+.md-body .code-copy:hover {
+  color: #f7f8f8;
+  background: rgba(255, 255, 255, 0.08);
+}
+.md-body .code-copy--done {
+  color: #4cc38a;
+}
+.md-body .code-block pre {
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  background: transparent;
+  border: none;
+  border-radius: 0;
+}
+.md-body .code-block pre code,
+.md-body .code-block code.hljs {
+  display: block;
+  padding: 0;
+  background: transparent;
+  border: none;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 1.65;
+  color: #c9d1d9;
+}
+
 /* ---------- 页面过渡（fade + 上移） ---------- */
 .page-enter-active,
 .page-leave-active {

@@ -13,32 +13,66 @@ export interface ChatMessageItem {
   role: 'user' | 'assistant'
   content: string
   createdAt?: string
+  toolName?: string
+}
+
+/** 待确认操作信息（SSE pending_action 事件载荷） */
+export interface PendingActionInfo {
+  id: number
+  sql?: string
+  question?: string
+}
+
+/** 待确认操作执行结果（confirm 接口返回的 payload 解析） */
+export interface PendingActionResult {
+  sql?: string
+  question?: string
+  rowCount?: number
+  data?: Array<Record<string, unknown>>
+  truncated?: boolean
+}
+
+/** SSE 流式事件处理器集合 */
+export interface StreamEventHandlers {
+  /** 元数据事件：携带会话ID（访客模式为 "guest"） */
+  onMeta?: (conversationId: string) => void
+  /** 文本 token 追加 */
+  onToken: (text: string) => void
+  /** 工具调用事件（阶段1每执行一个工具触发一次） */
+  onTool?: (name: string) => void
+  /** 待确认操作卡片事件 */
+  onPendingAction?: (info: PendingActionInfo) => void
+  onError?: (msg: string) => void
+  onDone?: () => void
 }
 
 /**
- * SSE 流式对话
- * @param message 用户消息
- * @param scene 1-通用 2-订单 3-知识库
- * @param conversationId 会话ID（空则新建）
- * @param onChunk 收到文本块回调
- * @param onDone 流结束回调
- * @param onError 错误回调
- * @returns AbortController（用于中断）
+ * SSE 流式对话（统一入口）
+ *
+ * 后端事件协议：
+ * - {"type":"meta","conversationId":"123"|"guest"}
+ * - {"type":"token","content":"..."}
+ * - {"type":"tool","name":"searchKnowledge"}
+ * - {"type":"pending_action","id":1,"sql":"...","question":"..."}
+ * - {"type":"error","message":"..."}
+ * - [FINAL] / [DONE] 结束标记
+ *
+ * @param endpoint SSE 端点：'/api/admin/ai/chat'（管理端）| '/api/admin/ai/portal/chat'（门户端）
  */
 export function streamChat(
+  endpoint: string,
   message: string,
   opts: {
     scene?: number
     conversationId?: number
-    onChunk: (text: string) => void
-    onDone?: (conversationId?: number) => void
-    onError?: (msg: string) => void
+    handlers: StreamEventHandlers
   }
 ): AbortController {
   const controller = new AbortController()
   const token = getToken()
+  const h = opts.handlers
 
-  fetch('/api/admin/ai/portal/chat', {
+  fetch(endpoint, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -53,11 +87,7 @@ export function streamChat(
   })
     .then(async (resp) => {
       if (!resp.ok) {
-        if (resp.status === 401) {
-          opts.onError?.('登录已过期，请重新登录')
-        } else {
-          opts.onError?.(`请求失败（${resp.status}）`)
-        }
+        h.onError?.(resp.status === 401 ? '登录已过期，请重新登录' : `请求失败（${resp.status}）`)
         return
       }
       const reader = resp.body?.getReader()
@@ -66,10 +96,9 @@ export function streamChat(
       const decoder = new TextDecoder()
       let buffer = ''
 
-      // 解析 SSE 文本流
+      // 解析 SSE 文本流（事件以 \n\n 分隔）
       const processChunk = (chunk: string) => {
         buffer += chunk
-        // SSE 事件以 \n\n 分隔
         const parts = buffer.split('\n\n')
         buffer = parts.pop() ?? ''
         for (const part of parts) {
@@ -78,21 +107,35 @@ export function streamChat(
           const payload = line.slice(5).trim()
           if (!payload) continue
           if (payload === '[DONE]' || payload === '[FINAL]') {
-            opts.onDone?.()
+            h.onDone?.()
             continue
           }
-          // 结构化 JSON：{"type":"error","message":"..."} / {"type":"token","content":"..."} / {"type":"meta","conversationId":...}
           try {
-            const obj = JSON.parse(payload)
-            if (obj.type === 'error') {
-              opts.onError?.(obj.message || 'AI 服务异常')
-            } else if (obj.content) {
-              opts.onChunk(obj.content)
+            const obj = JSON.parse(payload) as Record<string, unknown>
+            switch (obj.type) {
+              case 'error':
+                h.onError?.((obj.message as string) || 'AI 服务异常')
+                break
+              case 'meta':
+                h.onMeta?.(String(obj.conversationId ?? ''))
+                break
+              case 'tool':
+                h.onTool?.(String(obj.name ?? ''))
+                break
+              case 'pending_action':
+                h.onPendingAction?.({
+                  id: Number(obj.id),
+                  sql: obj.sql as string | undefined,
+                  question: obj.question as string | undefined,
+                })
+                break
+              case 'token':
+                if (obj.content) h.onToken(String(obj.content))
+                break
             }
-            // meta 事件：仅携带会话ID信息，不触发 onDone（真正的结束标记是 [FINAL]/[DONE]）
           } catch {
-            // 非 JSON 即纯文本块
-            opts.onChunk(payload)
+            // 非 JSON 即纯文本块（兼容旧协议）
+            h.onToken(payload)
           }
         }
       }
@@ -105,14 +148,19 @@ export function streamChat(
       // 处理残留 buffer
       if (buffer.trim()) processChunk('')
     })
-    .catch((err) => {
-      if (err?.name !== 'AbortError') {
-        opts.onError?.('网络连接失败')
+    .catch((err: unknown) => {
+      if (!(err instanceof Error && err.name === 'AbortError')) {
+        h.onError?.('网络连接失败')
       }
     })
 
   return controller
 }
+
+/** 管理端全功能对话端点 */
+export const ADMIN_CHAT_ENDPOINT = '/api/admin/ai/chat'
+/** 门户端对话端点（访客可匿名） */
+export const PORTAL_CHAT_ENDPOINT = '/api/admin/ai/portal/chat'
 
 export const conversationApi = {
   /** 会话列表（后端返回分页结构 {list, total}，取 list） */
@@ -127,5 +175,21 @@ export const conversationApi = {
   },
   remove(id: number): Promise<void> {
     return request.delete(`/admin/ai/conversations/${id}`)
+  },
+  rename(id: number, title: string): Promise<void> {
+    return request.put(`/admin/ai/conversations/${id}/title`, { title })
+  },
+}
+
+/** 待确认操作接口（确认卡片的确认/取消动作） */
+export const pendingActionApi = {
+  async confirm(id: number): Promise<{ statusDesc?: string; payloadJson?: string }> {
+    const vo = await request.post<{ statusDesc?: string; payloadJson?: string }, { statusDesc?: string; payloadJson?: string }>(
+      `/admin/ai/pending-actions/${id}/confirm`
+    )
+    return vo ?? {}
+  },
+  cancel(id: number): Promise<void> {
+    return request.post(`/admin/ai/pending-actions/${id}/cancel`)
   },
 }

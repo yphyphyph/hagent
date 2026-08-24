@@ -52,4 +52,13 @@ public interface PendingActionService extends IService<ChatPendingAction> {
      * @throws BusinessException 当状态非法或无权操作时抛出
      */
     void cancelAction(Long id, Long userId);
+
+    /**
+     * 创建待确认操作（供工具链路写入，如 Text-to-SQL 的"先确认后执行"）
+     *
+     * @param action      待确认操作实体（需含 targetType/payloadJson/previewText/status 等）
+     * @param expireHours 过期小时数（小于等于0则不设置过期时间）
+     * @return 已持久化的实体（含ID）
+     */
+    ChatPendingAction createAction(ChatPendingAction action, int expireHours);
 }

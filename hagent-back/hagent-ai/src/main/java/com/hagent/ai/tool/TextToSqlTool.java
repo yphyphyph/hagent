@@ -29,7 +29,8 @@ public class TextToSqlTool {
      * @return 查询结果
      */
     @Tool(description = """
-            通过自然语言查询业务数据，支持订单、文章、用户等数据的统计分析。
+            通过自然语言查询业务数据（先确认后执行）。调用后系统会生成 SQL 并等待用户在确认卡片上确认，
+            用户确认后才会真正执行并返回数据。支持订单、文章、用户等数据的统计分析。
             可以问类似这样的问题：
             - 本月销售额最高的前5个订单是什么？
             - 最近7天每天的订单数量？
@@ -48,9 +49,10 @@ public class TextToSqlTool {
         if (Boolean.TRUE.equals(result.get("success"))) {
             Map<String, Object> simplified = new java.util.LinkedHashMap<>();
             simplified.put("question", result.get("question"));
+            simplified.put("pendingConfirmation", true);
+            simplified.put("pendingActionId", result.get("pendingActionId"));
             simplified.put("sql", result.get("sql"));
-            simplified.put("rowCount", result.get("rowCount"));
-            simplified.put("data", result.get("data"));
+            simplified.put("message", result.get("message"));
             return simplified;
         } else {
             return result;
