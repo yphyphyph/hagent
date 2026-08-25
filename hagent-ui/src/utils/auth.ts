@@ -15,10 +15,14 @@ export function getToken(): string | null {
 
 export function setToken(token: string): void {
   localStorage.setItem(TOKEN_KEY, token)
+  // 同步通知同页签登录态变化
+  window.dispatchEvent(new Event('hagent:auth-change'))
 }
 
 export function removeToken(): void {
   localStorage.removeItem(TOKEN_KEY)
+  // 同步通知同页签登录态变化
+  window.dispatchEvent(new Event('hagent:auth-change'))
 }
 
 export function getUser(): UserInfo | null {
@@ -38,6 +42,8 @@ export function setUser(user: UserInfo): void {
 export function clearAuth(): void {
   removeToken()
   localStorage.removeItem(USER_KEY)
+  // 同步通知同页签登录态变化（内部 removeToken 已触发一次，重复派发对幂等监听方无副作用）
+  window.dispatchEvent(new Event('hagent:auth-change'))
 }
 
 export function isLoggedIn(): boolean {
