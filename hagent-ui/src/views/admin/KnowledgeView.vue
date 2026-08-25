@@ -18,6 +18,7 @@
         accept=".md,.txt,.pdf,.doc,.docx"
         :show-file-list="false"
         :multiple="true"
+        :disabled="isUploading"
       >
         <n-upload-dragger class="kb-dragger">
           <div class="kb-dragger__icon">
@@ -27,6 +28,15 @@
           <div class="kb-dragger__hint">支持 Markdown / TXT / PDF / Word，单文件不超过 10MB</div>
         </n-upload-dragger>
       </n-upload>
+
+      <!-- 上传进度 -->
+      <div v-if="isUploading" class="kb-upload-progress">
+        <div class="kb-upload-progress__label">
+          <span>正在上传 {{ uploadingFileName }}</span>
+          <span class="mono">{{ uploadPercent }}%</span>
+        </div>
+        <n-progress type="line" :percentage="uploadPercent" :height="8" :show-indicator="false" />
+      </div>
     </n-card>
 
     <!-- 文档列表 -->
@@ -44,12 +54,13 @@
 </template>
 
 <script setup lang="ts">
-import { h, onMounted, ref, type Component } from 'vue'
+import { computed, h, onMounted, ref, type Component } from 'vue'
 import {
   NButton,
   NCard,
   NDataTable,
   NIcon,
+  NProgress,
   NStatistic,
   NTag,
   NUpload,
@@ -85,7 +96,7 @@ async function loadStats() {
     const num = (v: unknown): number => (typeof v === 'number' ? v : Number(v) || 0)
     kbStats.value = [
       { label: '文档数', value: num(s.totalFiles), icon: FileTextOutlined, tone: 'green' },
-      { label: '已向量化', value: num(s.vectorized), icon: ThunderboltOutlined, tone: 'blue' },
+      { label: '已向量化', value: num(s.completed), icon: ThunderboltOutlined, tone: 'blue' },
       { label: '检索次数', value: num(s.searchCount), icon: SearchOutlined, tone: 'purple' },
     ]
   } catch {
@@ -268,6 +279,12 @@ async function onDelete(row: KnowledgeDoc) {
   }
 }
 
+/* ---------- 上传进度 ---------- */
+const activeUploads = ref(0)
+const uploadPercent = ref(0)
+const uploadingFileName = ref('')
+const isUploading = computed(() => activeUploads.value > 0)
+
 /* ---------- 真实上传 ---------- */
 async function realUpload({ file, onFinish, onError }: UploadCustomRequestOptions) {
   const raw = file.file
@@ -275,13 +292,30 @@ async function realUpload({ file, onFinish, onError }: UploadCustomRequestOption
     onError()
     return
   }
+  activeUploads.value++
+  uploadPercent.value = 0
+  uploadingFileName.value = file.name
   try {
-    await knowledgeApi.upload(raw)
+    await knowledgeApi.upload(raw, (percent) => {
+      uploadingFileName.value = file.name
+      uploadPercent.value = percent
+    })
     onFinish()
     message.success(`「${file.name}」上传成功`)
     await Promise.all([loadDocs(), loadStats()])
   } catch {
     onError()
+  } finally {
+    activeUploads.value--
+    if (activeUploads.value === 0) {
+      // 全部上传结束后延迟重置，避免进度条瞬间消失
+      setTimeout(() => {
+        if (activeUploads.value === 0) {
+          uploadPercent.value = 0
+          uploadingFileName.value = ''
+        }
+      }, 600)
+    }
   }
 }
 </script>
@@ -350,6 +384,17 @@ async function realUpload({ file, onFinish, onError }: UploadCustomRequestOption
 .kb-dragger__hint {
   font-size: var(--text-xs);
   color: var(--text-3);
+}
+.kb-upload-progress {
+  margin-top: var(--space-4);
+}
+.kb-upload-progress__label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: var(--text-sm);
+  color: var(--text-2);
+  margin-bottom: var(--space-2);
 }
 
 /* ---------- 表格 ---------- */

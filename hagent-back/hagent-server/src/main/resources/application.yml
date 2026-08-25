@@ -3,6 +3,12 @@ spring:
     name: hagent-server
   profiles:
     active: dev
+  servlet:
+    multipart:
+      # 单文件上传上限，与 KnowledgeServiceImpl.MAX_FILE_SIZE 对齐（避免默认 1MB 拦截）
+      max-file-size: 20MB
+      # 单次请求总大小上限（含其他表单字段）
+      max-request-size: 25MB
   datasource:
     # 数据源占位，实际值见 application-dev.yml / application-prod.yml
     url: ${DB_URL:}

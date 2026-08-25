@@ -3,6 +3,7 @@ package com.hagent.server.auth;
 import cn.dev33.satoken.stp.StpUtil;
 import com.hagent.common.context.UserContext;
 import com.hagent.server.auth.mapper.UserMapper;
+import jakarta.servlet.DispatcherType;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
@@ -31,6 +32,11 @@ public class UserContextInterceptor implements HandlerInterceptor {
      */
     @Override
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) {
+        // SSE 异步完成后的 ASYNC 再分发运行在无 Sa-Token 上下文的线程上，
+        // 且主请求阶段已填充过 UserContext，这里直接放行避免 StpUtil.isLogin() 抛异常
+        if (DispatcherType.ASYNC.equals(request.getDispatcherType())) {
+            return true;
+        }
         if (StpUtil.isLogin()) {
             Long userId = Long.valueOf(StpUtil.getLoginId().toString());
             UserDO user = userMapper.selectById(userId);

@@ -1,4 +1,5 @@
 import request from '@/utils/request'
+import type { AxiosProgressEvent } from 'axios'
 
 export interface KnowledgeFile {
   id: number
@@ -13,7 +14,7 @@ export interface KnowledgeFile {
 
 export interface KnowledgeStats {
   totalFiles?: number
-  vectorized?: number
+  completed?: number
   searchCount?: number
 }
 
@@ -25,11 +26,16 @@ export const knowledgeApi = {
     )
     return data.list ?? []
   },
-  upload(file: File): Promise<KnowledgeFile> {
+  upload(file: File, onProgress?: (percent: number) => void): Promise<KnowledgeFile> {
     const form = new FormData()
     form.append('file', file)
     return request.post('/admin/knowledge/upload', form, {
       headers: { 'Content-Type': 'multipart/form-data' },
+      onUploadProgress: (e: AxiosProgressEvent) => {
+        if (e.total && onProgress) {
+          onProgress(Math.round((e.loaded / e.total) * 100))
+        }
+      },
     })
   },
   remove(id: number): Promise<void> {

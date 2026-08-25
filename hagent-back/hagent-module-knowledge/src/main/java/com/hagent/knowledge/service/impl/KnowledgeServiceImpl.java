@@ -21,6 +21,7 @@ import com.hagent.knowledge.vo.KnowledgeFileVO;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Lazy;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -66,6 +67,9 @@ public class KnowledgeServiceImpl extends ServiceImpl<KnowledgeFileMapper, Knowl
     /** 单文件大小上限：20MB */
     private static final long MAX_FILE_SIZE = 20L * 1024 * 1024;
 
+    /** 知识库检索次数 Redis 计数键（与 RagService 保持一致） */
+    private static final String SEARCH_COUNT_REDIS_KEY = "hagent:knowledge:search:count";
+
     /** 文件名清洗正则：移除路径分隔符与危险字符 */
     private static final java.util.regex.Pattern FILENAME_SANITIZE_PATTERN =
             java.util.regex.Pattern.compile("[/\\\\:*?\"<>|]");
@@ -76,16 +80,19 @@ public class KnowledgeServiceImpl extends ServiceImpl<KnowledgeFileMapper, Knowl
     private final DocumentTextExtractor documentTextExtractor;
     private final SemanticChunker semanticChunker;
     private final KnowledgeVectorizeRunner vectorizeRunner;
+    private final StringRedisTemplate stringRedisTemplate;
 
     public KnowledgeServiceImpl(OssConfig ossConfig,
                                 @Lazy @Autowired(required = false) AliOssUtil aliOssUtil,
                                 @Lazy @Autowired(required = false) VectorStoreService vectorStoreService,
+                                @Autowired(required = false) StringRedisTemplate stringRedisTemplate,
                                 DocumentTextExtractor documentTextExtractor,
                                 SemanticChunker semanticChunker,
                                 KnowledgeVectorizeRunner vectorizeRunner) {
         this.ossConfig = ossConfig;
         this.aliOssUtil = aliOssUtil;
         this.vectorStoreService = vectorStoreService;
+        this.stringRedisTemplate = stringRedisTemplate;
         this.documentTextExtractor = documentTextExtractor;
         this.semanticChunker = semanticChunker;
         this.vectorizeRunner = vectorizeRunner;
@@ -460,7 +467,26 @@ public class KnowledgeServiceImpl extends ServiceImpl<KnowledgeFileMapper, Knowl
         stats.put("totalChunks", totalChunks);
         stats.put("totalTokens", totalTokens);
         stats.put("totalSize", totalSize);
+        stats.put("searchCount", getSearchCount());
         return stats;
+    }
+
+    /**
+     * 从 Redis 读取知识库检索次数累计值
+     *
+     * @return 检索次数，Redis 不可用或未计数时返回 0
+     */
+    private long getSearchCount() {
+        if (stringRedisTemplate == null) {
+            return 0L;
+        }
+        try {
+            String value = stringRedisTemplate.opsForValue().get(SEARCH_COUNT_REDIS_KEY);
+            return StringUtils.hasText(value) ? Long.parseLong(value) : 0L;
+        } catch (Exception e) {
+            log.warn("读取检索次数失败", e);
+            return 0L;
+        }
     }
 
     @Override

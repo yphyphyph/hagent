@@ -25,20 +25,7 @@
         </button>
       </div>
 
-      <p class="welcome__hint">试试这些开场</p>
-      <div class="welcome__samples">
-        <button
-          v-for="(s, i) in samples"
-          :key="i"
-          type="button"
-          class="sample-card"
-          @click="fillDraft(s.question)"
-        >
-          <span class="sample-card__icon">{{ s.icon }}</span>
-          <span class="sample-card__title">{{ s.title }}</span>
-          <span class="sample-card__desc">{{ s.question }}</span>
-        </button>
-      </div>
+      <p class="welcome__hint">Enter 发送 · Shift + Enter 换行</p>
 
       <p v-if="guest" class="welcome__guest-tip">
         访客模式：对话不会被保存，<router-link to="/login">登录</router-link>后可保留历史会话
@@ -117,12 +104,6 @@ import { NButton } from 'naive-ui'
 import { renderMarkdown } from '@/utils/markdown'
 import type { UiChatMessage } from '@/composables/useChat'
 
-export interface SampleItem {
-  icon: string
-  title: string
-  question: string
-}
-
 const props = withDefaults(
   defineProps<{
     messages: UiChatMessage[]
@@ -139,13 +120,6 @@ const emit = defineEmits<{
   (e: 'cancel-action', msg: UiChatMessage, action: NonNullable<UiChatMessage['pendingAction']>): void
   (e: 'send', text: string): void
 }>()
-
-/* ---------- 示例问题（低成本引导，后续可接后台配置） ---------- */
-const samples = ref<SampleItem[]>([
-  { icon: '📚', title: '知识检索', question: '帮我总结知识库里关于项目部署的要点' },
-  { icon: '🧭', title: '能力边界', question: '你能调用哪些工具？分别用来做什么？' },
-  { icon: '✍️', title: '内容创作', question: '用三句话介绍你自己擅长的事情' },
-])
 
 /* ---------- 草稿与发送（欢迎屏 hero 输入框） ---------- */
 const draft = ref('')
@@ -164,16 +138,6 @@ function submitDraft() {
 function onHeroEnter() {
   if (composing.value) return
   submitDraft()
-}
-
-/** 示例问题填充输入框并聚焦 */
-function fillDraft(question: string) {
-  draft.value = question
-  nextTick(() => {
-    heroInputRef.value?.focus()
-    const el = heroInputRef.value
-    if (el) el.style.height = `${Math.min(el.scrollHeight, 160)}px`
-  })
 }
 
 /** textarea 高度自适应 */
@@ -263,7 +227,8 @@ defineExpose({ scrollToBottom })
 
 /* ---------- 欢迎屏 ---------- */
 .welcome {
-  max-width: 720px;
+  max-width: 840px;
+  width: 100%;
   margin: auto;
   padding: var(--space-5) var(--space-5) var(--space-6);
   display: flex;
@@ -304,7 +269,7 @@ defineExpose({ scrollToBottom })
   width: 100%;
   margin-top: var(--space-5);
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   gap: var(--space-2);
   background: var(--bg-elevated);
   border: 1px solid var(--border-strong);
@@ -353,51 +318,10 @@ defineExpose({ scrollToBottom })
   transform: translateY(-1px);
 }
 .welcome__hint {
-  width: 100%;
-  margin-top: var(--space-6);
-  margin-bottom: var(--space-3);
+  margin-top: var(--space-5);
   font-size: var(--text-xs);
-  letter-spacing: 0.24em;
-  text-transform: uppercase;
+  letter-spacing: 0.08em;
   color: var(--text-3);
-}
-.welcome__samples {
-  width: 100%;
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: var(--space-3);
-}
-.sample-card {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 6px;
-  text-align: left;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  padding: var(--space-4);
-  cursor: pointer;
-  transition: transform var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease),
-    background var(--dur-fast) var(--ease);
-}
-.sample-card:hover {
-  transform: translateY(-2px);
-  border-color: var(--accent-border);
-  background: var(--bg-hover);
-}
-.sample-card__icon {
-  font-size: 18px;
-}
-.sample-card__title {
-  font-weight: 600;
-  font-size: var(--text-sm);
-  color: var(--text-1);
-}
-.sample-card__desc {
-  font-size: var(--text-xs);
-  color: var(--text-3);
-  line-height: 1.5;
 }
 .welcome__guest-tip {
   margin-top: var(--space-6);

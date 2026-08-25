@@ -5,6 +5,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.VectorStore;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -21,7 +22,16 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class RagService {
 
+    /**
+     * embedding 接口单批文本上限（DashScope 兼容接口限制 batch size <= 10，超限报 400）
+     */
+    private static final int EMBEDDING_BATCH_SIZE = 10;
+
+    /** 知识库检索次数 Redis 计数键（与 KnowledgeServiceImpl 保持一致） */
+    private static final String SEARCH_COUNT_REDIS_KEY = "hagent:knowledge:search:count";
+
     private final AiModelProvider aiModelProvider;
+    private final StringRedisTemplate stringRedisTemplate;
 
     /**
      * 搜索相似文档
@@ -46,6 +56,7 @@ public class RagService {
                     .build();
             log.debug("SearchRequest: {}", request);
             List<Document> results = vectorStore.similaritySearch(request);
+            incrementSearchCount();
             log.info("RAG搜索完成: query={}, results={}", query, results.size());
             for (Document doc : results) {
                 log.debug("搜索结果: id={}, textLength={}, metadata={}", doc.getId(), doc.getText().length(), doc.getMetadata());
@@ -86,6 +97,7 @@ public class RagService {
                 }
             }
             List<Document> results = vectorStore.similaritySearch(builder.build());
+            incrementSearchCount();
             log.info("RAG带筛选搜索: query={}, topK={}, fileIds={}, results={}",
                     query, topK, fileIds, results.size());
             return results;
@@ -111,7 +123,13 @@ public class RagService {
             log.info("添加文档: id={}, text={}, metadata={}", doc.getId(), doc.getText(), doc.getMetadata());
         }
         try {
-            vectorStore.add(documents);
+            // embedding 服务单批上限为 10，超限需分批提交
+            int total = documents.size();
+            for (int from = 0; from < total; from += EMBEDDING_BATCH_SIZE) {
+                int to = Math.min(from + EMBEDDING_BATCH_SIZE, total);
+                vectorStore.add(documents.subList(from, to));
+                log.info("RAG文档批次已添加: {}/{}", to, total);
+            }
             log.info("RAG文档已添加成功: count={}", documents.size());
         } catch (Exception e) {
             log.error("添加RAG文档失败: count={}", documents.size(), e);
@@ -154,5 +172,17 @@ public class RagService {
             throw new IllegalArgumentException("非法的文件ID: " + fileId);
         }
         return fileId;
+    }
+
+    /**
+     * 检索成功后自增知识库检索次数计数（Redis）
+     * 计数失败不影响检索主流程，仅记录告警
+     */
+    private void incrementSearchCount() {
+        try {
+            stringRedisTemplate.opsForValue().increment(SEARCH_COUNT_REDIS_KEY);
+        } catch (Exception e) {
+            log.warn("知识库检索次数计数失败", e);
+        }
     }
 }

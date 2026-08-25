@@ -34,7 +34,12 @@ import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * 聊天服务实现
@@ -77,20 +82,39 @@ public class ChatServiceImpl implements ChatService {
     /** 新会话默认标题 */
     private static final String DEFAULT_TITLE = "新会话";
 
+    /** 文本形式工具调用标记（部分模型在无工具定义阶段会退化为此格式） */
+    private static final String TEXT_TOOL_CALL_MARKER = "<tool_call>";
+
+    /** 文本形式工具调用解析：<function=name> */
+    private static final Pattern TEXT_FUNCTION_PATTERN = Pattern.compile("<function=([\\w.-]+)\\s*>");
+
+    /** 文本形式工具调用解析：<parameter=key>value</parameter> */
+    private static final Pattern TEXT_PARAM_PATTERN = Pattern.compile("<parameter=([\\w.-]+)\\s*>\\s*([\\s\\S]*?)</parameter>");
+
+    /** 纯数字（用于 topK 等参数的字符串→数值转换） */
+    private static final Pattern NUMERIC_PATTERN = Pattern.compile("-?\\d+");
+
+    /** 文本形式工具调用的合成ID序列 */
+    private final AtomicInteger textToolCallSeq = new AtomicInteger();
+
     /** 消息类型文本 */
     private static final String MESSAGE_TYPE_TEXT = "TEXT";
 
         private static final String ADMIN_SYSTEM_PROMPT = """
             你是 HAgent 智能助手，可以使用以下工具：
-            - searchKnowledge: 搜索知识库文档（RAG 检索）
-            - queryBusinessData: 通过自然语言查询业务数据（SQL 查询）
+            - searchKnowledge: 按语义检索知识库文档的内容片段。适用于问"某主题讲了什么/要点/内容/细节"
+            - queryBusinessData: 把问题转成 SQL 统计业务数据（生成后需用户确认才执行）。适用于任何计数/统计/排名/聚合类问题
             - analyze_image: 使用多模态视觉模型识别图片并回答问题
-            请遵循以下原则：
-            1. 先理解用户想要达成什么目标
-            2. 使用合适的工具来收集信息或准备操作
-            3. 清晰简洁地向用户展示结果
-            4. 当用户询问数据分析、统计、趋势等问题时，使用 queryBusinessData 工具
-            5. 当用户提供图片或要求识别图片内容时，使用 analyze_image 工具
+
+            工具选择规则（必须严格遵守）：
+            1. 问"有多少/数量/几个/统计/排名/前N/最大/最小/平均"等计数或聚合类问题时，
+               必须使用 queryBusinessData（如"知识库有多少文件"→统计 knowledge_file 表），
+               禁止用 searchKnowledge 检索结果来猜测数量
+            2. 问某主题的内容、要点、详情时，使用 searchKnowledge
+            3. 不要用相似关键词重复调用同一工具；结果为空或不理想时，应换不同表述一次，
+               仍不行就基于已有信息如实回答并说明局限
+            4. 当用户提供图片或要求识别图片内容时，使用 analyze_image
+            5. 回答必须基于工具返回的真实数据，禁止编造数字或结论
             """;
 
         private static final String PORTAL_SYSTEM_PROMPT = """
@@ -350,6 +374,29 @@ public class ChatServiceImpl implements ChatService {
 
             // 无工具调用 = 最终回复，不加入messages，交给stream阶段生成
             if (assistantMsg.getToolCalls() == null || assistantMsg.getToolCalls().isEmpty()) {
+                // 兜底：部分模型会以 <tool_call> 文本格式输出工具调用（而非原生 tool_calls），
+                // 若不处理，这段XML会泄漏为最终回答。此处解析并按原生协议执行
+                String text = assistantMsg.getText() == null ? "" : assistantMsg.getText();
+                if (text.contains(TEXT_TOOL_CALL_MARKER) && i < MAX_TOOL_ITERATIONS - 1) {
+                    AssistantMessage.ToolCall synthetic = parseTextToolCall(text);
+                    if (synthetic != null) {
+                        log.warn("检测到文本形式工具调用，已转换执行: name={}, args={}", synthetic.name(), synthetic.arguments());
+                        // 以原生 tool_calls 结构回填消息，保证协议合法（tool 消息必须跟在带 tool_calls 的 assistant 消息之后）
+                        messages.add(AssistantMessage.builder()
+                                .content("")
+                                .toolCalls(List.of(synthetic))
+                                .build());
+                        preStreamEvents.add("{\"type\":\"tool\",\"name\":"
+                                + objectMapper.writeValueAsString(synthetic.name()) + "}");
+                        String result = executeTool(toolCallbacks, synthetic.name(), synthetic.arguments());
+                        collectPendingActionEvent(result, preStreamEvents);
+                        messages.add(ToolResponseMessage.builder()
+                                .responses(List.of(new ToolResponseMessage.ToolResponse(
+                                        synthetic.id(), synthetic.name(), truncateResult(result))))
+                                .build());
+                        continue;
+                    }
+                }
                 log.info("工具调用阶段结束，无更多工具调用，迭代次数={}", i + 1);
                 return;
             }
@@ -416,6 +463,41 @@ public class ChatServiceImpl implements ChatService {
             preStreamEvents.add(json.toString());
         } catch (Exception e) {
             log.warn("解析待确认操作事件失败，跳过确认卡片推送", e);
+        }
+    }
+
+    /**
+     * 解析文本形式的工具调用
+     * 格式：<tool_call>\n<function=name>\n<parameter=k>v</parameter>...\n</tool_call>
+     *
+     * @param text 模型输出的文本
+     * @return 合成的原生 ToolCall（ID前缀 call_text_），无法解析时返回 null
+     */
+    private AssistantMessage.ToolCall parseTextToolCall(String text) {
+        try {
+            Matcher func = TEXT_FUNCTION_PATTERN.matcher(text);
+            if (!func.find()) {
+                return null;
+            }
+            String name = func.group(1).trim();
+            Map<String, Object> args = new LinkedHashMap<>();
+            Matcher param = TEXT_PARAM_PATTERN.matcher(text);
+            while (param.find()) {
+                String key = param.group(1).trim();
+                String value = param.group(2).trim();
+                // topK 等数值参数转数字，避免 JSON Schema 校验失败
+                if (NUMERIC_PATTERN.matcher(value).matches() && key.toLowerCase().matches(".*(top_?k|limit|count|size|page).*")) {
+                    args.put(key, Long.parseLong(value));
+                } else {
+                    args.put(key, value);
+                }
+            }
+            return new AssistantMessage.ToolCall(
+                    "call_text_" + textToolCallSeq.incrementAndGet(), "function", name,
+                    objectMapper.writeValueAsString(args));
+        } catch (Exception e) {
+            log.warn("解析文本形式工具调用失败，放弃转换", e);
+            return null;
         }
     }
 
