@@ -5,6 +5,7 @@ import tools.jackson.databind.ObjectMapper;
 import com.hagent.ai.core.AiModelProvider;
 import com.hagent.ai.core.UserContextHolder;
 import com.hagent.ai.mapper.ChatMessageMapper;
+import com.hagent.ai.mcp.AnalyzeImageTool;
 import com.hagent.ai.model.dto.ChatRequest;
 import com.hagent.ai.model.entity.ChatConversation;
 import com.hagent.ai.model.entity.ChatMessage;
@@ -61,11 +62,8 @@ public class ChatServiceImpl implements ChatService {
     /** JSON序列化工具，用于SSE数据结构化编码 */
     private final ObjectMapper objectMapper;
 
-    /** 管理员工具回调（完整访问权限） */
-    private final ToolCallback[] adminToolCallbacks;
-
-    /** 门户工具回调（受限访问权限） */
-    private final ToolCallback[] portalToolCallbacks;
+    /** 统一工具回调（管理端与门户端共用同一注册集：知识库检索 + Text to SQL + 图片识别） */
+    private final ToolCallback[] unifiedToolCallbacks;
 
     /** 工具调用最大迭代次数 */
     private static final int MAX_TOOL_ITERATIONS = 5;
@@ -100,58 +98,108 @@ public class ChatServiceImpl implements ChatService {
     /** 消息类型文本 */
     private static final String MESSAGE_TYPE_TEXT = "TEXT";
 
-        private static final String ADMIN_SYSTEM_PROMPT = """
-            你是 HAgent 智能助手，可以使用以下工具：
+    /** 访客拦截提示消息（演示模式：未登录用户不消耗真实模型token） */
+    private static final String GUEST_BLOCKED_MESSAGE = "演示模式：登录后可体验真实 AI 能力";
+
+    /**
+     * 管理端系统提示词
+     * 工具说明与统一注册集一一对应：searchKnowledge / queryBusinessData / analyze_image
+     *
+     * @author H
+     */
+    private static final String ADMIN_SYSTEM_PROMPT = """
+            你是 HAgent 智能助手，可以使用以下三个工具：
             - searchKnowledge: 按语义检索知识库文档的内容片段。适用于问"某主题讲了什么/要点/内容/细节"
-            - queryBusinessData: 把问题转成 SQL 统计业务数据（生成后需用户确认才执行）。适用于任何计数/统计/排名/聚合类问题
-            - analyze_image: 使用多模态视觉模型识别图片并回答问题
+            - queryBusinessData: 把问题转成 SQL 查询业务数据（生成后需用户在确认卡片上确认才执行）。适用于任何计数/统计/排名/聚合类问题
+            - analyze_image: 使用多模态视觉模型识别图片并回答问题，图片支持本地路径、http(s) 链接或 base64
 
             工具选择规则（必须严格遵守）：
             1. 问"有多少/数量/几个/统计/排名/前N/最大/最小/平均"等计数或聚合类问题时，
                必须使用 queryBusinessData（如"知识库有多少文件"→统计 knowledge_file 表），
                禁止用 searchKnowledge 检索结果来猜测数量
             2. 问某主题的内容、要点、详情时，使用 searchKnowledge
-            3. 不要用相似关键词重复调用同一工具；结果为空或不理想时，应换不同表述一次，
+            3. 当用户提供图片或要求识别图片内容时，使用 analyze_image
+            4. 不要用相似关键词重复调用同一工具；结果为空或不理想时，应换不同表述一次，
                仍不行就基于已有信息如实回答并说明局限
-            4. 当用户提供图片或要求识别图片内容时，使用 analyze_image
             5. 回答必须基于工具返回的真实数据，禁止编造数字或结论
             """;
 
-        private static final String PORTAL_SYSTEM_PROMPT = """
+    /**
+     * 门户端系统提示词
+     * 与管理端共用同一工具注册集，仅人设定位不同：作品集网站助手
+     *
+     * @author H
+     */
+    private static final String PORTAL_SYSTEM_PROMPT = """
             你是 HAgent 智能助手，一个 Java 全栈与 AI 应用开发者（H）的作品集网站助手。
-            你可以使用知识库工具（searchKnowledge）检索网站知识库文档来回答问题。
+            你可以使用以下三个工具：
+            - searchKnowledge: 按语义检索网站知识库文档的内容片段。适用于问"某主题讲了什么/要点/内容/细节"
+            - queryBusinessData: 把问题转成 SQL 查询业务数据（生成后需用户在确认卡片上确认才执行）。适用于任何计数/统计/排名/聚合类问题
+            - analyze_image: 使用多模态视觉模型识别图片并回答问题，图片支持本地路径、http(s) 链接或 base64
+
             请遵循以下原则：
-            1. 保持友好、简洁、专业
-            2. 当问题涉及知识库内容时，先调用 searchKnowledge 工具检索再回答
-            3. 回答中文，以清晰易读的格式展示结果
-            4. 不确定的内容不要编造，明确说明
+            1. 保持友好、简洁、专业，回答中文，以清晰易读的格式展示结果
+            2. 问"有多少/数量/几个/统计/排名"等计数或聚合类问题时，使用 queryBusinessData，
+               禁止用 searchKnowledge 检索结果来猜测数量
+            3. 当问题涉及知识库内容、要点、详情时，先调用 searchKnowledge 检索再回答
+            4. 当用户提供图片或要求识别图片内容时，使用 analyze_image
+            5. 不确定的内容不要编造，明确说明；回答必须基于工具返回的真实数据
             """;
 
+    /**
+     * 构造方法：注入聊天依赖并统一注册工具回调
+     * 管理端与门户端共用同一工具集（知识库检索 + Text to SQL + 图片识别），仅系统提示词不同
+     *
+     * @param aiModelProvider    AI模型提供者
+     * @param conversationService 会话服务
+     * @param chatMessageMapper  聊天消息Mapper
+     * @param chatClient         ChatClient（可空，当前未使用）
+     * @param objectMapper       JSON序列化工具
+     * @param knowledgeTool      知识库检索工具
+     * @param textToSqlTool      Text to SQL 工具
+     * @param analyzeImageTool   图片识别工具
+     * @author H
+     */
     public ChatServiceImpl(AiModelProvider aiModelProvider,
                            ConversationService conversationService,
                            ChatMessageMapper chatMessageMapper,
                            @Nullable org.springframework.ai.chat.client.ChatClient chatClient,
                            ObjectMapper objectMapper,
                            @Lazy KnowledgeTool knowledgeTool,
-                           @Lazy TextToSqlTool textToSqlTool) {
+                           @Lazy TextToSqlTool textToSqlTool,
+                           @Lazy AnalyzeImageTool analyzeImageTool) {
         this.aiModelProvider = aiModelProvider;
         this.conversationService = conversationService;
         this.chatMessageMapper = chatMessageMapper;
         this.objectMapper = objectMapper;
-        // 管理员工具：知识库 + Text to SQL
-        this.adminToolCallbacks = ToolCallbacks.from(knowledgeTool, textToSqlTool);
-        // 门户工具：知识库检索
-        this.portalToolCallbacks = ToolCallbacks.from(knowledgeTool);
+        // 统一工具集：知识库检索 + Text to SQL + 图片识别（管理端与门户端共用）
+        this.unifiedToolCallbacks = ToolCallbacks.from(knowledgeTool, textToSqlTool, analyzeImageTool);
     }
 
+    /**
+     * 管理端聊天：使用统一工具集与管理端系统提示词
+     *
+     * @param userId  用户ID
+     * @param request 聊天请求
+     * @return SSE流式响应
+     * @author H
+     */
     @Override
     public Flux<String> chatAdmin(Long userId, ChatRequest request) {
-        return doChat(userId, request, adminToolCallbacks, ADMIN_SYSTEM_PROMPT);
+        return doChat(userId, request, unifiedToolCallbacks, ADMIN_SYSTEM_PROMPT);
     }
 
+    /**
+     * 门户端聊天：使用统一工具集与门户端系统提示词
+     *
+     * @param userId  用户ID（为空时访客请求被拦截）
+     * @param request 聊天请求
+     * @return SSE流式响应
+     * @author H
+     */
     @Override
     public Flux<String> chatPortal(Long userId, ChatRequest request) {
-        return doChat(userId, request, portalToolCallbacks, PORTAL_SYSTEM_PROMPT);
+        return doChat(userId, request, unifiedToolCallbacks, PORTAL_SYSTEM_PROMPT);
     }
 
     /**
@@ -172,9 +220,9 @@ public class ChatServiceImpl implements ChatService {
         Long conversationId = request.getConversationId();
         ChatConversation conversation;
         if (userId == null) {
-            // 访客模式：忽略传入conversationId，消息仅保留在前端内存，不创建会话
-            conversation = null;
-            conversationId = null;
+            // 访客拦截：演示模式下不进入真实模型工具循环，直接返回提示并结束流，避免浪费token
+            log.info("访客请求已拦截，演示模式返回固定提示: scene={}", request.getScene());
+            return Flux.just(wrapError(GUEST_BLOCKED_MESSAGE), "[DONE]");
         } else if (conversationId == null) {
             ConversationVO conv = conversationService.createConversation(userId, request.getScene());
             conversationId = conv.getId();
