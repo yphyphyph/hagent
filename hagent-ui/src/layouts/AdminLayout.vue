@@ -12,7 +12,7 @@
         @expand="collapsed = false"
       >
         <div class="admin-side">
-          <router-link to="/admin/chat" class="admin-logo">
+          <router-link to="/admin/tools" class="admin-logo">
             <span class="admin-logo__mark">H</span>
             <span v-if="!collapsed" class="admin-logo__text">HAgent 控制台</span>
           </router-link>
@@ -50,7 +50,6 @@ import { computed, h, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { NIcon, NMenu, NLayout, NLayoutSider, NLayoutHeader, NLayoutContent, NButton, type MenuOption } from 'naive-ui'
 import {
-  MessageOutlined,
   ToolOutlined,
   DatabaseOutlined,
   SettingOutlined,
@@ -67,7 +66,6 @@ function renderIcon(icon: ReturnType<typeof h>) {
 }
 
 const menuOptions: MenuOption[] = [
-  { label: 'AI 对话', key: '/admin/chat', icon: renderIcon(h(MessageOutlined)) },
   { label: 'AI 工具', key: '/admin/tools', icon: renderIcon(h(ToolOutlined)) },
   { label: '知识库', key: '/admin/knowledge', icon: renderIcon(h(DatabaseOutlined)) },
   { label: '设置', key: '/admin/settings', icon: renderIcon(h(SettingOutlined)) },

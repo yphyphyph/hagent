@@ -125,7 +125,7 @@ async function onSubmit() {
   try {
     const data = await authApi.login(model.value.username, model.value.password)
     message.success(`欢迎回来，${data.username}`)
-    const redirect = (route.query.redirect as string) || '/admin/chat'
+    const redirect = (route.query.redirect as string) || '/admin/tools'
     router.push(redirect)
   } catch {
     // 错误提示由 request 拦截器统一处理

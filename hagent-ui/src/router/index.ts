@@ -6,7 +6,7 @@ import { isLoggedIn } from '@/utils/auth'
 /**
  * HAgent 路由：
  * - `/` 公开门户：对话即产品，访客免登录直接聊（临时会话）
- * - `/admin/*` 管理后台：AI 对话（全功能）/ AI 工具 / 知识库 / 设置
+ * - `/admin/*` 管理后台：AI 工具 / 知识库 / 设置（旧对话入口已下线，重定向到门户首页）
  */
 const routes: RouteRecordRaw[] = [
   {
@@ -26,9 +26,10 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/admin',
     component: () => import('@/layouts/AdminLayout.vue'),
-    redirect: '/admin/chat',
+    redirect: '/admin/tools',
     children: [
-      { path: 'chat', name: 'AdminAiChat', component: () => import('@/views/admin/AiChatView.vue'), meta: { title: 'AI 对话' } },
+      /* 旧入口兜底：管理端 AI 对话已并入门户首页，老链接重定向避免 404 */
+      { path: 'chat', redirect: { path: '/' } },
       { path: 'tools', name: 'AdminAiTools', component: () => import('@/views/admin/AiToolsView.vue'), meta: { title: 'AI 工具' } },
       { path: 'tools/execute/:key', name: 'AdminAiToolExecute', component: () => import('@/views/admin/AiToolExecuteView.vue'), meta: { title: '工具执行' } },
       { path: 'knowledge', name: 'AdminKnowledge', component: () => import('@/views/admin/KnowledgeView.vue'), meta: { title: '知识库' } },
@@ -38,7 +39,7 @@ const routes: RouteRecordRaw[] = [
   { path: '/:pathMatch(.*)*', redirect: '/' },
 ]
 
-const ADMIN_HOME = '/admin/chat'
+const ADMIN_HOME = '/admin/tools'
 
 const router = createRouter({
   history: createWebHistory(),

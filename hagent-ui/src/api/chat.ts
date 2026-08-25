@@ -157,8 +157,6 @@ export function streamChat(
   return controller
 }
 
-/** 管理端全功能对话端点 */
-export const ADMIN_CHAT_ENDPOINT = '/api/admin/ai/chat'
 /** 门户端对话端点（访客可匿名） */
 export const PORTAL_CHAT_ENDPOINT = '/api/admin/ai/portal/chat'
 
