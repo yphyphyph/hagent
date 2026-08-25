@@ -41,6 +41,9 @@ Thumbs.db
 *.local
 # 本地开发配置（含远程 Redis/OSS/数据库凭据，不提交 Git）
 hagent-back/hagent-server/src/main/resources/application-dev.yml
+# 本地私密配置覆盖文件（真实凭据，不提交 Git）
+application-local.yml
+.env
 
 # ==================== Docker ====================
 docker-compose.override.yml
