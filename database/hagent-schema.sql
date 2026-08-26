@@ -88,6 +88,7 @@ CREATE TABLE `chat_message`  (
   `message_type` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL DEFAULT 'text' COMMENT '消息类型(text/image/tool)',
   `tool_name` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL DEFAULT NULL COMMENT '工具名称',
   `tool_payload` json NULL COMMENT '工具调用参数(JSON)',
+  `thinking_content` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL COMMENT '思考过程内容(reasoning/thinking，仅助手消息)',
   `token_count` int NOT NULL DEFAULT 0 COMMENT 'Token数量',
   `status` int NOT NULL DEFAULT 1 COMMENT '状态(1=正常 0=已撤回)',
   `error_message` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL DEFAULT NULL COMMENT '错误信息',

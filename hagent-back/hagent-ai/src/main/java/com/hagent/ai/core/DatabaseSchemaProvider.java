@@ -9,6 +9,7 @@ import jakarta.annotation.PostConstruct;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 /**
@@ -28,8 +29,20 @@ public class DatabaseSchemaProvider {
             "chat_conversation", "chat_message", "knowledge_file", "ai_prompt", "visit_stat"
     );
 
-    /** 表结构缓存 */
-    private String schemaDescription;
+    /** 表结构缓存（兼容旧字段，实际以内存缓存为准） */
+    private volatile String schemaDescription;
+
+    /** 内存缓存：基于 ConcurrentHashMap 的 Schema 缓存 */
+    private final ConcurrentHashMap<String, String> schemaCache = new ConcurrentHashMap<>();
+
+    /** 缓存 Key */
+    private static final String CACHE_KEY = "schemaDescription";
+
+    /** 缓存 TTL：5 分钟（毫秒） */
+    private static final long CACHE_TTL_MILLIS = 5 * 60 * 1000L;
+
+    /** 最后更新时间戳（毫秒），volatile 保证可见性 */
+    private volatile long lastUpdateTimestamp = 0L;
 
     public DatabaseSchemaProvider(JdbcTemplate jdbcTemplate) {
         this.jdbcTemplate = jdbcTemplate;
@@ -42,23 +55,87 @@ public class DatabaseSchemaProvider {
 
     /**
      * 刷新 Schema 缓存
+     * 主动刷新时同步更新 ConcurrentHashMap 缓存与时间戳
      */
     public void refreshSchema() {
         try {
             List<TableInfo> tables = loadTableInfos();
-            this.schemaDescription = buildSchemaDescription(tables);
-            log.info("数据库Schema已加载，表数量: {}", tables.size());
+            String description = buildSchemaDescription(tables);
+            this.schemaDescription = description;
+            // 更新内存缓存与时间戳
+            schemaCache.put(CACHE_KEY, description);
+            lastUpdateTimestamp = System.currentTimeMillis();
+            log.info("数据库Schema已加载，表数量: {}，缓存已刷新，TTL={}ms", tables.size(), CACHE_TTL_MILLIS);
         } catch (Exception e) {
             log.error("加载数据库Schema失败", e);
             this.schemaDescription = "Schema加载失败";
+            // 失败时也写入缓存，避免频繁重试穿透数据库；设置时间戳以便 TTL 后重试
+            schemaCache.put(CACHE_KEY, this.schemaDescription);
+            lastUpdateTimestamp = System.currentTimeMillis();
         }
     }
 
     /**
-     * 获取 Schema 描述文本
+     * 获取 Schema 描述文本（带 5 分钟 TTL 内存缓存）
+     * <p>
+     * 缓存命中时直接返回内存数据，不查询 information_schema；
+     * 缓存未命中或过期时同步刷新并返回最新数据。
+     * </p>
+     *
+     * @return Schema 描述字符串
      */
     public String getSchemaDescription() {
-        return schemaDescription;
+        long now = System.currentTimeMillis();
+        String cached = schemaCache.get(CACHE_KEY);
+        // 缓存命中且未过期：直接返回
+        if (cached != null && (now - lastUpdateTimestamp) < CACHE_TTL_MILLIS) {
+            long remaining = CACHE_TTL_MILLIS - (now - lastUpdateTimestamp);
+            log.info("Schema 缓存命中，直接返回缓存数据，剩余 TTL: {}ms", remaining);
+            log.debug("Schema cache hit, remaining TTL={}ms", remaining);
+            return cached;
+        }
+
+        // 缓存未命中或已过期
+        if (cached == null) {
+            log.info("Schema 缓存未命中（首次加载或已被清除），准备查询 information_schema");
+        } else {
+            log.info("Schema 缓存已过期（距上次更新 {}ms，TTL={}ms），重新加载", now - lastUpdateTimestamp, CACHE_TTL_MILLIS);
+        }
+        log.debug("Schema cache miss, querying information_schema");
+
+        // 同步刷新，避免并发下多次查询 information_schema
+        synchronized (this) {
+            // 双重检查：进入同步块后再次判断，避免并发重复刷新
+            long nowInner = System.currentTimeMillis();
+            String cachedInner = schemaCache.get(CACHE_KEY);
+            if (cachedInner != null && (nowInner - lastUpdateTimestamp) < CACHE_TTL_MILLIS) {
+                long remainingInner = CACHE_TTL_MILLIS - (nowInner - lastUpdateTimestamp);
+                log.info("Schema 缓存命中（同步块内双重检查），剩余 TTL: {}ms", remainingInner);
+                return cachedInner;
+            }
+            // 确实需要刷新
+            refreshSchema();
+            String result = schemaCache.get(CACHE_KEY);
+            // 兜底：若缓存仍为空则返回旧字段
+            return result != null ? result : schemaDescription;
+        }
+    }
+
+    /**
+     * 清除 Schema 缓存（用于测试或管理接口手动失效）
+     */
+    public void clearCache() {
+        schemaCache.remove(CACHE_KEY);
+        lastUpdateTimestamp = 0L;
+        log.info("Schema 缓存已手动清除");
+    }
+
+    /**
+     * 判断缓存是否过期（供外部监控或扩展使用）
+     */
+    public boolean isCacheExpired() {
+        return schemaCache.get(CACHE_KEY) == null
+                || (System.currentTimeMillis() - lastUpdateTimestamp) >= CACHE_TTL_MILLIS;
     }
 
     /**

@@ -198,6 +198,8 @@ public class ConversationServiceImpl extends ServiceImpl<ChatConversationMapper,
         vo.setMessageType(entity.getMessageType());
         vo.setToolName(entity.getToolName());
         vo.setToolPayload(entity.getToolPayload());
+        // 历史思考内容回显
+        vo.setThinkingContent(entity.getThinkingContent());
         vo.setTokenCount(entity.getTokenCount());
         vo.setStatus(entity.getStatus());
         vo.setErrorMessage(entity.getErrorMessage());

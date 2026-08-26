@@ -49,12 +49,29 @@
           </template>
 
           <!-- AI 回复：去气泡全宽排版 -->
-          <div v-else-if="m.role === 'ai' && (m.content || m.tools?.length)" class="ai-msg">
-            <!-- 工具徽章行 -->
+          <div v-else-if="m.role === 'ai' && (m.content || m.tools?.length || m.thinkingContent)" class="ai-msg">
+            <!-- 工具徽章行：去重后展示，同名工具合并为一次并追加 xN 计数 -->
             <div v-if="m.tools?.length" class="tool-row">
-              <span v-for="(t, i) in m.tools" :key="i" class="tool-chip">
-                <span class="tool-chip__dot"></span>{{ toolLabel(t) }}
+              <span v-for="badge in dedupedTools(m.tools)" :key="badge.name" class="tool-chip">
+                <span class="tool-chip__dot"></span>{{ badge.label }}{{ badge.count > 1 ? ` x${badge.count}` : '' }}
               </span>
+            </div>
+
+            <!-- 思考过程折叠块（默认展开，点击收起，markdown 渲染，增量更新时自动贴底） -->
+            <!-- 修复：外层 v-if 确保首个 thinking chunk 立即挂载；内层改用 v-if 而非 v-show，避免 v-show 初始 display:none 导致增量不可见与批量渲染延迟 -->
+            <div v-if="m.thinkingContent" class="thinking-block">
+              <button class="thinking-block__header" type="button" @click="toggleThinking(m)">
+                <span class="thinking-block__icon" :class="{ 'is-expanded': isExpanded(m) }">▸</span>
+                <span class="thinking-block__title">思考过程</span>
+                <span class="thinking-block__hint">{{ isExpanded(m) ? '收起' : '展开' }}</span>
+              </button>
+              <div
+                v-if="isExpanded(m)"
+                ref="thinkingBodyRefs"
+                class="thinking-block__body md-body"
+                v-html="renderMarkdown(m.thinkingContent)"
+                @click="onContentClick($event)"
+              ></div>
             </div>
 
             <!-- 正文 -->
@@ -64,7 +81,10 @@
               @click="onContentClick($event)"
             ></div>
 
-
+            <!-- 回答耗时统计（仅展示：毫秒转秒，保留1位小数） -->
+            <div v-if="m.elapsedMs !== undefined" class="ai-meta">
+              <span>回答耗时 {{ (m.elapsedMs / 1000).toFixed(1) }} 秒</span>
+            </div>
           </div>
         </div>
 
@@ -81,7 +101,7 @@
 </template>
 
 <script setup lang="ts">
-import { nextTick, onMounted, ref, watch } from 'vue'
+import { nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { renderMarkdown } from '@/utils/markdown'
 import type { UiChatMessage } from '@/composables/useChat'
 
@@ -125,6 +145,35 @@ function autoResize(e: Event) {
   el.style.height = `${Math.min(el.scrollHeight, 160)}px`
 }
 
+/* ---------- 思考过程折叠状态（默认展开） ---------- */
+// 以消息 id 为 key 的展开映射；优先使用消息自身的 thinkingExpanded 字段，兼容本地状态
+const expandedMap = reactive<Record<string, boolean>>({})
+// 思考块内容容器引用（用于增量滚动）
+const thinkingBodyRefs = ref<HTMLElement[]>([])
+
+/** 判断是否被屏蔽的阶段关键词（与 useChat 保持一致，前端不展示生成/执行查询） */
+const BLOCKED_STAGE_KEYWORDS = ['生成查询', '执行查询']
+function isBlockedStage(text: string): boolean {
+  return BLOCKED_STAGE_KEYWORDS.some((k) => text.includes(k))
+}
+
+function isExpanded(m: UiChatMessage): boolean {
+  const key = String(m.id)
+  // 若消息自带 thinkingExpanded 则以其为准，否则查本地 map；默认展开
+  if (typeof m.thinkingExpanded === 'boolean') return m.thinkingExpanded
+  if (key in expandedMap) return !!expandedMap[key]
+  return true
+}
+
+function toggleThinking(m: UiChatMessage): void {
+  const key = String(m.id)
+  // 同步写回消息对象与本地映射，保持响应式
+  const next = !isExpanded(m)
+  // 优先写回消息字段（useChat 提供的可变对象）
+  ;(m as UiChatMessage).thinkingExpanded = next
+  expandedMap[key] = next
+}
+
 /* ---------- 工具徽章文案映射 ---------- */
 const TOOL_LABELS: Record<string, string> = {
   searchKnowledge: '检索知识库',
@@ -133,6 +182,26 @@ const TOOL_LABELS: Record<string, string> = {
 }
 function toolLabel(name: string): string {
   return TOOL_LABELS[name] ?? name
+}
+
+// 去重并计数：按首次出现顺序合并同名工具，返回用于徽章渲染的列表
+function dedupedTools(tools?: string[]): Array<{ name: string; count: number; label: string }> {
+  if (!tools?.length) return []
+  const counter = new Map<string, number>()
+  const order: string[] = []
+  for (const t of tools) {
+    if (!counter.has(t)) {
+      counter.set(t, 1)
+      order.push(t)
+    } else {
+      counter.set(t, (counter.get(t) ?? 0) + 1)
+    }
+  }
+  return order.map((name) => ({
+    name,
+    count: counter.get(name) ?? 1,
+    label: toolLabel(name),
+  }))
 }
 
 /* ---------- 代码块复制（事件委托） ---------- */
@@ -175,9 +244,51 @@ function scrollToBottom(force = false) {
 }
 
 watch(
-  // 消息条数或任一消息内容变化时尝试贴底（用户上滚时由 stickToBottom 暂停）
-  () => [props.messages.length, props.messages.map((m) => m.content.length).join(','), props.thinking],
-  () => scrollToBottom()
+  // 消息条数或任一消息内容/思考内容变化时尝试贴底（用户上滚时由 stickToBottom 暂停）
+  () => [
+    props.messages.length,
+    props.messages.map((m) => `${m.content.length}:${(m.thinkingContent ?? '').length}:${m.thinkingExpanded ? 1 : 0}`).join(','),
+    props.thinking,
+  ],
+  () => scrollToBottom(),
+  // 使用 flush:'post' 确保 DOM 更新后立即滚动，immediate 保证首片思考到达时即触发贴底
+  { flush: 'post', immediate: true }
+)
+
+// 思考内容增量监听：v-if 块展开时自动滚动思考容器到底部，确保增量逐片可见
+// 关键修复：设置 flush:'post' + immediate:true，避免 Vue 将多片 thinking chunk 合并为一次 nextTick 才滚动
+watch(
+  () => props.messages.map((m) => m.thinkingContent ?? '').join('|'),
+  () => {
+    // 仅当存在展开的思考块时滚动
+    const hasExpandedThinking = props.messages.some((m) => !!m.thinkingContent && isExpanded(m))
+    if (!hasExpandedThinking) return
+    nextTick(() => {
+      // 滚动思考内容容器到底部（逐片增量均触发）
+      for (const el of thinkingBodyRefs.value) {
+        if (el) el.scrollTop = el.scrollHeight
+      }
+      // 同时保持整体消息列表贴底
+      scrollToBottom()
+    })
+  },
+  { flush: 'post', immediate: true }
+)
+
+// 额外监听：thinking 长度细粒度变化（避免 join 字符串批量合并，强制每片都触发滚动）
+watch(
+  () => props.messages.map((m) => (m.thinkingContent ?? '').length).join(','),
+  () => {
+    const hasExpandedThinking = props.messages.some((m) => !!m.thinkingContent && isExpanded(m))
+    if (!hasExpandedThinking) return
+    nextTick(() => {
+      for (const el of thinkingBodyRefs.value) {
+        if (el) el.scrollTop = el.scrollHeight
+      }
+      scrollToBottom()
+    })
+  },
+  { flush: 'post', immediate: true }
 )
 
 onMounted(() => scrollToBottom(true))
@@ -351,6 +462,30 @@ defineExpose({ scrollToBottom })
   font-size: var(--text-base);
 }
 
+/* 回答耗时统计（底部小字，弱化展示） */
+.ai-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: var(--space-3);
+  padding-left: 2px;
+  font-size: var(--text-xs);
+  color: var(--text-3);
+  opacity: 0.75;
+  user-select: none;
+}
+.ai-meta::before {
+  content: '';
+  width: 1px;
+  height: 10px;
+  border-radius: 1px;
+  background: var(--border);
+}
+.ai-meta span {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+
 /* 工具徽章行 */
 .tool-row {
   display: flex;
@@ -375,6 +510,71 @@ defineExpose({ scrollToBottom })
   height: 6px;
   border-radius: 50%;
   background: var(--accent);
+}
+
+/* ---------- 思考过程折叠块 ---------- */
+.thinking-block {
+  margin-bottom: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-elevated, var(--bg-soft, #f8fafc));
+  overflow: hidden;
+}
+.thinking-block__header {
+  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: none;
+  background: transparent;
+  color: var(--text-2);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  text-align: left;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.thinking-block__header:hover {
+  background: var(--accent-soft, rgba(0, 0, 0, 0.04));
+  color: var(--text-1);
+}
+.thinking-block__icon {
+  display: inline-block;
+  font-size: 12px;
+  line-height: 1;
+  transition: transform 0.18s var(--ease);
+}
+.thinking-block__icon.is-expanded {
+  transform: rotate(90deg);
+}
+.thinking-block__title {
+  flex-shrink: 0;
+}
+.thinking-block__hint {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-3);
+  font-weight: 400;
+}
+.thinking-block__body {
+  padding: 10px 14px 14px;
+  border-top: 1px dashed var(--border);
+  color: var(--text-2);
+  font-size: var(--text-sm);
+  line-height: 1.7;
+  background: var(--bg, #fff);
+  max-height: 320px;
+  overflow-y: auto;
+  white-space: normal;
+  word-break: break-word;
+}
+[data-theme='dark'] .thinking-block {
+  background: rgba(255, 255, 255, 0.04);
+}
+[data-theme='dark'] .thinking-block__body {
+  background: rgba(255, 255, 255, 0.02);
 }
 
 /* ---------- 思考中 ---------- */

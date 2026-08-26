@@ -14,6 +14,8 @@ export interface ChatMessageItem {
   content: string
   createdAt?: string
   toolName?: string
+  /** 思考过程内容（历史消息回显） */
+  thinkingContent?: string
 }
 
 /** SSE 流式事件处理器集合 */
@@ -22,6 +24,10 @@ export interface StreamEventHandlers {
   onMeta?: (conversationId: string) => void
   /** 文本 token 追加 */
   onToken: (text: string) => void
+  /** 思考过程 token 追加（type:thinking） */
+  onThinking?: (text: string) => void
+  /** 阶段进度提示（type:stage），如“正在生成查询...” */
+  onStage?: (text: string) => void
   /** 工具调用事件（阶段1每执行一个工具触发一次） */
   onTool?: (name: string) => void
   onError?: (msg: string) => void
@@ -34,6 +40,8 @@ export interface StreamEventHandlers {
  * 后端事件协议：
  * - {"type":"meta","conversationId":"123"|"guest"}
  * - {"type":"token","content":"..."}
+ * - {"type":"thinking","content":"..."}
+ * - {"type":"stage","content":"正在生成查询..."}
  * - {"type":"tool","name":"searchKnowledge"}
  * - {"type":"error","message":"..."}
  * - [FINAL] / [DONE] 结束标记
@@ -79,14 +87,28 @@ export function streamChat(
       let buffer = ''
 
       // 解析 SSE 文本流（事件以 \n\n 分隔）
+      // 关键修复：使用 TextDecoder(stream:true) 逐块增量解码，避免缓冲；每读到一个 chunk 立即 processChunk，不等待后续数据
       const processChunk = (chunk: string) => {
         buffer += chunk
         const parts = buffer.split('\n\n')
         buffer = parts.pop() ?? ''
         for (const part of parts) {
-          const line = part.trim()
-          if (!line.startsWith('data:')) continue
-          const payload = line.slice(5).trim()
+          // 兼容多行 data: 拼接（SSE 规范）
+          const lines = part.split('\n')
+          let payload = ''
+          for (const l of lines) {
+            const trimmed = l.trim()
+            if (trimmed.startsWith('data:')) {
+              // 多行 data 需用 \n 拼接后再整体解析
+              payload += (payload ? '\n' : '') + trimmed.slice(5).trim()
+            }
+          }
+          // 若无 data: 前缀，尝试直接取 payload（容错）
+          if (!payload) {
+            const line = part.trim()
+            if (!line.startsWith('data:')) continue
+            payload = line.slice(5).trim()
+          }
           if (!payload) continue
           if (payload === '[DONE]' || payload === '[FINAL]') {
             h.onDone?.()
@@ -104,12 +126,31 @@ export function streamChat(
               case 'tool':
                 h.onTool?.(String(obj.name ?? ''))
                 break
+              case 'thinking':
+                // 思考过程流（reasoning/thinking 模型增量）—— 立即回调，不做任何缓冲或防抖
+                if (obj.content) h.onThinking?.(String(obj.content))
+                break
+              case 'stage': {
+                // 阶段进度提示（与 onThinking 同级，轻量文本展示）
+                // 前端仅展示 3 个允许阶段，屏蔽“生成查询/执行查询”由上层 useChat 统一过滤，此处透传
+                const stageText =
+                  (obj.content as string) ??
+                  (obj.text as string) ??
+                  (obj.message as string) ??
+                  ''
+                if (stageText) h.onStage?.(String(stageText))
+                break
+              }
               case 'token':
+                // token 增量立即透传，避免批量
                 if (obj.content) h.onToken(String(obj.content))
+                break
+              default:
+                // 未知 type 静默忽略
                 break
             }
           } catch {
-            // 非 JSON 即纯文本块（兼容旧协议）
+            // 非 JSON 即纯文本块（兼容旧协议）—— 也立即透传
             h.onToken(payload)
           }
         }
@@ -118,10 +159,14 @@ export function streamChat(
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
+        // 关键：stream:true 保证跨 chunk 的 UTF-8 字符不被截断，且每片立即处理，不做额外缓冲
         processChunk(decoder.decode(value, { stream: true }))
       }
-      // 处理残留 buffer
-      if (buffer.trim()) processChunk('')
+      // 处理残留 buffer（流结束时若无尾随 \n\n，也立即 flush 最后事件）
+      if (buffer.trim()) {
+        // 补一个分隔符强制触发最后一段解析
+        processChunk('\n\n')
+      }
     })
     .catch((err: unknown) => {
       if (!(err instanceof Error && err.name === 'AbortError')) {

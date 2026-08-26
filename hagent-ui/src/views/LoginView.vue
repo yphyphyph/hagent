@@ -1,5 +1,14 @@
 <template>
   <div class="login-page">
+    <router-link to="/" class="login-return" aria-label="返回前台">
+      <n-button quaternary size="small">
+        <template #icon>
+          <n-icon :component="ArrowLeftOutlined" />
+        </template>
+        返回前台
+      </n-button>
+    </router-link>
+
     <div class="login-page__glow" aria-hidden="true"></div>
     <div class="login-page__grid" aria-hidden="true"></div>
 
@@ -92,7 +101,7 @@ import {
   type FormInst,
   type FormRules,
 } from 'naive-ui'
-import { UserOutlined, LockOutlined } from '@vicons/antd'
+import { UserOutlined, LockOutlined, ArrowLeftOutlined } from '@vicons/antd'
 import { authApi } from '@/api/auth'
 
 const route = useRoute()
@@ -144,6 +153,22 @@ async function onSubmit() {
   justify-content: center;
   padding: var(--space-5);
   overflow: hidden;
+}
+.login-return {
+  position: absolute;
+  top: var(--space-5);
+  left: var(--space-5);
+  z-index: 2;
+  text-decoration: none;
+}
+.login-return :deep(.n-button) {
+  color: var(--text-2);
+}
+.login-return :deep(.n-button:hover) {
+  color: var(--text-1);
+}
+.login-return :deep(.n-button .n-button__content) {
+  font-size: var(--text-sm);
 }
 .login-page__glow {
   position: absolute;

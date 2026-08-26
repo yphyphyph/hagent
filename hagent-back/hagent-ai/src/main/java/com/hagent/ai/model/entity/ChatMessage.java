@@ -39,6 +39,10 @@ public class ChatMessage implements Serializable {
     /** 工具调用载荷JSON */
     private String toolPayload;
 
+    /** 思考过程内容（reasoning/thinking，仅助手消息） */
+    @TableField("thinking_content")
+    private String thinkingContent;
+
     /** 消息Token数量 */
     private Integer tokenCount;
 

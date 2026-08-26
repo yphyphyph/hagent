@@ -44,6 +44,10 @@ public class ChatMessageVO {
     @Schema(description = "工具调用载荷")
     private String toolPayload;
 
+    /** 思考过程内容（reasoning/thinking，仅助手消息历史回显） */
+    @Schema(description = "思考过程内容")
+    private String thinkingContent;
+
     /** Token数量 */
     @Schema(description = "Token数量")
     private Integer tokenCount;

@@ -9,6 +9,7 @@ import com.hagent.ai.service.PendingActionService;
 import com.hagent.ai.service.TextToSqlService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import tools.jackson.core.JacksonException;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
@@ -19,7 +20,10 @@ import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Sinks;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -51,6 +55,12 @@ public class TextToSqlServiceImpl implements TextToSqlService {
 
     /** 操作类型：知识库/数据类操作 */
     private static final int ACTION_TYPE_KNOWLEDGE = 3;
+
+    /** 思考内容分片大小（用于非流式场景的模拟流式分片，保持与 ChatServiceImpl 一致） */
+    private static final int THINKING_CHUNK_SIZE = 30;
+
+    /** 思考分片间的发射间隔，确保前端收到 thinking 事件在时间上分散而非一次性爆发 */
+    private static final Duration THINKING_DELAY = Duration.ofMillis(30);
 
     /**
      * 系统提示词模板：允许 SELECT/INSERT/UPDATE/DELETE，受控生成单条语句
@@ -150,7 +160,12 @@ public class TextToSqlServiceImpl implements TextToSqlService {
     }
 
     /**
-     * 调用 AI 生成 SQL
+     * 降级兜底：当主 LLM 生成的 SQL 校验失败时可回退调用此方法重新生成。
+     * <p>
+     * 主路径（{@link com.hagent.ai.tool.TextToSqlTool#queryBusinessData(String)} executor）不再经过此方法，
+     * 直接接收主 LLM 生成的 SQL，仅经 {@link SqlSecurityValidator} 双通道校验后执行；
+     * 本方法仅作为校验失败时的可选降级路径保留，确保双通道校验仍为唯一放行口。
+     * </p>
      *
      * @param question 自然语言问题
      * @return 生成的 SQL 或错误信息
@@ -165,7 +180,17 @@ public class TextToSqlServiceImpl implements TextToSqlService {
 
         try {
             ChatModel chatModel = aiModelProvider.getChatModel();
+            // 尝试真流式获取 thinking：优先使用 chatModel.stream() 增量获取 thinking delta 并立即发射
+            // 若 streaming API 可用，thinking 将在流式回调中通过 extractThinking 提取并以 THINKING_DELAY 分散发射
+            // 此处 generateSql 为同步工具调用，保持 call() 返回 SQL，同时记录 thinking 供后续流式包装使用
             ChatResponse response = chatModel.call(new Prompt(messages));
+            // 提取思考内容（兼容 reasoning_content / thinking 等键），若存在则可通过 thinkingFluxWithDelay 延迟分散发射
+            String thinking = extractThinking(response);
+            if (thinking != null && !thinking.isEmpty()) {
+                // thinking 采用 30 字符分片 + 30ms 间隔的模拟流式，确保前端时间分散；真流式场景由 streamGenerateSql 透传 delta
+                log.debug("TextToSql 捕获思考内容: length={}, 将通过延迟分片模拟流式 (chunk={}, delay={})", thinking.length(), THINKING_CHUNK_SIZE, THINKING_DELAY);
+                // 注意：同步的 generateSql 不直接发射 SSE，若上层需要流式展示，可调用 streamGenerateSqlThinking(question) 获取 Flux<thinking>
+            }
             AssistantMessage assistantMessage = response.getResult().getOutput();
             String sql = assistantMessage.getText().trim();
 
@@ -176,6 +201,121 @@ public class TextToSqlServiceImpl implements TextToSqlService {
         } catch (Exception e) {
             log.error("AI生成SQL失败", e);
             return "ERROR: AI服务异常，请稍后重试";
+        }
+    }
+
+    /**
+     * 真流式生成 SQL 的思考流（供上层 Flux 包装使用）
+     * <p>
+     * 优先使用 chatModel.stream() 获取增量 thinking delta 并通过 wrapThinking 立即发射；
+     * 若 streaming API 不可用或模型未返回增量 thinking，则回退为 30 字符分片 + 30ms 延迟发射的模拟流式，
+     * 确保前端收到的 thinking 事件在时间上分散，而非一次性批量到达。
+     * </p>
+     *
+     * @param question 自然语言问题
+     * @return thinking 事件的 Flux 流，每项为 {"type":"thinking","content":"..."} JSON 字符串
+     * @author H
+     */
+    public Flux<String> streamGenerateSqlThinking(String question) {
+        String schemaDescription = schemaProvider.getSchemaDescription();
+        String systemPrompt = String.format(SYSTEM_PROMPT_TEMPLATE, schemaDescription);
+        List<Message> messages = new ArrayList<>();
+        messages.add(new SystemMessage(systemPrompt));
+        messages.add(new UserMessage(question));
+        ChatModel chatModel = aiModelProvider.getChatModel();
+        // 优先尝试真流式：订阅 chatModel.stream() 的每个 ChatResponse 增量，提取 thinking delta 立即发射
+        try {
+            Flux<ChatResponse> stream = chatModel.stream(new Prompt(messages));
+            // 使用 Sinks.Many 承接增量 thinking，确保每个 delta 立即经 wrapThinking 发射
+            Sinks.Many<String> sink = Sinks.many().unicast().onBackpressureBuffer();
+            stream.subscribe(
+                    response -> {
+                        String delta = extractThinking(response);
+                        if (delta != null && !delta.isEmpty()) {
+                            if (delta.length() > 50) {
+                                // 大块增量按 30 字符切分并以 THINKING_DELAY 延迟分散发射，避免前端爆发
+                                List<String> pieces = splitThinking(delta, THINKING_CHUNK_SIZE);
+                                Flux.fromIterable(pieces)
+                                        .delayElements(THINKING_DELAY)
+                                        .subscribe(piece -> sink.tryEmitNext(wrapThinking(piece)));
+                            } else {
+                                // 小增量真流式立即发射
+                                sink.tryEmitNext(wrapThinking(delta));
+                            }
+                        }
+                    },
+                    err -> {
+                        log.warn("TextToSql 流式 thinking 获取异常，回退为批量分片延迟发射", err);
+                        // 异常回退：尝试 call() 获取完整 thinking 再分片延迟发射
+                        fallbackThinkingFlux(question, sink);
+                    },
+                    () -> sink.tryEmitComplete()
+            );
+            return sink.asFlux();
+        } catch (Exception e) {
+            log.warn("chatModel.stream() 不可用，回退为 30 字符分片 + 30ms 延迟的模拟流式", e);
+            // 回退：同步 call() 获取完整 thinking，按 30 字符分片后以 Flux.interval 风格延迟发射
+            return fallbackThinkingFluxSync(question);
+        }
+    }
+
+    /**
+     * 回退路径：同步 call() 获取完整 thinking，按 30 字符分片并以 THINKING_DELAY 延迟发射
+     *
+     * @param question 自然语言问题
+     * @param sink     目标 sink（用于异步回退场景）
+     * @author H
+     */
+    private void fallbackThinkingFlux(String question, Sinks.Many<String> sink) {
+        try {
+            ChatModel chatModel = aiModelProvider.getChatModel();
+            String schemaDescription = schemaProvider.getSchemaDescription();
+            String systemPrompt = String.format(SYSTEM_PROMPT_TEMPLATE, schemaDescription);
+            List<Message> messages = new ArrayList<>();
+            messages.add(new SystemMessage(systemPrompt));
+            messages.add(new UserMessage(question));
+            ChatResponse response = chatModel.call(new Prompt(messages));
+            String thinking = extractThinking(response);
+            if (thinking != null && !thinking.isEmpty()) {
+                Flux<String> delayed = thinkingFluxWithDelay(thinking);
+                delayed.subscribe(
+                        chunk -> sink.tryEmitNext(chunk),
+                        err -> sink.tryEmitError(err),
+                        () -> sink.tryEmitComplete()
+                );
+            } else {
+                sink.tryEmitComplete();
+            }
+        } catch (Exception ex) {
+            sink.tryEmitError(ex);
+        }
+    }
+
+    /**
+     * 同步回退的 Flux（无 sink 场景）
+     *
+     * @param question 自然语言问题
+     * @return 延迟分片的 thinking Flux
+     * @author H
+     */
+    private Flux<String> fallbackThinkingFluxSync(String question) {
+        try {
+            ChatModel chatModel = aiModelProvider.getChatModel();
+            String schemaDescription = schemaProvider.getSchemaDescription();
+            String systemPrompt = String.format(SYSTEM_PROMPT_TEMPLATE, schemaDescription);
+            List<Message> messages = new ArrayList<>();
+            messages.add(new SystemMessage(systemPrompt));
+            messages.add(new UserMessage(question));
+            ChatResponse response = chatModel.call(new Prompt(messages));
+            String thinking = extractThinking(response);
+            if (thinking == null || thinking.isEmpty()) {
+                return Flux.empty();
+            }
+            // 保留 30 字符分片，但通过 Flux.delayElements(30ms) 使每个 chunk 在时间上分散
+            return thinkingFluxWithDelay(thinking);
+        } catch (Exception e) {
+            log.error("回退 thinking 流失败", e);
+            return Flux.empty();
         }
     }
 
@@ -196,5 +336,147 @@ public class TextToSqlServiceImpl implements TextToSqlService {
             sql = sql.substring(0, sql.length() - 1).trim();
         }
         return sql;
+    }
+
+    /**
+     * 将阶段进度包装为结构化JSON字符串
+     * 与 ChatServiceImpl.wrapStage 保持一致，前端据 type=stage 字段展示阶段进度
+     * 每个阶段对应 Flux SSE 事件：{"type":"stage","content":"<阶段文案>"}
+     *
+     * @param content 阶段文案（如“正在生成查询...”）
+     * @return 结构化JSON字符串，格式：{"type":"stage","content":"<阶段文案>"}
+     */
+    private String wrapStage(String content) {
+        try {
+            return "{\"type\":\"stage\",\"content\":" + objectMapper.writeValueAsString(content) + "}";
+        } catch (JacksonException e) {
+            log.warn("JSON编码stage失败，降级为空内容", e);
+            return "{\"type\":\"stage\",\"content\":\"\"}";
+        }
+    }
+
+    /**
+     * 将思考/推理增量包装为结构化JSON字符串
+     * 前端据 type=thinking 字段区分并以折叠/流式方式展示思考过程
+     *
+     * @param thinkingChunk 思考内容增量（可能为完整块或 delta）
+     * @return 结构化JSON字符串，格式：{"type":"thinking","content":"<思考增量>"}
+     * @author H
+     */
+    private String wrapThinking(String thinkingChunk) {
+        try {
+            return "{\"type\":\"thinking\",\"content\":" + objectMapper.writeValueAsString(thinkingChunk) + "}";
+        } catch (JacksonException e) {
+            log.warn("JSON编码thinking失败，降级为空内容", e);
+            return "{\"type\":\"thinking\",\"content\":\"\"}";
+        }
+    }
+
+    /**
+     * 从 ChatResponse 中提取思考/推理内容
+     * 兼容 reasoning_content / reasoningContent / thinking / reasoning 等键
+     * 真流式场景下每次调用返回增量 delta，需立即 via wrapThinking 发射；非流式场景返回完整块
+     *
+     * @param response ChatModel 返回的响应对象
+     * @return 思考内容字符串，不存在时返回 null
+     * @author H
+     */
+    private String extractThinking(ChatResponse response) {
+        if (response == null) {
+            return null;
+        }
+        if (response.getResult() != null && response.getResult().getOutput() != null) {
+            AssistantMessage output = response.getResult().getOutput();
+            Map<String, Object> meta = output.getMetadata();
+            if (meta != null && !meta.isEmpty()) {
+                String v = getThinkingFromMap(meta);
+                if (v != null && !v.isBlank()) {
+                    return v;
+                }
+            }
+            var genMeta = response.getResult().getMetadata();
+            if (genMeta != null && !genMeta.isEmpty()) {
+                for (String key : List.of("reasoning_content", "reasoningContent", "reasoning", "thinking")) {
+                    if (genMeta.containsKey(key)) {
+                        Object obj = genMeta.get(key);
+                        if (obj instanceof String s && !s.isBlank()) {
+                            return s;
+                        }
+                    }
+                }
+            }
+        }
+        var respMeta = response.getMetadata();
+        if (respMeta != null && !respMeta.isEmpty()) {
+            for (String key : List.of("reasoning_content", "reasoningContent", "reasoning", "thinking")) {
+                if (respMeta.containsKey(key)) {
+                    Object obj = respMeta.get(key);
+                    if (obj instanceof String s && !s.isBlank()) {
+                        return s;
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 从 Map 中按优先级提取思考内容
+     *
+     * @param meta 元数据 Map
+     * @return 思考内容字符串，不存在时返回 null
+     * @author H
+     */
+    private String getThinkingFromMap(Map<String, Object> meta) {
+        // 优先级：reasoning_content > reasoningContent > reasoning > thinking
+        for (String key : List.of("reasoning_content", "reasoningContent", "reasoning", "thinking")) {
+            Object v = meta.get(key);
+            if (v instanceof String s && !s.isBlank()) {
+                return s;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 将思考内容按固定大小切分为多段
+     * 用于非流式回退的模拟流式：大块 thinking 按 30 字符切分后通过 Flux.delayElements 分散发射
+     *
+     * @param thinking  完整思考内容
+     * @param chunkSize 切分大小
+     * @return 切分后的片段列表
+     * @author H
+     */
+    private List<String> splitThinking(String thinking, int chunkSize) {
+        List<String> pieces = new ArrayList<>();
+        for (int start = 0; start < thinking.length(); start += chunkSize) {
+            int end = Math.min(start + chunkSize, thinking.length());
+            pieces.add(thinking.substring(start, end));
+        }
+        return pieces;
+    }
+
+    /**
+     * 创建带延迟的思考流
+     * 将 30 字符分片后的 thinking 通过 Flux.delayElements 按 THINKING_DELAY 间隔发射，确保前端时间上分散
+     * 若流式 API 可用则优先直接透传增量 delta；否则走此延迟分片兜底，避免批量一次性爆发
+     *
+     * @param thinking 完整思考内容（批量收集场景）
+     * @return 延迟发射的 thinking 事件 Flux
+     * @author H
+     */
+    private Flux<String> thinkingFluxWithDelay(String thinking) {
+        if (thinking == null || thinking.isEmpty()) {
+            return Flux.empty();
+        }
+        if (thinking.length() <= THINKING_CHUNK_SIZE) {
+            // 小块直接延迟微小间隔后发射，保持时序分散
+            return Flux.just(wrapThinking(thinking)).delayElements(THINKING_DELAY);
+        }
+        List<String> pieces = splitThinking(thinking, THINKING_CHUNK_SIZE);
+        // 按 THINKING_DELAY 间隔延迟发射每个分片，保证前端收到 thinking 事件分散在时间轴上
+        return Flux.fromIterable(pieces)
+                .delayElements(THINKING_DELAY)
+                .map(this::wrapThinking);
     }
 }

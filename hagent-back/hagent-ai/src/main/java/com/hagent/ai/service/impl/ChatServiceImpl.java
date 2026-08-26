@@ -36,8 +36,12 @@ import org.springframework.ai.tool.ToolCallback;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Service;
+import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.FluxSink;
+import reactor.core.scheduler.Schedulers;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -72,7 +76,10 @@ public class ChatServiceImpl implements ChatService {
     private final ToolCallback[] unifiedToolCallbacks;
 
     /** 工具调用最大迭代次数 */
-    private static final int MAX_TOOL_ITERATIONS = 5;
+    private static final int MAX_TOOL_ITERATIONS = 8;
+
+    /** 连续重复工具调用检测阈值：同一工具连续调用达到该次数视为发散循环，强制收敛，避免无限空转 */
+    private static final int REPEAT_TOOL_CALL_LIMIT = 4;
 
     /** 历史消息最大保留条数（滑动窗口，防止上下文超限） */
     private static final int MAX_HISTORY_MESSAGES = 20;
@@ -89,6 +96,12 @@ public class ChatServiceImpl implements ChatService {
     /** 字符数转 token 数的估算比例（约 4 字符/token） */
     private static final int CHARS_PER_TOKEN = 4;
 
+    /** 思考内容分片大小（用于非流式场景的模拟流式分片） */
+    private static final int THINKING_CHUNK_SIZE = 30;
+
+    /** 思考分片间的发射间隔，确保前端收到事件在时间上分散而非一次性爆发 */
+    private static final Duration THINKING_DELAY = Duration.ofMillis(30);
+
     /** 新会话默认标题 */
     private static final String DEFAULT_TITLE = "新会话";
 
@@ -103,6 +116,14 @@ public class ChatServiceImpl implements ChatService {
 
     /** 纯数字（用于 topK 等参数的字符串→数值转换） */
     private static final Pattern NUMERIC_PATTERN = Pattern.compile("-?\\d+");
+
+    /** 幻觉工具调用标签过滤：匹配 <tool_call>...</tool_call>（DOTALL，大小写敏感） */
+    private static final Pattern HALLUCINATED_TOOL_CALL_PATTERN =
+            Pattern.compile("<tool_call>.*?</tool_call>", Pattern.DOTALL);
+
+    /** 幻觉函数标签残留过滤：匹配 <function=...> 片段 */
+    private static final Pattern HALLUCINATED_FUNCTION_PATTERN =
+            Pattern.compile("<function=.*?>");
 
     /** 文本形式工具调用的合成ID序列 */
     private final AtomicInteger textToolCallSeq = new AtomicInteger();
@@ -141,6 +162,15 @@ public class ChatServiceImpl implements ChatService {
                仍不行就基于已有信息如实回答并说明局限
             5. 回答必须基于工具返回的真实数据，禁止编造数字或结论
             6. 写操作（INSERT/UPDATE/DELETE）需用户回复确认后执行，询问确认时绝不展示SQL语句。
+
+            数据库 Schema（精简）：
+            - knowledge_file(id,file_name,deleted)
+            - chat_conversation(id,user_id,title,deleted)
+            - chat_message(id,conversation_id,role,deleted)
+            - hagent_user(id,username,deleted)
+            - chat_pending_action(...)
+
+            规则：仅生成单条 SELECT/INSERT/UPDATE/DELETE，需符合校验器规则，UPDATE/DELETE 必须带 WHERE。
             """;
 
     /**
@@ -164,6 +194,15 @@ public class ChatServiceImpl implements ChatService {
             4. 当用户提供图片或要求识别图片内容时，使用 analyze_image
             5. 不确定的内容不要编造，明确说明；回答必须基于工具返回的真实数据
             6. 写操作（INSERT/UPDATE/DELETE）需用户回复确认后执行，询问确认时绝不展示SQL语句。
+
+            数据库 Schema（精简）：
+            - knowledge_file(id,file_name,deleted)
+            - chat_conversation(id,user_id,title,deleted)
+            - chat_message(id,conversation_id,role,deleted)
+            - hagent_user(id,username,deleted)
+            - chat_pending_action(...)
+
+            规则：仅生成单条 SELECT/INSERT/UPDATE/DELETE，需符合校验器规则，UPDATE/DELETE 必须带 WHERE。
             """;
 
     /**
@@ -385,9 +424,8 @@ public class ChatServiceImpl implements ChatService {
                     .toolCallbacks(toolCallbacks)
                     .build();
 
-            // 8. 阶段1：同步执行工具循环（收集工具/待确认事件，meta后统一发出）
-            List<String> preStreamEvents = new ArrayList<>();
-            callWithTools(messages, toolOptions, chatModel, toolCallbacks, preStreamEvents);
+            // 8. 累积思考内容，用于最终持久化（工具阶段 + 流式阶段共享）
+            StringBuilder thinkingAccum = new StringBuilder();
 
             // 9. 阶段2：构建不带工具回调的流式Options，避免流式阶段触发工具调用导致空文本
             OpenAiChatOptions streamOptions = OpenAiChatOptions.builder()
@@ -396,38 +434,89 @@ public class ChatServiceImpl implements ChatService {
                     .model(baseOptions.getModel())
                     .build();
 
-            log.info("开始流式输出: conversationId={}", finalConversationId);
-
             // 元数据消息（第一个SSE事件，结构化JSON：包含type和conversationId；访客模式返回guest标识）
             String metaJson = "{\"type\":\"meta\",\"conversationId\":\""
                     + (finalConversationId != null ? finalConversationId : "guest") + "\"}";
 
-            Flux<String> tokenStream = chatModel.stream(new Prompt(messages, streamOptions))
-                    .mapNotNull(response -> {
-                        if (response.getResult() == null || response.getResult().getOutput() == null) {
-                            return null;
-                        }
-                        String text = response.getResult().getOutput().getText();
-                        return (text != null && !text.isEmpty()) ? text : null;
-                    });
+            // 真流式改造：工具循环移入 Flux.create，订阅即刻发射 meta/stage，
+            // 工具阶段的 thinking/tool 事件随执行实时写入 sink 直达前端，不再缓存到列表末尾集中爆发
+            // subscribeOn(boundedElastic)：阻塞的工具循环不占用SSE订阅线程，订阅句柄立即可用于取消
+            return Flux.<String>create(sink -> {
+                try {
+                    // 工具执行依赖 ThreadLocal 用户上下文，此处线程与 doChat 调用线程不同，需重新设置
+                    UserContextHolder.setUserId(userId);
+                    UserContextHolder.setConversationId(finalConversationId);
 
-            // 用 Flux.create 包装：同时流式输出 + 累积完整文本用于保存
-            // 每个token统一包装为结构化JSON：{"type":"token","content":"<token内容>"}
-            // 通过JSON字符串编码，换行符等特殊字符被转义为单行传输，避免SSE帧被破坏
-            Flux<String> saveTrigger = Flux.create(sink -> {
+                    sink.next(metaJson);
+                    // 阶段进度：正在理解问题...
+                    sink.next(wrapStage("正在理解问题..."));
+                    // 阶段进度：正在分析问题...（进入工具调用循环前，顺序保证在 tool 事件前）
+                    sink.next(wrapStage("正在分析问题..."));
+
+                    // 阶段1：同步工具循环（阻塞执行，但事件实时发射到前端）
+                    callWithTools(messages, toolOptions, chatModel, toolCallbacks, sink, thinkingAccum);
+
+                    // 阶段进度：正在组织答案...（工具调用结束后、流式开始前）
+                    sink.next(wrapStage("正在组织答案..."));
+                } catch (Exception e) {
+                    log.error("聊天失败: conversationId={}", finalConversationId, e);
+                    sink.next(wrapError("AI服务暂时不可用，请稍后重试"));
+                    sink.next("[FINAL]");
+                    sink.complete();
+                    return;
+                } finally {
+                    // 工具循环在本线程执行，清理 ThreadLocal 防止线程复用时身份串扰
+                    UserContextHolder.clear();
+                }
+
+                log.info("开始流式输出: conversationId={}", finalConversationId);
+
                 StringBuilder fullText = new StringBuilder();
-                tokenStream.subscribe(
-                        token -> {
-                            fullText.append(token);
-                            sink.next(wrapToken(token));
+                // 文本工具调用块剥离状态（流式阶段）：模型可能在工具循环结束后仍以 <tool_call> 文本方式表达工具意图，
+                // 该块会被拆分到多个 token 逐片到达，单 token 正则无法命中，需按状态机累积完整块后整体剥离
+                final boolean[] inToolCallBlock = {false};
+                final StringBuilder toolCallBlockBuf = new StringBuilder();
+                // 阶段2：真正的增量流，逐个响应提取 thinking 与 token 并交织发射
+                // 每个token统一包装为结构化JSON：{"type":"token","content":"<token内容>"}
+                // 通过JSON字符串编码，换行符等特殊字符被转义为单行传输，避免SSE帧被破坏
+                Flux<ChatResponse> rawStream = chatModel.stream(new Prompt(messages, streamOptions));
+                Disposable rawDisposable = rawStream.subscribe(
+                        response -> {
+                            // 1) 优先发射 thinking 增量（若模型提供了 reasoning_content / thinking）
+                            // 真流式：直接透传每个增量的 thinking delta；大块增量切分后同步按间隔发射，保证与 token 的先后顺序
+                            String thinkingChunk = extractThinking(response);
+                            if (thinkingChunk != null && !thinkingChunk.isEmpty()) {
+                                // 累积思考内容用于入库持久化
+                                thinkingAccum.append(thinkingChunk);
+                                emitThinkingToSink(sink, thinkingChunk);
+                            }
+                            // 2) 再发射 token 增量
+                            String text = null;
+                            if (response.getResult() != null && response.getResult().getOutput() != null) {
+                                text = response.getResult().getOutput().getText();
+                            }
+                            if (text != null && !text.isEmpty()) {
+                                // 剥离可能被拆分到多个 token 的文本工具调用块（如 <tool_call>...</tool_call>），防止 XML 碎片泄漏为正文
+                                String filtered = stripToolCallBlock(text, inToolCallBlock, toolCallBlockBuf);
+                                // 兜底：过滤单 token 内完整的幻觉工具调用标签残留
+                                filtered = HALLUCINATED_TOOL_CALL_PATTERN.matcher(filtered).replaceAll("");
+                                filtered = HALLUCINATED_FUNCTION_PATTERN.matcher(filtered).replaceAll("");
+                                // 过滤后为空或仅空白则跳过该 token，不向前端发射
+                                if (filtered.isBlank()) {
+                                    return;
+                                }
+                                fullText.append(filtered);
+                                sink.next(wrapToken(filtered));
+                            }
                         },
                         error -> {
                             log.error("流式输出异常: conversationId={}", finalConversationId, error);
-                            // 异常时保存已生成的部分文本，保证历史上下文完整（访客模式跳过）
+                            // 异常时保存已生成的部分文本+思考内容，保证历史上下文完整（访客模式跳过）
                             String partialText = fullText.toString();
-                            if (finalConversationId != null && !partialText.isEmpty()) {
+                            String partialThinking = thinkingAccum.length() > 0 ? thinkingAccum.toString() : null;
+                            if (finalConversationId != null && (!partialText.isEmpty() || partialThinking != null)) {
                                 saveMessage(finalConversationId, MessageRoleEnum.ASSISTANT.getCode(),
-                                        partialText, null);
+                                        partialText, null, partialThinking);
                                 conversationService.updateStats(finalConversationId, partialText.length() / CHARS_PER_TOKEN);
                             }
                             sink.next(wrapError("AI服务暂时不可用，请稍后重试"));
@@ -435,27 +524,26 @@ public class ChatServiceImpl implements ChatService {
                             sink.complete();
                         },
                         () -> {
-                            // 流完成，保存完整回复到DB（访客模式跳过）
+                            // 流完成，保存完整回复+思考内容到DB（访客模式跳过）
                             String finalText = fullText.toString();
-                            if (finalConversationId != null && !finalText.isEmpty()) {
+                            String finalThinking = thinkingAccum.length() > 0 ? thinkingAccum.toString() : null;
+                            if (finalConversationId != null && (!finalText.isEmpty() || finalThinking != null)) {
                                 saveMessage(finalConversationId, MessageRoleEnum.ASSISTANT.getCode(),
-                                        finalText, null);
+                                        finalText, null, finalThinking);
                                 int tokenCount = finalText.length() / CHARS_PER_TOKEN;
                                 conversationService.updateStats(finalConversationId, tokenCount);
-                                log.info("流式输出完成并保存: conversationId={}, length={}",
-                                        finalConversationId, finalText.length());
+                                log.info("流式输出完成并保存: conversationId={}, length={}, thinkingLength={}",
+                                        finalConversationId, finalText.length(),
+                                        finalThinking != null ? finalThinking.length() : 0);
                             }
                             // 发送明确结束标记，前端据此判断流正常结束
                             sink.next("[FINAL]");
                             sink.complete();
                         }
                 );
-            });
-
-            // concat保证顺序：元数据 → 工具/待确认事件 → token流
-            return Flux.just(metaJson)
-                    .concatWith(Flux.fromIterable(preStreamEvents))
-                    .concatWith(saveTrigger);
+                // 客户端断连/取消时同步取消底层模型流，避免继续生成浪费token
+                sink.onDispose(rawDisposable);
+            }).subscribeOn(Schedulers.boundedElastic());
 
         } catch (Exception e) {
             log.error("聊天失败: conversationId={}", finalConversationId, e);
@@ -476,12 +564,40 @@ public class ChatServiceImpl implements ChatService {
      * @param options        带工具回调的Options
      * @param chatModel      聊天模型
      * @param toolCallbacks  当前可用工具回调
+     * @param sink           SSE事件sink，工具/思考事件实时写入直达前端
+     * @param thinkingAccum  思考内容累积器（用于入库持久化）
      */
     private void callWithTools(List<Message> messages, OpenAiChatOptions options, ChatModel chatModel,
-                               ToolCallback[] toolCallbacks, List<String> preStreamEvents) {
+                               ToolCallback[] toolCallbacks, FluxSink<String> sink,
+                               StringBuilder thinkingAccum) {
+        // 连续重复工具调用追踪：判定模型陷入发散循环（同一工具反复调用但无实质收敛）时强制结束
+        String lastToolName = null;
+        int repeatCount = 0;
         for (int i = 0; i < MAX_TOOL_ITERATIONS; i++) {
+            // 客户端断连后终止工具循环，避免继续消耗模型token
+            if (sink.isCancelled()) {
+                log.info("SSE已取消，终止工具调用循环");
+                return;
+            }
+            // 已注入收敛指令（模型陷入重复调用被强制收尾），直接结束工具循环
+            if (!messages.isEmpty() && messages.get(messages.size() - 1) instanceof SystemMessage) {
+                log.info("已注入收敛指令，结束工具调用循环");
+                return;
+            }
             ChatResponse response = chatModel.call(new Prompt(messages, options));
             AssistantMessage assistantMsg = response.getResult().getOutput();
+
+            // 提取推理过程：兼容 reasoning_content / reasoningContent / thinking / reasoning 等键
+            // 工具阶段使用 chatModel.call() 同步获取，thinking 到达后实时切分发射到前端（边执行边展示）
+            String thinkingChunk = extractThinking(response);
+            if (thinkingChunk != null && !thinkingChunk.isEmpty()) {
+                // 累积到 thinkingAccum 用于入库，并实时发射供前端流式展示
+                if (thinkingAccum != null) {
+                    thinkingAccum.append(thinkingChunk);
+                }
+                emitThinkingToSink(sink, thinkingChunk);
+                log.debug("工具阶段思考内容已实时发射: length={}, iter={}", thinkingChunk.length(), i + 1);
+            }
 
             // 无工具调用 = 最终回复，不加入messages，交给stream阶段生成
             if (assistantMsg.getToolCalls() == null || assistantMsg.getToolCalls().isEmpty()) {
@@ -491,13 +607,25 @@ public class ChatServiceImpl implements ChatService {
                 if (text.contains(TEXT_TOOL_CALL_MARKER) && i < MAX_TOOL_ITERATIONS - 1) {
                     AssistantMessage.ToolCall synthetic = parseTextToolCall(text);
                     if (synthetic != null) {
+                        // 顺序计数：切换工具时重置计数，连续同一工具达到阈值判定为发散循环
+                        if (lastToolName != null && lastToolName.equals(synthetic.name())) {
+                            repeatCount++;
+                        } else {
+                            lastToolName = synthetic.name();
+                            repeatCount = 1;
+                        }
+                        if (repeatCount >= REPEAT_TOOL_CALL_LIMIT) {
+                            log.warn("检测到连续重复工具调用: {}，强制收敛终止工具循环", synthetic.name());
+                            injectConvergenceMessage(messages);
+                            return;
+                        }
                         log.warn("检测到文本形式工具调用，已转换执行: name={}, args={}", synthetic.name(), synthetic.arguments());
                         // 以原生 tool_calls 结构回填消息，保证协议合法（tool 消息必须跟在带 tool_calls 的 assistant 消息之后）
                         messages.add(AssistantMessage.builder()
                                 .content("")
                                 .toolCalls(List.of(synthetic))
                                 .build());
-                        preStreamEvents.add("{\"type\":\"tool\",\"name\":"
+                        sink.next("{\"type\":\"tool\",\"name\":"
                                 + objectMapper.writeValueAsString(synthetic.name()) + "}");
                         String result = executeTool(toolCallbacks, synthetic.name(), synthetic.arguments());
                         messages.add(ToolResponseMessage.builder()
@@ -518,12 +646,24 @@ public class ChatServiceImpl implements ChatService {
             log.info("工具调用迭代 {}: {} 次工具调用", i + 1, assistantMsg.getToolCalls().size());
 
             for (AssistantMessage.ToolCall toolCall : assistantMsg.getToolCalls()) {
+                // 顺序计数：切换工具时重置计数，连续同一工具达到阈值判定为发散循环，强制收敛避免无限空转
+                if (lastToolName != null && lastToolName.equals(toolCall.name())) {
+                    repeatCount++;
+                } else {
+                    lastToolName = toolCall.name();
+                    repeatCount = 1;
+                }
+                if (repeatCount >= REPEAT_TOOL_CALL_LIMIT) {
+                    log.warn("检测到连续重复工具调用: {}，强制收敛终止工具循环", toolCall.name());
+                    injectConvergenceMessage(messages);
+                    return;
+                }
                 log.info("  执行工具: id={}, name={}, args={}", toolCall.id(), toolCall.name(),
                         toolCall.arguments().length() > MAX_LOG_ARGS_LEN
                                 ? toolCall.arguments().substring(0, MAX_LOG_ARGS_LEN) + "..."
                                 : toolCall.arguments());
-                // 收集工具事件（meta后发出，前端渲染工具调用徽章/步骤）
-                preStreamEvents.add("{\"type\":\"tool\",\"name\":"
+                // 工具事件实时发射（前端渲染工具调用徽章/步骤）
+                sink.next("{\"type\":\"tool\",\"name\":"
                         + objectMapper.writeValueAsString(toolCall.name()) + "}");
                 String result = executeTool(toolCallbacks, toolCall.name(), toolCall.arguments());
                 // 截断过长的工具结果，防止撑爆上下文
@@ -540,7 +680,69 @@ public class ChatServiceImpl implements ChatService {
                         .build());
             }
         }
-        log.warn("工具调用达到最大迭代次数: {}", MAX_TOOL_ITERATIONS);
+        // 达到最大迭代次数仍未见最终答复：注入收敛指令，确保流式阶段模型明确收尾作答（不再输出文本工具调用）
+        log.warn("工具调用达到最大迭代次数: {}，注入收敛指令强制收尾", MAX_TOOL_ITERATIONS);
+        injectConvergenceMessage(messages);
+    }
+
+    /**
+     * 注入收敛指令：告知模型工具调用阶段已结束，基于已有信息直接作答，禁止再发起任何工具调用
+     *
+     * @param messages 对话消息列表
+     */
+    private void injectConvergenceMessage(List<Message> messages) {
+        // 防止重复注入
+        if (!messages.isEmpty() && messages.get(messages.size() - 1) instanceof SystemMessage) {
+            return;
+        }
+        messages.add(new SystemMessage("工具调用阶段已结束。请基于已有信息直接回答用户问题，"
+                + "不要再发起任何新的工具调用，也不要以文本形式输出工具调用片段（如 <tool_call> 等）。"));
+    }
+
+    /**
+     * 剥离流式阶段被拆分到多个 token 的文本工具调用块
+     * 模型有时会在流式输出中以 XML 文本形式再次表达工具意图（如 <tool_call><function=...>...），
+     * 该块会被 tokenizer 拆分成多条增量逐片到达，单 token 正则无法整块命中，需要按状态机累积后整体剥离。
+     *
+     * @param chunk  当前 token 的文本增量
+     * @param inBlock 是否正处于 <tool_call> 块内（跨 token 状态）
+     * @param buf    块内累积缓冲（跨 token）
+     * @return 剥离工具调用块后的残留文本（正常正文原样保留）
+     */
+    private static String stripToolCallBlock(String chunk, boolean[] inBlock, StringBuilder buf) {
+        StringBuilder out = new StringBuilder();
+        int i = 0;
+        while (i < chunk.length()) {
+            if (inBlock[0]) {
+                // 正在工具调用块内：查找结束标记
+                int end = chunk.indexOf("</tool_call>", i);
+                if (end < 0) {
+                    // 本 token 未见结束标记，整体累积后等待下一个 token
+                    buf.append(chunk.substring(i));
+                    return out.toString();
+                }
+                // 缓冲累积完整块后清除，块内容全部丢弃
+                buf.append(chunk.substring(i, end));
+                buf.setLength(0);
+                inBlock[0] = false;
+                i = end + "</tool_call>".length();
+            } else {
+                // 非块内：查找开始标记
+                int start = chunk.indexOf("<tool_call", i);
+                if (start < 0) {
+                    // 无开始标记，剩余均为正常正文
+                    out.append(chunk.substring(i));
+                    i = chunk.length();
+                } else {
+                    // 开始标记之前的正文保留，进入块内状态（含未闭合的 <tool_call 前缀，由下一轮累积）
+                    out.append(chunk.substring(i, start));
+                    inBlock[0] = true;
+                    buf.setLength(0);
+                    i = start;
+                }
+            }
+        }
+        return out.toString();
     }
 
     /**
@@ -622,6 +824,170 @@ public class ChatServiceImpl implements ChatService {
         } catch (JacksonException e) {
             log.warn("JSON编码错误消息失败，降级为固定提示", e);
             return "{\"type\":\"error\",\"message\":\"AI服务异常\"}";
+        }
+    }
+
+    /**
+     * 将思考/推理增量包装为结构化JSON字符串
+     * 前端据 type=thinking 字段区分并以折叠/流式方式展示思考过程
+     *
+     * @param thinkingChunk 思考内容增量（可能为完整块或delta）
+     * @return 结构化JSON字符串，格式：{"type":"thinking","content":"<思考增量>"}
+     */
+    private String wrapThinking(String thinkingChunk) {
+        try {
+            return "{\"type\":\"thinking\",\"content\":" + objectMapper.writeValueAsString(thinkingChunk) + "}";
+        } catch (JacksonException e) {
+            log.warn("JSON编码thinking失败，降级为空内容", e);
+            return "{\"type\":\"thinking\",\"content\":\"\"}";
+        }
+    }
+
+    /**
+     * 将阶段进度包装为结构化JSON字符串
+     * 前端据 type=stage 字段展示阶段进度（如“正在理解问题...”）
+     * 通过 objectMapper 编码 content，确保中文与特殊字符安全传输
+     *
+     * @param content 阶段文案（如“正在理解问题...”）
+     * @return 结构化JSON字符串，格式：{"type":"stage","content":"<阶段文案>"}
+     */
+    private String wrapStage(String content) {
+        try {
+            return "{\"type\":\"stage\",\"content\":" + objectMapper.writeValueAsString(content) + "}";
+        } catch (JacksonException e) {
+            log.warn("JSON编码stage失败，降级为空内容", e);
+            return "{\"type\":\"stage\",\"content\":\"\"}";
+        }
+    }
+
+    /**
+     * 从 ChatResponse 中提取思考/推理内容
+     * 兼容多种来源与键名：
+     * 1) AssistantMessage.getMetadata() 中的 "reasoning_content" / "reasoningContent" / "reasoning" / "thinking"
+     * 2) Generation.getMetadata() 中的同名键（部分模型将推理写入 generation metadata）
+     * 3) ChatResponse.getMetadata() 中的同名键（兜底，兼容不同 OpenAI 兼容网关实现）
+     * 流式场景下每次调用返回增量 delta，调用方需直接透传 SSE；非流式场景返回完整块
+     *
+     * @param response ChatModel 返回的响应对象
+     * @return 思考内容字符串，不存在时返回 null
+     */
+    @Nullable
+    private String extractThinking(ChatResponse response) {
+        if (response == null) {
+            return null;
+        }
+        // 1) 优先从 AssistantMessage.metadata 提取（最常见：OpenAI reasoning_content 映射于此）
+        if (response.getResult() != null && response.getResult().getOutput() != null) {
+            AssistantMessage output = response.getResult().getOutput();
+            Map<String, Object> meta = output.getMetadata();
+            if (meta != null && !meta.isEmpty()) {
+                String v = getThinkingFromMap(meta);
+                if (v != null && !v.isBlank()) {
+                    return v;
+                }
+            }
+            // 2) 从 Generation metadata 提取（部分版本/网关将 reasoning 写入 generation metadata）
+            var genMeta = response.getResult().getMetadata();
+            if (genMeta != null && !genMeta.isEmpty()) {
+                for (String key : List.of("reasoning_content", "reasoningContent", "reasoning", "thinking")) {
+                    if (genMeta.containsKey(key)) {
+                        Object obj = genMeta.get(key);
+                        if (obj instanceof String s && !s.isBlank()) {
+                            return s;
+                        }
+                    }
+                }
+            }
+        }
+        // 3) 兜底：从 ChatResponse 级别 metadata 提取（兼容不同网关/代理实现）
+        var respMeta = response.getMetadata();
+        if (respMeta != null && !respMeta.isEmpty()) {
+            for (String key : List.of("reasoning_content", "reasoningContent", "reasoning", "thinking")) {
+                if (respMeta.containsKey(key)) {
+                    Object obj = respMeta.get(key);
+                    if (obj instanceof String s && !s.isBlank()) {
+                        return s;
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 从 Map 中按优先级提取思考内容
+     *
+     * @param meta 元数据 Map
+     * @return 思考内容字符串，不存在时返回 null
+     */
+    @Nullable
+    private String getThinkingFromMap(Map<String, Object> meta) {
+        // 优先级：reasoning_content > reasoningContent > reasoning > thinking
+        for (String key : List.of("reasoning_content", "reasoningContent", "reasoning", "thinking")) {
+            Object v = meta.get(key);
+            if (v instanceof String s && !s.isBlank()) {
+                return s;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 将思考内容按固定大小切分为多段
+     * 用于大块 thinking 的模拟流式：切分后由 emitThinkingToSink 按 THINKING_DELAY 间隔实时发射
+     *
+     * @param thinking  完整思考内容
+     * @param chunkSize 切分大小
+     * @return 切分后的片段列表
+     * @author H
+     */
+    private List<String> splitThinking(String thinking, int chunkSize) {
+        List<String> pieces = new ArrayList<>();
+        for (int start = 0; start < thinking.length(); start += chunkSize) {
+            int end = Math.min(start + chunkSize, thinking.length());
+            pieces.add(thinking.substring(start, end));
+        }
+        return pieces;
+    }
+
+    /**
+     * 将思考增量实时写入 SSE sink
+     * 大块增量按 THINKING_CHUNK_SIZE 切分、分片间休眠 THINKING_DELAY，模拟逐字输出且保持与后续事件的先后顺序
+     *
+     * @param sink          SSE 事件sink
+     * @param thinkingChunk 本次思考增量
+     * @author H
+     */
+    private void emitThinkingToSink(FluxSink<String> sink, String thinkingChunk) {
+        if (thinkingChunk == null || thinkingChunk.isEmpty()) {
+            return;
+        }
+        if (thinkingChunk.length() <= 50) {
+            // 小增量直接发射，体现流式 delta 透传
+            sink.next(wrapThinking(thinkingChunk));
+            return;
+        }
+        for (String piece : splitThinking(thinkingChunk, THINKING_CHUNK_SIZE)) {
+            // 客户端断连后停止发射
+            if (sink.isCancelled()) {
+                return;
+            }
+            sink.next(wrapThinking(piece));
+            sleepQuietly(THINKING_DELAY.toMillis());
+        }
+    }
+
+    /**
+     * 休眠指定毫秒（思考分片发射间隔），被中断时恢复中断标记并立即返回
+     *
+     * @param millis 休眠毫秒数
+     * @author H
+     */
+    private void sleepQuietly(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
     }
 
@@ -728,14 +1094,29 @@ public class ChatServiceImpl implements ChatService {
     }
 
     /**
-     * 保存聊天消息
+     * 保存聊天消息（无思考内容）
      *
      * @param conversationId 会话ID
      * @param role           消息角色
      * @param content        消息内容
      * @param toolName       工具名称（非工具消息为null）
+     * @author H
      */
     private void saveMessage(Long conversationId, Integer role, String content, String toolName) {
+        saveMessage(conversationId, role, content, toolName, null);
+    }
+
+    /**
+     * 保存聊天消息（含思考内容持久化）
+     *
+     * @param conversationId 会话ID
+     * @param role           消息角色
+     * @param content        消息内容
+     * @param toolName       工具名称（非工具消息为null）
+     * @param thinkingContent 思考过程内容（仅助手消息可能携带，可为null）
+     * @author H
+     */
+    private void saveMessage(Long conversationId, Integer role, String content, String toolName, String thinkingContent) {
         // 访客临时会话无持久化目标，直接跳过
         if (conversationId == null) {
             return;
@@ -747,6 +1128,10 @@ public class ChatServiceImpl implements ChatService {
         msg.setMessageType(MESSAGE_TYPE_TEXT);
         // 工具消息补全工具名称，保证历史上下文可重建为 ToolResponseMessage
         msg.setToolName(toolName);
+        // 思考过程内容持久化（历史回显用，空串按 null 处理）
+        if (thinkingContent != null && !thinkingContent.isBlank()) {
+            msg.setThinkingContent(thinkingContent);
+        }
         msg.setStatus(MessageStatusEnum.COMPLETED.getCode());
         chatMessageMapper.insert(msg);
     }

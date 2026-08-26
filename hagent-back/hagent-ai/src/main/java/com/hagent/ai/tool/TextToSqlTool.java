@@ -1,17 +1,25 @@
 package com.hagent.ai.tool;
 
+import com.hagent.ai.core.SqlSecurityValidator;
+import com.hagent.ai.core.UserContextHolder;
+import com.hagent.ai.model.entity.ChatPendingAction;
+import com.hagent.ai.service.PendingActionService;
 import com.hagent.ai.service.TextToSqlService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
+import tools.jackson.databind.ObjectMapper;
 
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
- * Text to SQL 工具
- * 将自然语言查询转换为 SQL 并执行
+ * Text to SQL 工具 - 执行器模式
+ * 仅做安全校验与执行，不负责 SQL 生成
  *
  * @author H
  */
@@ -21,42 +29,77 @@ import java.util.Map;
 public class TextToSqlTool {
 
     private final TextToSqlService textToSqlService;
+    private final SqlSecurityValidator sqlValidator;
+    private final JdbcTemplate jdbcTemplate;
+    private final PendingActionService pendingActionService;
+    private final ObjectMapper objectMapper;
 
     /**
-     * 通过自然语言查询业务数据
+     * 执行由主 LLM 生成的 SQL，仅做安全校验与执行
+     * SELECT 直接执行返回数据，INSERT/UPDATE/DELETE 需用户回复确认后执行
      *
-     * @param question 用户的自然语言查询问题
-     * @return 查询结果
+     * @param sql 主 LLM 生成的 SQL 语句，需符合 Schema，仅单条 SELECT/INSERT/UPDATE/DELETE
+     * @return 执行结果
+     * @author H
      */
-    @Tool(description = """
-            通过自然语言查询业务数据（先确认后执行）。调用后系统会生成 SQL 并等待用户在确认卡片上确认，
-            用户确认后才会真正执行并返回数据。适用于数据库中已有数据的统计与查询：
-            知识库文件、文章、用户、订单等表的数量统计、排名、聚合分析。
-            典型问题：
-            - 知识库里有多少个文件？文章总数是多少？
-            - 本月销售额最高的前5个订单是什么？
-            - 最近7天每天的订单数量？
-            - 哪个客户的订单金额最大？
-            - 浏览量最高的文章有哪些？
-            注意：检索文档的具体内容/要点请改用 searchKnowledge；统计数量、排名、聚合请用本工具。
-            """)
+    @Tool(description = "执行由主 LLM 生成的 SQL，仅做安全校验与执行。SELECT 直接执行返回数据，INSERT/UPDATE/DELETE 需用户回复确认后执行。禁止展示 SQL。")
     public Map<String, Object> queryBusinessData(
-            @ToolParam(description = "用户的自然语言查询问题") String question) {
-        log.info("AI工具 - queryBusinessData: question={}", question);
+            @ToolParam(description = "主 LLM 生成的 SQL 语句，需符合 Schema，仅单条 SELECT/INSERT/UPDATE/DELETE") String sql) {
+        log.info("AI工具 - queryBusinessData [executor]: sql={}", sql);
 
-        Map<String, Object> result = textToSqlService.queryByNaturalLanguage(question);
+        try {
+            // 安全校验
+            SqlSecurityValidator.ValidationResult v = sqlValidator.validate(sql);
+            if (!v.isValid()) {
+                log.warn("SQL安全校验失败: sql={}, message={}", sql, v.getMessage());
+                Map<String, Object> fail = new LinkedHashMap<>();
+                fail.put("success", false);
+                fail.put("message", v.getMessage());
+                return fail;
+            }
 
-        // 简化返回结果，避免 token 过多
-        if (Boolean.TRUE.equals(result.get("success"))) {
-            Map<String, Object> simplified = new java.util.LinkedHashMap<>();
-            simplified.put("question", result.get("question"));
-            simplified.put("pendingConfirmation", true);
-            simplified.put("pendingActionId", result.get("pendingActionId"));
-            simplified.put("sql", result.get("sql"));
-            simplified.put("message", result.get("message"));
-            return simplified;
-        } else {
-            return result;
+            String sanitized = v.getSanitizedSql();
+
+            if ("SELECT".equals(v.getStatementType())) {
+                // SELECT 分支：直接执行
+                List<Map<String, Object>> rows = jdbcTemplate.queryForList(sanitized);
+                List<Map<String, Object>> data = rows.size() > 100 ? rows.subList(0, 100) : rows;
+                Map<String, Object> result = new LinkedHashMap<>();
+                result.put("success", true);
+                result.put("executed", true);
+                result.put("rowCount", rows.size());
+                result.put("data", data);
+                result.put("message", "查询已执行，请根据查询结果用自然语言向用户呈现数据，不要提及或展示 SQL 语句");
+                log.info("SELECT直接执行完成: rowCount={}", rows.size());
+                return result;
+            } else {
+                // WRITE 分支：INSERT/UPDATE/DELETE 需确认，创建待确认操作
+                ChatPendingAction action = new ChatPendingAction();
+                action.setConversationId(UserContextHolder.getConversationId());
+                action.setUserId(UserContextHolder.getUserId());
+                action.setActionType(3);
+                action.setTargetType(TextToSqlService.TARGET_TYPE_SQL_QUERY);
+                Map<String, Object> payload = new LinkedHashMap<>();
+                payload.put("sql", sanitized);
+                payload.put("question", sql);
+                action.setPayloadJson(objectMapper.writeValueAsString(payload));
+                action.setPreviewText(sql);
+                ChatPendingAction saved = pendingActionService.createAction(action, 24);
+
+                Map<String, Object> result = new LinkedHashMap<>();
+                result.put("success", true);
+                result.put("pendingConfirmation", true);
+                result.put("pendingActionId", saved.getId());
+                result.put("message", "写操作已暂存，请询问用户是否确认执行，可回复 确认/取消，禁止向用户展示 SQL 语句");
+                log.info("WRITE待确认操作已创建: pendingActionId={}, statementType={}", saved.getId(), v.getStatementType());
+                return result;
+            }
+        } catch (Exception e) {
+            log.error("TextToSqlTool executor执行失败: sql={}", sql, e);
+            Map<String, Object> error = new LinkedHashMap<>();
+            error.put("success", false);
+            error.put("message", "查询处理失败: " + e.getMessage());
+            return error;
         }
     }
 }

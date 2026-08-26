@@ -1,4 +1,4 @@
-import { ref, type Ref } from 'vue'
+import { ref, type Ref, triggerRef, nextTick } from 'vue'
 import {
   streamChat,
   conversationApi,
@@ -14,6 +14,14 @@ export interface UiChatMessage {
   time: string
   /** 本条回复涉及的工具名（工具徽章展示） */
   tools?: string[]
+  /** 思考过程内容（type:thinking 累积） */
+  thinkingContent?: string
+  /** 思考块是否展开（默认展开） */
+  thinkingExpanded?: boolean
+  /** 应答起始时间戳（发送时刻，用于计算回答耗时） */
+  startTime?: number
+  /** 回答耗时（毫秒，流结束后写入，用于底部耗时展示） */
+  elapsedMs?: number
 }
 
 export interface UseChatOptions {
@@ -56,6 +64,25 @@ export function useChat(options: UseChatOptions) {
   const messages: Ref<UiChatMessage[]> = ref([])
   const thinking = ref(false)
   const streaming = ref(false)
+  /** 全局思考内容（当前生成中的增量累积，供外部/调试使用） */
+  const thinkingContent = ref('')
+  /** 思考增量版本号：每收到一个 thinking chunk 自增，用于触发 flush:'sync' 监听，强制逐片渲染避免批量合并 */
+  const thinkingTick = ref(0)
+  /** 是否已收到实际 thinking 内容：true 时隐藏“AI 思考中”占位，展示思考折叠面板 */
+  const thinkingHasContent = ref(false)
+  /** 内容增量版本号：每收到 token 自增，驱动 ChatMessageList 的 flush:'post' 自动滚动 */
+  const contentTick = ref(0)
+  /** 阶段进度提示文本（仅展示 3 个允许阶段：理解问题/分析问题/组织答案） */
+  const stageText = ref('')
+  /** 阶段提示是否可见 */
+  const stageVisible = ref(false)
+
+  /** 需要屏蔽的阶段关键词（TextToSql 内部阶段，前端不展示） */
+  const BLOCKED_STAGE_KEYWORDS = ['生成查询', '执行查询']
+  /** 判断阶段文本是否被屏蔽 */
+  function isBlockedStage(text: string): boolean {
+    return BLOCKED_STAGE_KEYWORDS.some((k) => text.includes(k))
+  }
 
   let seq = 0
   let controller: AbortController | null = null
@@ -64,14 +91,48 @@ export function useChat(options: UseChatOptions) {
   /** 当前正在生成的 AI 消息引用 */
   let activeAiMsg: UiChatMessage | null = null
 
+  /** 阶段提示自动隐藏定时器 */
+  let stageHideTimer: ReturnType<typeof setTimeout> | null = null
+
+  /** 清除阶段隐藏定时器 */
+  function clearStageTimer() {
+    if (stageHideTimer) {
+      clearTimeout(stageHideTimer)
+      stageHideTimer = null
+    }
+  }
+
+  /** 立即隐藏阶段提示 */
+  function hideStageImmediate() {
+    clearStageTimer()
+    stageVisible.value = false
+  }
+
+  /** 延迟 2s 自动隐藏阶段提示（完成/出错后） */
+  function scheduleStageHide() {
+    clearStageTimer()
+    stageHideTimer = setTimeout(() => {
+      stageVisible.value = false
+      stageHideTimer = null
+    }, 2000)
+  }
+
   function finishStream() {
     thinking.value = false
     streaming.value = false
+    // 计算回答耗时并回写当前消息（含停止/异常场景，已结束的消息也会被标记）
+    if (activeAiMsg && activeAiMsg.startTime && activeAiMsg.elapsedMs === undefined) {
+      const idx = messages.value.indexOf(activeAiMsg)
+      if (idx !== -1) {
+        activeAiMsg = { ...activeAiMsg, elapsedMs: Date.now() - activeAiMsg.startTime }
+        messages.value[idx] = activeAiMsg
+      }
+    }
     activeAiMsg = null
     controller = null
   }
 
-  /** 加载历史会话消息（管理端） */
+  /** 加载历史会话消息（管理端，含 thinkingContent 历史思考回显） */
   async function loadMessages(conversationId: number): Promise<void> {
     messages.value = []
     try {
@@ -83,6 +144,10 @@ export function useChat(options: UseChatOptions) {
         time: formatMsgTime(m.createdAt),
         // 历史消息按 toolName 显示单工具徽章
         tools: m.toolName ? [m.toolName] : undefined,
+        // 历史思考过程内容回显（后端 thinking_content 落库后通过 ChatMessageVO 返回）
+        thinkingContent: m.thinkingContent ?? undefined,
+        // 历史消息若有思考内容，默认展开
+        thinkingExpanded: m.thinkingContent ? true : undefined,
       }))
     } catch {
       // 错误已由 request 拦截器统一 toast
@@ -98,37 +163,93 @@ export function useChat(options: UseChatOptions) {
     if (!trimmed || thinking.value || streaming.value) return false
 
     messages.value.push({ id: nextId(), role: 'user', content: trimmed, time: formatMsgTime(new Date().toISOString()) })
-    const aiMsg: UiChatMessage = { id: nextId(), role: 'ai', content: '', time: '' }
+    // 思考块默认展开，确保首轮与增量思考均可见
+    const aiMsg: UiChatMessage = { id: nextId(), role: 'ai', content: '', time: '', thinkingContent: '', thinkingExpanded: true, startTime: Date.now() }
     messages.value.push(aiMsg)
     activeAiMsg = aiMsg
     thinking.value = true
     streaming.value = true
+    // 新一轮思考内容重置
+    thinkingContent.value = ''
+    thinkingHasContent.value = false
+    // 新一轮阶段提示重置
+    clearStageTimer()
+    stageText.value = ''
+    stageVisible.value = false
 
     controller = streamChat(options.endpoint, trimmed, {
       scene: options.scene ?? 1,
       conversationId: options.getConversationId(),
       handlers: {
         onMeta: (id) => options.onConversationId?.(id),
+        // 思考过程增量累积（type:thinking）：默认展开，增量更新自动贴底
+        // 关键修复：Vue 默认批量合并同步修改，需用 triggerRef + nextTick 强制逐片刷新，避免一次性全量渲染
+        onThinking: (chunk) => {
+          if (!activeAiMsg) return
+          const idx = messages.value.indexOf(activeAiMsg)
+          if (idx === -1) return
+          // 通过替换消息对象引用强制 Vue 重新渲染，避免响应式属性批量合并导致只显示首条
+          activeAiMsg = {
+            ...activeAiMsg,
+            thinkingContent: (activeAiMsg.thinkingContent ?? '') + chunk,
+          }
+          if (!activeAiMsg.thinkingExpanded) activeAiMsg.thinkingExpanded = true
+          messages.value[idx] = activeAiMsg
+          // 同步到全局 ref（便于 ChatMessageList 以外监听），并递增版本号驱动 sync 监听
+          thinkingContent.value = activeAiMsg.thinkingContent ?? ''
+          thinkingTick.value++
+          // 收到实际 thinking 内容后，隐藏“AI 思考中”占位，由思考折叠面板展示
+          thinkingHasContent.value = true
+        },
+        // 阶段进度提示（type:stage）：屏蔽“生成查询/执行查询”，仅展示 3 个允许阶段
+        onStage: (text) => {
+          // 若命中被屏蔽关键词则隐藏进度条，不更新文本
+          if (isBlockedStage(text)) {
+            hideStageImmediate()
+            return
+          }
+          clearStageTimer()
+          stageText.value = text
+          stageVisible.value = true
+        },
         onToken: (chunk) => {
           if (!activeAiMsg) return
-          activeAiMsg.content += chunk
-          activeAiMsg.time = formatMsgTime(new Date().toISOString())
+          const idx = messages.value.indexOf(activeAiMsg)
+          if (idx === -1) return
+          // 通过替换消息对象引用强制正文逐 token 刷新
+          activeAiMsg = {
+            ...activeAiMsg,
+            content: activeAiMsg.content + chunk,
+            time: formatMsgTime(new Date().toISOString()),
+          }
+          messages.value[idx] = activeAiMsg
+          contentTick.value++
         },
         onTool: (name) => {
           if (!activeAiMsg) return
-          activeAiMsg.tools = [...(activeAiMsg.tools ?? []), name]
+          const idx = messages.value.indexOf(activeAiMsg)
+          if (idx === -1) return
+          activeAiMsg = {
+            ...activeAiMsg,
+            tools: [...(activeAiMsg.tools ?? []), name],
+          }
+          messages.value[idx] = activeAiMsg
         },
         onError: (msg) => {
           if (activeAiMsg && !activeAiMsg.content) {
             activeAiMsg.content = `（AI 响应失败：${msg}）`
           }
           options.onError?.(msg)
+          // 出错后延迟隐藏阶段提示
+          scheduleStageHide()
           finishStream()
         },
         onDone: () => {
           if (activeAiMsg && !activeAiMsg.content) {
             activeAiMsg.content = '（无回复内容）'
           }
+          // 完成后延迟 2s 自动隐藏阶段提示
+          scheduleStageHide()
           finishStream()
           options.onDone?.()
         },
@@ -139,17 +260,24 @@ export function useChat(options: UseChatOptions) {
 
   /** 停止生成（客户端断连，后端会取消 Flux 订阅终止 AI 生成） */
   function stop(): void {
-    if (!controller) return
+    if (!controller) {
+      // 即使无请求也隐藏阶段提示
+      hideStageImmediate()
+      return
+    }
     controller.abort()
     if (activeAiMsg && activeAiMsg.content && !activeAiMsg.content.endsWith('（已停止生成）')) {
       activeAiMsg.content += '（已停止生成）'
     }
+    hideStageImmediate()
     finishStream()
   }
 
   /** 清空本地消息（新建临时会话/切换访客模式） */
   function clear(): void {
     stop()
+    hideStageImmediate()
+    stageText.value = ''
     messages.value = []
   }
 
@@ -173,5 +301,5 @@ export function useChat(options: UseChatOptions) {
     return groups.filter((g) => g.items.length > 0)
   }
 
-  return { messages, thinking, streaming, loadMessages, send, stop, clear, groupConversations }
+  return { messages, thinking, streaming, thinkingContent, thinkingHasContent, thinkingTick, contentTick, stageText, stageVisible, loadMessages, send, stop, clear, groupConversations }
 }

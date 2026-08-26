@@ -44,6 +44,19 @@
         </div>
       </header>
 
+      <!-- 阶段进度条：仅展示 3 个允许阶段（理解问题/分析问题/组织答案），屏蔽“生成查询/执行查询”，2s 后自动隐藏 -->
+      <Transition name="stage-fade">
+        <div v-if="displayStageVisible" class="stage-progress">
+          <div class="stage-progress__track" aria-hidden="true">
+            <div class="stage-progress__fill"></div>
+          </div>
+          <div class="stage-progress__content">
+            <span class="stage-progress__spinner" aria-hidden="true"></span>
+            <span class="stage-progress__text">{{ filteredStageText }}</span>
+          </div>
+        </div>
+      </Transition>
+
       <ChatMessageList
         ref="listRef"
         :messages="displayMessages"
@@ -52,8 +65,8 @@
         @send="sendText"
       />
 
-      <!-- 欢迎屏自带 hero 输入框，仅在已有消息时显示底部输入栏，避免双输入框 -->
-      <div v-if="displayMessages.length > 0" class="portal-chat__inputbar">
+      <!-- 欢迎屏自带 hero 输入框，仅登录用户且已有消息时显示底部输入栏；访客不展示底部输入框 -->
+      <div v-if="!guest && displayMessages.length > 0" class="portal-chat__inputbar">
         <ChatInputBar
           v-model="draft"
           :streaming="displayStreaming"
@@ -81,6 +94,8 @@
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
+import { useMessage } from 'naive-ui'
 import ChatMessageList from '@/components/chat/ChatMessageList.vue'
 import ChatInputBar from '@/components/chat/ChatInputBar.vue'
 import ConversationSidebar from '@/components/chat/ConversationSidebar.vue'
@@ -111,10 +126,13 @@ watch(sideCollapsed, (v) => {
   localStorage.setItem(SIDE_COLLAPSED_KEY, v ? '1' : '0')
 })
 
-/* ---------- 登录弹窗 ---------- */
+/* ---------- 登录弹窗（保留组件以备他用，访客门控已改为重定向） ---------- */
 const showLogin = ref(false)
+const router = useRouter()
+const message = useMessage()
 function openLogin() {
-  showLogin.value = true
+  message.warning('请先登录后体验完整对话')
+  router.push({ path: '/login', query: { redirect: '/' } })
 }
 function onLoginSuccess() {
   // authApi.login 已派发 hagent:auth-change，refreshAuthState 会拉取会话
@@ -146,7 +164,21 @@ const chat = useChat({
     if (loggedIn.value) void loadConversations()
   },
 })
-const { messages, thinking, streaming, stop } = chat
+const { messages, thinking, streaming, thinkingHasContent, stageText, stageVisible, stop } = chat
+
+/** 需要屏蔽的阶段关键词（TextToSql 内部阶段，前端不展示） */
+const BLOCKED_STAGE_KEYWORDS = ['生成查询', '执行查询']
+function isBlockedStage(text: string): boolean {
+  return BLOCKED_STAGE_KEYWORDS.some((k) => text.includes(k))
+}
+
+/** 过滤后的阶段文本：仅保留 3 个允许阶段，屏蔽关键词则回退为“正在理解问题...” */
+const filteredStageText = computed(() => {
+  const raw = stageText.value || ''
+  if (!raw) return '正在理解问题...'
+  if (isBlockedStage(raw)) return '正在组织答案...'
+  return raw
+})
 
 /* ---------- 视图绑定：访客展示演示消息，登录展示真实流 ---------- */
 const displayMessages = computed(() => {
@@ -159,8 +191,23 @@ const displayMessages = computed(() => {
   }
   return messages.value
 })
-const displayThinking = computed(() => (guest.value ? false : thinking.value))
+// 思考中占位：收到真实 thinking 内容后隐藏，由消息列表的思考折叠面板展示
+const displayThinking = computed(() => {
+  if (guest.value) return false
+  // 已有实际 thinking 内容时隐藏占位，避免与折叠面板重复显示
+  if (thinkingHasContent.value) return false
+  // 流式期间即使 thinking 短暂为 false，8.5s 工具间隙仍保持可见
+  if (streaming.value) return true
+  return thinking.value
+})
 const displayStreaming = computed(() => (guest.value ? false : streaming.value))
+// 访客不展示阶段进度；屏蔽“生成查询/执行查询”阶段
+const displayStageVisible = computed(() => {
+  if (guest.value) return false
+  if (!stageVisible.value) return false
+  if (isBlockedStage(stageText.value)) return false
+  return true
+})
 
 /** 停止按钮 */
 function onStopStop() {
@@ -194,10 +241,7 @@ async function loadConversations() {
   try {
     const list = await conversationApi.list()
     conversations.value = list
-    if (activeId.value === undefined && list.length > 0) {
-      activeId.value = list[0].id
-      await chat.loadMessages(list[0].id)
-    }
+    // 刷新首页时保持 activeId 为 undefined，默认进入“新会话”页面
   } catch {
     // 已由拦截器 toast
   } finally {
@@ -442,6 +486,78 @@ onUnmounted(() => {
 .side-expand-float:hover {
   background: var(--bg-hover);
   transform: translateY(-1px);
+}
+
+/* ---------- 阶段进度条 ---------- */
+.stage-progress {
+  flex-shrink: 0;
+  padding: 0 var(--space-5);
+  background: var(--bg-elevated);
+  border-bottom: 1px solid transparent;
+}
+.stage-progress__track {
+  height: 2px;
+  background: var(--accent-soft, rgba(99, 102, 241, 0.12));
+  border-radius: 999px;
+  overflow: hidden;
+}
+.stage-progress__fill {
+  height: 100%;
+  width: 36%;
+  background: linear-gradient(90deg, var(--accent) 0%, var(--accent-strong, var(--accent)) 100%);
+  border-radius: inherit;
+  animation: stage-indeterminate 1.15s var(--ease) infinite;
+}
+.stage-progress__content {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0 10px;
+  font-size: var(--text-xs);
+  color: var(--text-2);
+  letter-spacing: 0.02em;
+}
+.stage-progress__spinner {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--accent);
+  animation: stage-spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+.stage-progress__text {
+  line-height: 1.4;
+  color: var(--text-2);
+  font-weight: 500;
+}
+
+/* 过渡动画：淡入 + 轻微上移 */
+.stage-fade-enter-active,
+.stage-fade-leave-active {
+  transition: opacity 220ms var(--ease), transform 220ms var(--ease), max-height 220ms var(--ease);
+  overflow: hidden;
+  max-height: 64px;
+}
+.stage-fade-enter-from,
+.stage-fade-leave-to {
+  opacity: 0;
+  transform: translateY(-6px);
+  max-height: 0;
+}
+
+@keyframes stage-indeterminate {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(380%);
+  }
+}
+@keyframes stage-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 @media (max-width: 900px) {
