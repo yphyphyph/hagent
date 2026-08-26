@@ -81,6 +81,21 @@ public class ChatServiceImpl implements ChatService {
     /** 连续重复工具调用检测阈值：同一工具连续调用达到该次数视为发散循环，强制收敛，避免无限空转 */
     private static final int REPEAT_TOOL_CALL_LIMIT = 4;
 
+    /**
+     * 重复工具调用阈值（稳定收敛方案）
+     * 同一工具连续相似调用达到该次数则强制收敛
+     *
+     * @author H
+     */
+    private static final int REPEAT_TOOL_LIMIT = 4;
+
+    /**
+     * 收敛指令：工具阶段结束，强制模型基于已有信息直接回答，禁止再发起工具调用
+     *
+     * @author H
+     */
+    private static final String CONVERGE_INSTRUCTION = "工具调用阶段已结束，请基于已有信息直接回答用户问题，不要再发起或以文本形式输出任何工具调用（如 <tool_call> 等标签）。";
+
     /** 历史消息最大保留条数（滑动窗口，防止上下文超限） */
     private static final int MAX_HISTORY_MESSAGES = 20;
 
@@ -514,6 +529,14 @@ public class ChatServiceImpl implements ChatService {
                             // 异常时保存已生成的部分文本+思考内容，保证历史上下文完整（访客模式跳过）
                             String partialText = fullText.toString();
                             String partialThinking = thinkingAccum.length() > 0 ? thinkingAccum.toString() : null;
+                            // 空白内容回退：幻觉过滤后为空时避免持久化空串导致前端显示"(无回复内容)"
+                            if (partialText == null || partialText.isBlank()) {
+                                if (partialThinking != null && !partialThinking.isBlank()) {
+                                    partialText = "已根据已有信息整理回答，详见思考过程";
+                                } else if (partialText != null && partialText.isBlank()) {
+                                    partialText = "已根据已有信息整理回答，详见思考过程";
+                                }
+                            }
                             if (finalConversationId != null && (!partialText.isEmpty() || partialThinking != null)) {
                                 saveMessage(finalConversationId, MessageRoleEnum.ASSISTANT.getCode(),
                                         partialText, null, partialThinking);
@@ -527,6 +550,11 @@ public class ChatServiceImpl implements ChatService {
                             // 流完成，保存完整回复+思考内容到DB（访客模式跳过）
                             String finalText = fullText.toString();
                             String finalThinking = thinkingAccum.length() > 0 ? thinkingAccum.toString() : null;
+                            // 空白内容回退：经幻觉过滤后为空则使用兜底文案，避免持久化空串导致前端显示"(无回复内容)"
+                            // @author H
+                            if (finalText == null || finalText.isBlank()) {
+                                finalText = "已根据已有信息整理回答，详见思考过程";
+                            }
                             if (finalConversationId != null && (!finalText.isEmpty() || finalThinking != null)) {
                                 saveMessage(finalConversationId, MessageRoleEnum.ASSISTANT.getCode(),
                                         finalText, null, finalThinking);
@@ -554,11 +582,17 @@ public class ChatServiceImpl implements ChatService {
     }
 
     /**
-     * 工具调用循环（同步）
+     * 工具调用循环（同步）— 稳定收敛方案
      * 最多执行 MAX_TOOL_ITERATIONS 轮，每轮处理AI返回的工具调用
      * <p>
      * 当AI返回无工具调用时，该最终回复不加入messages（留给stream阶段重新生成），
      * 避免stream阶段看到"已回答过"导致返回空流。
+     * <p>
+     * 收敛机制：
+     * 1. 跟踪 lastToolName / lastToolArgsNormalized / repeatCount
+     * 2. 对每次工具调用归一化参数后判定相似度>80%则视为重复
+     * 3. 连续重复达到 REPEAT_TOOL_LIMIT 时注入 CONVERGE_INSTRUCTION 并结束工具循环
+     * 4. 循环结束后无论是否自然退出，均确保流式阶段带有收敛指令（hasConvergedMessage 判定）
      *
      * @param messages       消息列表（会被追加工具调用链）
      * @param options        带工具回调的Options
@@ -566,12 +600,14 @@ public class ChatServiceImpl implements ChatService {
      * @param toolCallbacks  当前可用工具回调
      * @param sink           SSE事件sink，工具/思考事件实时写入直达前端
      * @param thinkingAccum  思考内容累积器（用于入库持久化）
+     * @author H
      */
     private void callWithTools(List<Message> messages, OpenAiChatOptions options, ChatModel chatModel,
                                ToolCallback[] toolCallbacks, FluxSink<String> sink,
                                StringBuilder thinkingAccum) {
         // 连续重复工具调用追踪：判定模型陷入发散循环（同一工具反复调用但无实质收敛）时强制结束
         String lastToolName = null;
+        String lastToolArgsNormalized = null;
         int repeatCount = 0;
         for (int i = 0; i < MAX_TOOL_ITERATIONS; i++) {
             // 客户端断连后终止工具循环，避免继续消耗模型token
@@ -580,7 +616,7 @@ public class ChatServiceImpl implements ChatService {
                 return;
             }
             // 已注入收敛指令（模型陷入重复调用被强制收尾），直接结束工具循环
-            if (!messages.isEmpty() && messages.get(messages.size() - 1) instanceof SystemMessage) {
+            if (hasConvergedMessage(messages)) {
                 log.info("已注入收敛指令，结束工具调用循环");
                 return;
             }
@@ -607,15 +643,21 @@ public class ChatServiceImpl implements ChatService {
                 if (text.contains(TEXT_TOOL_CALL_MARKER) && i < MAX_TOOL_ITERATIONS - 1) {
                     AssistantMessage.ToolCall synthetic = parseTextToolCall(text);
                     if (synthetic != null) {
-                        // 顺序计数：切换工具时重置计数，连续同一工具达到阈值判定为发散循环
-                        if (lastToolName != null && lastToolName.equals(synthetic.name())) {
+                        // 归一化当前参数并判定与上次是否相似（相似度>80%视为重复）
+                        // @author H
+                        String currentNormalized = normalizeArgs(synthetic.arguments());
+                        boolean similar = lastToolName != null
+                                && lastToolName.equals(synthetic.name())
+                                && isSimilarArgs(lastToolArgsNormalized, currentNormalized);
+                        if (similar) {
                             repeatCount++;
                         } else {
-                            lastToolName = synthetic.name();
                             repeatCount = 1;
                         }
-                        if (repeatCount >= REPEAT_TOOL_CALL_LIMIT) {
-                            log.warn("检测到连续重复工具调用: {}，强制收敛终止工具循环", synthetic.name());
+                        lastToolName = synthetic.name();
+                        lastToolArgsNormalized = currentNormalized;
+                        if (repeatCount >= REPEAT_TOOL_LIMIT) {
+                            log.warn("检测到连续重复工具调用: {}（相似参数），强制收敛终止工具循环，repeatCount={}", synthetic.name(), repeatCount);
                             injectConvergenceMessage(messages);
                             return;
                         }
@@ -636,7 +678,7 @@ public class ChatServiceImpl implements ChatService {
                     }
                 }
                 log.info("工具调用阶段结束，无更多工具调用，迭代次数={}", i + 1);
-                return;
+                break;
             }
 
             // 仅含工具调用的assistant消息才加入（保持调用链完整）
@@ -646,15 +688,21 @@ public class ChatServiceImpl implements ChatService {
             log.info("工具调用迭代 {}: {} 次工具调用", i + 1, assistantMsg.getToolCalls().size());
 
             for (AssistantMessage.ToolCall toolCall : assistantMsg.getToolCalls()) {
-                // 顺序计数：切换工具时重置计数，连续同一工具达到阈值判定为发散循环，强制收敛避免无限空转
-                if (lastToolName != null && lastToolName.equals(toolCall.name())) {
+                // 归一化当前参数并与上次对比，相似度>80%视为重复
+                // @author H
+                String currentNormalized = normalizeArgs(toolCall.arguments());
+                boolean similar = lastToolName != null
+                        && lastToolName.equals(toolCall.name())
+                        && isSimilarArgs(lastToolArgsNormalized, currentNormalized);
+                if (similar) {
                     repeatCount++;
                 } else {
-                    lastToolName = toolCall.name();
                     repeatCount = 1;
                 }
-                if (repeatCount >= REPEAT_TOOL_CALL_LIMIT) {
-                    log.warn("检测到连续重复工具调用: {}，强制收敛终止工具循环", toolCall.name());
+                lastToolName = toolCall.name();
+                lastToolArgsNormalized = currentNormalized;
+                if (repeatCount >= REPEAT_TOOL_LIMIT) {
+                    log.warn("检测到连续重复工具调用: {}（相似参数），强制收敛终止工具循环，repeatCount={}", toolCall.name(), repeatCount);
                     injectConvergenceMessage(messages);
                     return;
                 }
@@ -680,23 +728,142 @@ public class ChatServiceImpl implements ChatService {
                         .build());
             }
         }
-        // 达到最大迭代次数仍未见最终答复：注入收敛指令，确保流式阶段模型明确收尾作答（不再输出文本工具调用）
-        log.warn("工具调用达到最大迭代次数: {}，注入收敛指令强制收尾", MAX_TOOL_ITERATIONS);
-        injectConvergenceMessage(messages);
+        // 循环结束后（无论自然退出还是达到上限），确保流式阶段始终带有收敛指令，避免模型再以文本形式输出工具调用
+        if (!hasConvergedMessage(messages)) {
+            log.info("工具调用循环结束，注入收敛指令以保障流式阶段稳定收敛");
+            injectConvergenceMessage(messages);
+        }
     }
 
     /**
      * 注入收敛指令：告知模型工具调用阶段已结束，基于已有信息直接作答，禁止再发起任何工具调用
      *
      * @param messages 对话消息列表
+     * @author H
      */
     private void injectConvergenceMessage(List<Message> messages) {
         // 防止重复注入
-        if (!messages.isEmpty() && messages.get(messages.size() - 1) instanceof SystemMessage) {
+        if (hasConvergedMessage(messages)) {
             return;
         }
-        messages.add(new SystemMessage("工具调用阶段已结束。请基于已有信息直接回答用户问题，"
-                + "不要再发起任何新的工具调用，也不要以文本形式输出工具调用片段（如 <tool_call> 等）。"));
+        messages.add(new SystemMessage(CONVERGE_INSTRUCTION));
+    }
+
+    /**
+     * 判断消息列表中是否已包含收敛指令
+     *
+     * @param messages 消息列表
+     * @return 是否已包含收敛指令
+     * @author H
+     */
+    private boolean hasConvergedMessage(List<Message> messages) {
+        if (messages == null || messages.isEmpty()) {
+            return false;
+        }
+        for (Message msg : messages) {
+            if (msg instanceof SystemMessage sm) {
+                String text = sm.getText();
+                if (text != null && text.contains(CONVERGE_INSTRUCTION)) {
+                    return true;
+                }
+                // 兼容旧文案：也检查包含关键短语
+                if (text != null && text.contains("工具调用阶段已结束")) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 归一化工具参数：转小写、去首尾空格、移除标点与空白字符
+     * 用于重复调用的相似度判定
+     *
+     * @param args 原始参数 JSON 字符串
+     * @return 归一化后的字符串
+     * @author H
+     */
+    private String normalizeArgs(String args) {
+        if (args == null) {
+            return "";
+        }
+        // 转小写并 trim
+        String normalized = args.toLowerCase().trim();
+        // 移除标点符号与空白（保留字母数字与中文）
+        // 使用正则移除所有非字母数字字符
+        normalized = normalized.replaceAll("[\\p{Punct}\\s]+", "");
+        return normalized;
+    }
+
+    /**
+     * 判断两次归一化参数是否相似（相似度>80%）
+     * 策略：contains 互包含 或 Levenshtein 距离 < 20% 长度
+     *
+     * @param lastArgs 上次归一化参数
+     * @param curArgs  当前归一化参数
+     * @return 是否相似
+     * @author H
+     */
+    private boolean isSimilarArgs(String lastArgs, String curArgs) {
+        if (lastArgs == null || curArgs == null) {
+            return false;
+        }
+        if (lastArgs.isEmpty() && curArgs.isEmpty()) {
+            return true;
+        }
+        if (lastArgs.isEmpty() || curArgs.isEmpty()) {
+            return false;
+        }
+        // 互包含判定：若一个包含另一个，视为高度相似
+        if (lastArgs.contains(curArgs) || curArgs.contains(lastArgs)) {
+            return true;
+        }
+        // Levenshtein 距离判定：距离小于较长字符串长度的20%则相似度>80%
+        int maxLen = Math.max(lastArgs.length(), curArgs.length());
+        if (maxLen == 0) {
+            return true;
+        }
+        int distance = levenshteinDistance(lastArgs, curArgs);
+        double similarity = 1.0 - ((double) distance / maxLen);
+        return similarity > 0.8;
+    }
+
+    /**
+     * 计算 Levenshtein 编辑距离
+     *
+     * @param a 字符串 a
+     * @param b 字符串 b
+     * @return 编辑距离
+     * @author H
+     */
+    private int levenshteinDistance(String a, String b) {
+        int n = a.length();
+        int m = b.length();
+        // 优化：交换使 m 更小以减少空间
+        if (n < m) {
+            String tmp = a;
+            a = b;
+            b = tmp;
+            n = a.length();
+            m = b.length();
+        }
+        int[] prev = new int[m + 1];
+        int[] curr = new int[m + 1];
+        for (int j = 0; j <= m; j++) {
+            prev[j] = j;
+        }
+        for (int i = 1; i <= n; i++) {
+            curr[0] = i;
+            char ca = a.charAt(i - 1);
+            for (int j = 1; j <= m; j++) {
+                int cost = (ca == b.charAt(j - 1)) ? 0 : 1;
+                curr[j] = Math.min(Math.min(curr[j - 1] + 1, prev[j] + 1), prev[j - 1] + cost);
+            }
+            int[] tmp = prev;
+            prev = curr;
+            curr = tmp;
+        }
+        return prev[m];
     }
 
     /**
