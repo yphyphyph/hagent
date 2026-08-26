@@ -1,25 +1,24 @@
 /*
- HAgent 数据库初始化脚本
+ Navicat Premium Dump SQL
 
- 说明：
- - 目标数据库：hagent（MySQL 8.0+，utf8mb4）
- - 用途：为 HAgent 独立应用初始化 AI 相关数据表
- - 表结构：chat_conversation / chat_message / chat_pending_action / knowledge_file /
-            ai_prompt / system_config 字段定义与 huishace 源库保持一致（可直接复用存量数据迁移到 hagent）
- - 新增：hagent_user（Sa-Token 登录用户表）
- - 默认配置：system_config 插入 config_type='ai' 的默认配置项
- - 本脚本不执行任何事务 DDL，可重复执行（DROP IF EXISTS + CREATE）
+ Source Server         : 本地MySQL
+ Source Server Type    : MySQL
+ Source Server Version : 80042 (8.0.42)
+ Source Host           : localhost:3306
+ Source Schema         : hagent
+
+ Target Server Type    : MySQL
+ Target Server Version : 80042 (8.0.42)
+ File Encoding         : 65001
+
+ Date: 26/08/2026 20:47:48
 */
-
-CREATE DATABASE IF NOT EXISTS `hagent` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-USE `hagent`;
 
 SET NAMES utf8mb4;
 SET FOREIGN_KEY_CHECKS = 0;
 
 -- ----------------------------
--- Table structure for ai_prompt（AI提示词库表）
--- 字段定义与 huishace 源库 ai_prompt 保持一致
+-- Table structure for ai_prompt
 -- ----------------------------
 DROP TABLE IF EXISTS `ai_prompt`;
 CREATE TABLE `ai_prompt`  (
@@ -42,11 +41,10 @@ CREATE TABLE `ai_prompt`  (
   INDEX `idx_category`(`category` ASC) USING BTREE,
   INDEX `idx_status`(`status` ASC) USING BTREE,
   INDEX `idx_sort_order`(`sort_order` ASC) USING BTREE
-) ENGINE = InnoDB AUTO_INCREMENT = 1 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_unicode_ci COMMENT = 'AI提示词库表' ROW_FORMAT = DYNAMIC;
+) ENGINE = InnoDB AUTO_INCREMENT = 5 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_unicode_ci COMMENT = 'AI提示词库表' ROW_FORMAT = DYNAMIC;
 
 -- ----------------------------
--- Table structure for chat_conversation（AI聊天会话表）
--- 字段定义与 huishace 源库 chat_conversation 保持一致
+-- Table structure for chat_conversation
 -- ----------------------------
 DROP TABLE IF EXISTS `chat_conversation`;
 CREATE TABLE `chat_conversation`  (
@@ -73,11 +71,10 @@ CREATE TABLE `chat_conversation`  (
   INDEX `idx_scene`(`scene` ASC) USING BTREE,
   INDEX `idx_status`(`status` ASC) USING BTREE,
   INDEX `idx_last_message_at`(`last_message_at` ASC) USING BTREE
-) ENGINE = InnoDB AUTO_INCREMENT = 1 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_unicode_ci COMMENT = 'AI聊天会话表' ROW_FORMAT = DYNAMIC;
+) ENGINE = InnoDB AUTO_INCREMENT = 43 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_unicode_ci COMMENT = 'AI聊天会话表' ROW_FORMAT = DYNAMIC;
 
 -- ----------------------------
--- Table structure for chat_message（AI聊天消息表）
--- 字段定义与 huishace 源库 chat_message 保持一致
+-- Table structure for chat_message
 -- ----------------------------
 DROP TABLE IF EXISTS `chat_message`;
 CREATE TABLE `chat_message`  (
@@ -88,7 +85,7 @@ CREATE TABLE `chat_message`  (
   `message_type` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL DEFAULT 'text' COMMENT '消息类型(text/image/tool)',
   `tool_name` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL DEFAULT NULL COMMENT '工具名称',
   `tool_payload` json NULL COMMENT '工具调用参数(JSON)',
-  `thinking_content` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL COMMENT '思考过程内容(reasoning/thinking，仅助手消息)',
+  `thinking_content` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL COMMENT '鎬濊?杩囩▼鍐呭?(reasoning/thinking锛屼粎鍔╂墜娑堟伅)',
   `token_count` int NOT NULL DEFAULT 0 COMMENT 'Token数量',
   `status` int NOT NULL DEFAULT 1 COMMENT '状态(1=正常 0=已撤回)',
   `error_message` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL DEFAULT NULL COMMENT '错误信息',
@@ -102,11 +99,10 @@ CREATE TABLE `chat_message`  (
   INDEX `idx_role`(`role` ASC) USING BTREE,
   INDEX `idx_status`(`status` ASC) USING BTREE,
   INDEX `idx_created_at`(`created_at` ASC) USING BTREE
-) ENGINE = InnoDB AUTO_INCREMENT = 1 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_unicode_ci COMMENT = 'AI聊天消息表' ROW_FORMAT = DYNAMIC;
+) ENGINE = InnoDB AUTO_INCREMENT = 169 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_unicode_ci COMMENT = 'AI聊天消息表' ROW_FORMAT = DYNAMIC;
 
 -- ----------------------------
--- Table structure for chat_pending_action（AI待确认操作表）
--- 字段定义与 huishace 源库 chat_pending_action 保持一致
+-- Table structure for chat_pending_action
 -- ----------------------------
 DROP TABLE IF EXISTS `chat_pending_action`;
 CREATE TABLE `chat_pending_action`  (
@@ -132,11 +128,30 @@ CREATE TABLE `chat_pending_action`  (
   INDEX `idx_user_id`(`user_id` ASC) USING BTREE,
   INDEX `idx_status`(`status` ASC) USING BTREE,
   INDEX `idx_expire_time`(`expire_time` ASC) USING BTREE
-) ENGINE = InnoDB AUTO_INCREMENT = 1 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_unicode_ci COMMENT = 'AI待确认操作表' ROW_FORMAT = DYNAMIC;
+) ENGINE = InnoDB AUTO_INCREMENT = 2 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_unicode_ci COMMENT = 'AI待确认操作表' ROW_FORMAT = DYNAMIC;
 
 -- ----------------------------
--- Table structure for knowledge_file（知识库文件表）
--- 字段定义与 huishace 源库 knowledge_file 保持一致
+-- Table structure for hagent_user
+-- ----------------------------
+DROP TABLE IF EXISTS `hagent_user`;
+CREATE TABLE `hagent_user`  (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '用户ID',
+  `username` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '登录用户名',
+  `password` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '登录密码(BCrypt哈希)',
+  `nickname` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL DEFAULT NULL COMMENT '昵称',
+  `avatar` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL DEFAULT NULL COMMENT '头像URL',
+  `role` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'admin' COMMENT '角色(默认admin，多角色可用逗号分隔)',
+  `status` int NOT NULL DEFAULT 1 COMMENT '状态(1=正常 0=禁用)',
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  `deleted` tinyint(1) NOT NULL DEFAULT 0 COMMENT '逻辑删除(0=未删除 1=已删除)',
+  PRIMARY KEY (`id`) USING BTREE,
+  UNIQUE INDEX `uk_username`(`username` ASC) USING BTREE,
+  INDEX `idx_status`(`status` ASC) USING BTREE
+) ENGINE = InnoDB AUTO_INCREMENT = 2 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_unicode_ci COMMENT = 'Sa-Token登录用户表' ROW_FORMAT = DYNAMIC;
+
+-- ----------------------------
+-- Table structure for knowledge_file
 -- ----------------------------
 DROP TABLE IF EXISTS `knowledge_file`;
 CREATE TABLE `knowledge_file`  (
@@ -145,7 +160,7 @@ CREATE TABLE `knowledge_file`  (
   `file_url` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '文件URL',
   `object_name` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '对象存储路径',
   `file_size` bigint NOT NULL DEFAULT 0 COMMENT '文件大小(字节)',
-  `file_type` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '文件类型(pdf/docx/txt/md)',
+  `file_type` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT 'MIME类型',
   `file_ext` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '文件扩展名',
   `vector_status` int NOT NULL DEFAULT 1 COMMENT '向量化状态(1=待处理 2=处理中 3=已完成 4=失败)',
   `vector_version` int NOT NULL DEFAULT 1 COMMENT '向量版本号',
@@ -161,11 +176,10 @@ CREATE TABLE `knowledge_file`  (
   INDEX `idx_vector_status`(`vector_status` ASC) USING BTREE,
   INDEX `idx_file_type`(`file_type` ASC) USING BTREE,
   INDEX `idx_created_at`(`created_at` ASC) USING BTREE
-) ENGINE = InnoDB AUTO_INCREMENT = 1 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_unicode_ci COMMENT = '知识库文件表' ROW_FORMAT = DYNAMIC;
+) ENGINE = InnoDB AUTO_INCREMENT = 2075228410665365509 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_unicode_ci COMMENT = '知识库文件表' ROW_FORMAT = DYNAMIC;
 
 -- ----------------------------
--- Table structure for system_config（系统配置表）
--- 字段定义与 huishace 源库 system_config 保持一致
+-- Table structure for system_config
 -- ----------------------------
 DROP TABLE IF EXISTS `system_config`;
 CREATE TABLE `system_config`  (
@@ -184,68 +198,6 @@ CREATE TABLE `system_config`  (
   UNIQUE INDEX `uk_config_key`(`config_key` ASC) USING BTREE,
   INDEX `idx_config_type`(`config_type` ASC) USING BTREE,
   INDEX `idx_is_public`(`is_public` ASC) USING BTREE
-) ENGINE = InnoDB AUTO_INCREMENT = 1 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_unicode_ci COMMENT = '系统配置表' ROW_FORMAT = DYNAMIC;
-
--- ----------------------------
--- Records of system_config（config_type='ai' 的默认配置）
--- 注意：
---  1. 各 api-key / base-url 为占位，需在首次部署后通过环境变量或运行时/控制台配置项替换；
---  2. config_key 唯一索引，重复执行本脚本不会追加重复配置；
---  3. 默认模型与调用方式参考 huishace 源库 2.6 / 2.6.1 节（阿里云 DashScope 兼容模式）。
--- ----------------------------
-INSERT INTO `system_config` (`config_key`, `config_value`, `config_type`, `description`, `is_public`) VALUES
--- 公共默认参数
-('ai.default_model',        'qwen-plus',                  'ai', '默认对话模型名称', 1),
-('ai.default_temperature',  '0.7',                        'ai', '默认温度参数(0-2)', 1),
-('ai.default_max_tokens',   '4096',                       'ai', '默认最大Token输出数', 1),
-('ai.system_prompt',        '你是一个智能助手，请用中文、专业、友好的方式回答用户问题。', 'ai', '默认系统提示词', 0),
-('ai.enable_rag',           'true',                       'ai', '是否启用RAG知识库检索(布尔)', 1),
-('ai.pending_action_expire', '600',                       'ai', '待确认操作过期时间(单位秒，默认10分钟)', 0),
-('ai.vector-index',         'hagent_embedding',        'ai', '向量索引名称(向量数据库/索引集合名)', 0),
--- Chat 对话模型
-('ai.chat.api-key',         '',                            'ai', '对话模型API密钥[运行时或环境变量填]', 0),
-('ai.chat.base-url',        'https://dashscope.aliyuncs.com/compatible-mode', 'ai', '对话模型API基础地址(OpenAI兼容)', 0),
-('ai.chat.model',           'qwen-plus',                  'ai', '对话模型名称', 0),
--- Embedding 向量化模型
-('ai.embedding.api-key',    '',                            'ai', '向量化模型API密钥[运行时或环境变量填]', 0),
-('ai.embedding.base-url',   'https://dashscope.aliyuncs.com/compatible-mode', 'ai', '向量化模型API基础地址', 0),
-('ai.embedding.model',      'text-embedding-v3',          'ai', '向量化模型名称', 0),
--- Vision 视觉(多模态)模型
-('ai.vision.api-key',       '',                            'ai', '视觉模型API密钥[运行时或环境变量填]', 0),
-('ai.vision.base-url',      'https://dashscope.aliyuncs.com/compatible-mode', 'ai', '视觉模型API基础地址', 0),
-('ai.vision.model',         'qwen-vl-plus',               'ai', '视觉模型名称', 0);
-
--- ----------------------------
--- Table structure for hagent_user（Sa-Token 登录用户表）
--- 说明：
---  - password 存储 BCrypt 哈希（Spring Security BCryptPasswordEncoder，长度60字符，VARCHAR(100) 足够）；
---  - deleted 用于 MyBatis-Plus 逻辑删除；
---  - role 使用字符串便于扩展多角色（默认 'admin'，可用逗号分隔如 'admin,user'）。
--- ----------------------------
-DROP TABLE IF EXISTS `hagent_user`;
-CREATE TABLE `hagent_user`  (
-  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '用户ID',
-  `username` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '登录用户名',
-  `password` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '登录密码(BCrypt哈希)',
-  `nickname` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL DEFAULT NULL COMMENT '昵称',
-  `avatar` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL DEFAULT NULL COMMENT '头像URL',
-  `role` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'admin' COMMENT '角色(默认admin，多角色可用逗号分隔)',
-  `status` int NOT NULL DEFAULT 1 COMMENT '状态(1=正常 0=禁用)',
-  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
-  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
-  `deleted` tinyint(1) NOT NULL DEFAULT 0 COMMENT '逻辑删除(0=未删除 1=已删除)',
-  PRIMARY KEY (`id`) USING BTREE,
-  UNIQUE INDEX `uk_username`(`username` ASC) USING BTREE,
-  INDEX `idx_status`(`status` ASC) USING BTREE
-) ENGINE = InnoDB AUTO_INCREMENT = 1 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_unicode_ci COMMENT = 'Sa-Token登录用户表' ROW_FORMAT = DYNAMIC;
-
--- ----------------------------
--- Records of hagent_user
--- 初始管理员 admin，密码 BCrypt 哈希对应明文为 'admin123'
--- 注意：生产环境首次登录后请立即修改默认密码
--- BCrypt 哈希($2a$10$...)：对明文 'admin123'，算法 BCrypt password encoder
--- ----------------------------
-INSERT INTO `hagent_user` (`username`, `password`, `nickname`, `avatar`, `role`, `status`) VALUES
-('admin', '$2a$10$eZ2hjlch.kJMUk.96RTJ6Ormwhx.C8Ryw3MKerU.RodxPhtCoNkFa', '系统管理员', NULL, 'admin', 1);
+) ENGINE = InnoDB AUTO_INCREMENT = 19 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_unicode_ci COMMENT = '系统配置表' ROW_FORMAT = DYNAMIC;
 
 SET FOREIGN_KEY_CHECKS = 1;
