@@ -1,6 +1,7 @@
 package com.hagent.ai.model.entity;
 
 import com.baomidou.mybatisplus.annotation.*;
+import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Data;
 
 import java.io.Serializable;
@@ -41,7 +42,13 @@ public class ChatMessage implements Serializable {
 
     /** 思考过程内容（reasoning/thinking，仅助手消息） */
     @TableField("thinking_content")
+    @Schema(description = "思考过程内容")
     private String thinkingContent;
+
+    /** 来源引用(JSON数组) */
+    @TableField("sources")
+    @Schema(description = "来源引用(JSON数组)")
+    private String sources;
 
     /** 消息Token数量 */
     private Integer tokenCount;

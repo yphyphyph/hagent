@@ -48,6 +48,10 @@ public class ChatMessageVO {
     @Schema(description = "思考过程内容")
     private String thinkingContent;
 
+    /** 来源引用(JSON数组) */
+    @Schema(description = "来源引用(JSON数组)")
+    private String sources;
+
     /** Token数量 */
     @Schema(description = "Token数量")
     private Integer tokenCount;

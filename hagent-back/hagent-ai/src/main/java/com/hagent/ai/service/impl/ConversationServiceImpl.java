@@ -200,6 +200,8 @@ public class ConversationServiceImpl extends ServiceImpl<ChatConversationMapper,
         vo.setToolPayload(entity.getToolPayload());
         // 历史思考内容回显
         vo.setThinkingContent(entity.getThinkingContent());
+        // 来源引用回显(JSON数组)
+        vo.setSources(entity.getSources());
         vo.setTokenCount(entity.getTokenCount());
         vo.setStatus(entity.getStatus());
         vo.setErrorMessage(entity.getErrorMessage());

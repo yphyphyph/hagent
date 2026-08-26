@@ -49,7 +49,7 @@
           </template>
 
           <!-- AI 回复：去气泡全宽排版 -->
-          <div v-else-if="m.role === 'ai' && (m.content || m.tools?.length || m.thinkingContent)" class="ai-msg">
+          <div v-else-if="m.role === 'ai' && (m.content || m.tools?.length || m.thinkingContent || m.sources?.length)" class="ai-msg">
             <!-- 工具徽章行：去重后展示，同名工具合并为一次并追加 xN 计数 -->
             <div v-if="m.tools?.length" class="tool-row">
               <span v-for="badge in dedupedTools(m.tools)" :key="badge.name" class="tool-chip">
@@ -74,12 +74,28 @@
               ></div>
             </div>
 
-            <!-- 正文 -->
+            <!-- 正文（支持行内引用角标：[1] 点击可打开抽屉） -->
             <div
               class="md-body ai-content"
-              v-html="renderMarkdown(m.content)"
+              v-html="renderWithCitations(m)"
               @click="onContentClick($event)"
             ></div>
+
+            <!-- 行内引用角标行（当正文未包含 [n] 标记或始终展示徽章便于点击） -->
+            <div v-if="m.sources?.length" class="source-citations">
+              <span class="source-citations__label">引用</span>
+              <button
+                v-for="(s, idx) in m.sources"
+                :key="citationKey(s, idx)"
+                class="source-badge"
+                type="button"
+                :title="sourceTitle(s)"
+                @click="openDrawer(m, idx)"
+              >
+                [{{ idx + 1 }}]
+              </button>
+              <span class="source-citations__hint">{{ m.sources.length }} 个来源</span>
+            </div>
 
             <!-- 回答耗时统计（仅展示：毫秒转秒，保留1位小数） -->
             <div v-if="m.elapsedMs !== undefined" class="ai-meta">
@@ -97,13 +113,25 @@
         </div>
       </div>
     </template>
+
+    <!-- 溯源抽屉 -->
+    <SourceDrawer
+      :visible="drawerVisible"
+      :sources="drawerSources"
+      :active-index="drawerIndex"
+      @close="drawerVisible = false"
+      @jump="onJumpToSource"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
 import { nextTick, onMounted, reactive, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
+import { useMessage } from 'naive-ui'
 import { renderMarkdown } from '@/utils/markdown'
-import type { UiChatMessage } from '@/composables/useChat'
+import type { UiChatMessage, ChatSource } from '@/composables/useChat'
+import SourceDrawer from '@/components/chat/SourceDrawer.vue'
 
 const props = withDefaults(
   defineProps<{
@@ -204,16 +232,35 @@ function dedupedTools(tools?: string[]): Array<{ name: string; count: number; la
   }))
 }
 
-/* ---------- 代码块复制（事件委托） ---------- */
+/* ---------- 代码块复制与行内引用点击（事件委托） ---------- */
 async function onContentClick(e: MouseEvent) {
   const target = e.target as HTMLElement
+  // 行内引用角标点击：优先处理
+  const cite = target.closest('.source-badge-inline') as HTMLElement | null
+  if (cite) {
+    const idx = Number(cite.dataset.index ?? '-1')
+    const msgId = cite.dataset.msg ?? ''
+    if (!Number.isNaN(idx) && idx >= 0) {
+      // 通过消息 id 查找对应的消息对象
+      const msg = props.messages.find((m) => String(m.id) === msgId)
+      if (msg) openDrawer(msg, idx)
+      else {
+        // 兜底：若找不到则用当前抽屉源直接跳转
+        if (drawerSources.value.length > idx) {
+          drawerIndex.value = idx
+          drawerVisible.value = true
+        }
+      }
+    }
+    return
+  }
   const btn = target.closest('.code-copy') as HTMLButtonElement | null
   if (!btn) return
   const code = btn.closest('.code-block')?.querySelector('code')
   if (!code) return
   try {
     await navigator.clipboard.writeText(code.textContent ?? '')
-    btn.textContent = '已复制 ✓'
+    btn.textContent = '已复制'
     btn.classList.add('code-copy--done')
     setTimeout(() => {
       btn.textContent = '复制'
@@ -222,6 +269,82 @@ async function onContentClick(e: MouseEvent) {
   } catch {
     btn.textContent = '复制失败'
     setTimeout(() => (btn.textContent = '复制'), 1500)
+  }
+}
+
+/* ---------- 溯源引用：渲染与抽屉 ---------- */
+const router = useRouter()
+const naiveMessage = useMessage()
+const drawerVisible = ref(false)
+const drawerSources = ref<ChatSource[]>([])
+const drawerIndex = ref(0)
+
+function fileNameOf(s: ChatSource): string {
+  return String(s.file_name ?? s.fileName ?? '')
+}
+
+function sourceTitle(s: ChatSource): string {
+  const name = fileNameOf(s)
+  const snippet = String(s.snippet ?? s.content ?? '')
+  return name ? `${name} — ${snippet.slice(0, 80)}` : snippet.slice(0, 80)
+}
+
+function citationKey(s: ChatSource, idx: number): string {
+  return `${String(s.file_id ?? '')}-${String(s.chunk_id ?? '')}-${idx}`
+}
+
+// 行内引用渲染：先用 marked 渲染，再将文本中的 [1]/[2] 转为可点击角标（保留 markdown 结构）
+function renderWithCitations(m: UiChatMessage): string {
+  const base = renderMarkdown(m.content ?? '')
+  if (!m.sources?.length) return base
+  // 若正文已包含 [n] 文本标记，将其替换为带 data-index 的可点击 span，便于事件委托打开抽屉
+  // 正则匹配 [1] [2] ... 且 n 在 1..sources.length 范围内
+  let html = base
+  // 仅当存在 [数字] 模式时才处理，避免无意义替换
+  if (/\[(\d+)\]/.test(m.content ?? '')) {
+    html = html.replace(/\[(\d+)\]/g, (match, numStr) => {
+      const n = Number(numStr)
+      if (Number.isNaN(n) || n < 1 || n > (m.sources?.length ?? 0)) return match
+      const idx = n - 1
+      return `<button class="source-badge-inline" type="button" data-index="${idx}" data-msg="${String(m.id)}" title="${escapeAttr(sourceTitle(m.sources![idx]))}">[${n}]</button>`
+    })
+  }
+  return html
+}
+
+// 属性转义（抽屉标题用）
+function escapeAttr(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+function openDrawer(m: UiChatMessage, idx: number) {
+  drawerSources.value = m.sources ?? []
+  drawerIndex.value = idx
+  drawerVisible.value = true
+}
+
+// 跳转至原文：优先跳转知识库页面，携带 file_id，便于高亮定位
+function onJumpToSource(source: ChatSource, _idx: number) {
+  const fid = source.file_id
+  // 复制片段后提示（由抽屉内按钮处理复制），此处仅处理跳转
+  try {
+    if (fid != null && String(fid).trim()) {
+      router.push({ path: '/admin/knowledge', query: { file_id: String(fid) } }).catch(() => {
+        // 路由不存在时降级提示
+        naiveMessage.info(`文件 ${fileNameOf(source) || fid} 原文查看（file_id=${fid}）`)
+      })
+    } else {
+      const name = fileNameOf(source)
+      if (name) {
+        router.push({ path: '/admin/knowledge', query: { file_name: name } }).catch(() => {
+          naiveMessage.info(`文件 ${name} 原文查看`)
+        })
+      } else {
+        naiveMessage.info('该来源暂无可跳转的原文标识')
+      }
+    }
+  } catch {
+    naiveMessage.info('跳转失败，请在知识库中手动检索文件')
   }
 }
 
@@ -244,10 +367,10 @@ function scrollToBottom(force = false) {
 }
 
 watch(
-  // 消息条数或任一消息内容/思考内容变化时尝试贴底（用户上滚时由 stickToBottom 暂停）
+  // 消息条数或任一消息内容/思考内容/溯源变化时尝试贴底（用户上滚时由 stickToBottom 暂停）
   () => [
     props.messages.length,
-    props.messages.map((m) => `${m.content.length}:${(m.thinkingContent ?? '').length}:${m.thinkingExpanded ? 1 : 0}`).join(','),
+    props.messages.map((m) => `${m.content.length}:${(m.thinkingContent ?? '').length}:${m.thinkingExpanded ? 1 : 0}:${m.sources?.length ?? 0}`).join(','),
     props.thinking,
   ],
   () => scrollToBottom(),
@@ -604,5 +727,84 @@ defineExpose({ scrollToBottom })
 
 .fade-up {
   animation: fade-up 0.35s var(--ease) both;
+}
+
+/* ---------- 溯源引用角标 ---------- */
+.source-citations {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+}
+.source-citations__label {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--text-3);
+  letter-spacing: 0.04em;
+}
+.source-citations__hint {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+}
+.source-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid var(--accent-border);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: var(--text-xs);
+  font-family: var(--font-mono);
+  font-weight: 700;
+  cursor: pointer;
+  transition: all var(--dur-fast) var(--ease);
+}
+.source-badge:hover {
+  background: var(--accent);
+  color: #0f172a;
+  transform: translateY(-1px);
+}
+[data-theme='light'] .source-badge:hover {
+  color: #fff;
+}
+
+/* 行内角标（正文中的 [1] 替换） */
+:deep(.source-badge-inline) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  margin: 0 2px;
+  border-radius: 999px;
+  border: 1px solid var(--accent-border);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11px;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  line-height: 1;
+  vertical-align: super;
+  cursor: pointer;
+  transition: all var(--dur-fast) var(--ease);
+}
+:deep(.source-badge-inline:hover) {
+  background: var(--accent);
+  color: #0f172a;
+}
+[data-theme='light'] :deep(.source-badge-inline:hover) {
+  color: #fff;
 }
 </style>

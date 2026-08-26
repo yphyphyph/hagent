@@ -7,6 +7,8 @@ import com.hagent.ai.core.RagService;
 import com.hagent.ai.model.dto.AiToolRequest;
 import com.hagent.ai.service.AiToolService;
 import com.hagent.ai.service.TextToSqlService;
+import com.hagent.knowledge.entity.KnowledgeFile;
+import com.hagent.knowledge.mapper.KnowledgeFileMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.Message;
@@ -17,6 +19,8 @@ import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.openai.OpenAiChatOptions;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 import reactor.core.publisher.Flux;
@@ -25,6 +29,8 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * AI 智能工具服务实现
@@ -48,12 +54,20 @@ public class AiToolServiceImpl implements AiToolService {
     private final TextToSqlService textToSqlService;
     private final ObjectMapper objectMapper;
 
+    /** 知识库文件 Mapper（可选注入，用于 file_name 兜底） */
+    @Autowired(required = false)
+    @Lazy
+    private KnowledgeFileMapper knowledgeFileMapper;
+
     /** RAG 检索 TopK */
     private static final int RAG_TOP_K = 5;
     /** RAG 相似度阈值 */
     private static final double RAG_THRESHOLD = 0.5;
     /** RAG 上下文单段最大字符数 */
     private static final int RAG_SEGMENT_MAX = 800;
+
+    /** chunk_id 前缀解析正则：file-<fileId>-chunk-<index> */
+    private static final Pattern CHUNK_ID_PATTERN = Pattern.compile("^file-(.+?)-chunk-.*$");
 
     @Override
     public List<Map<String, Object>> listTools() {
@@ -147,9 +161,15 @@ public class AiToolServiceImpl implements AiToolService {
             return Flux.just(meta, wrapToken("未在知识库中检索到相关内容，请补充资料或换一种问法。"), "[FINAL]");
         }
 
-        // 组装上下文与引用
+        // 组装上下文与引用（统一键 file_id/file_name/chunk_index，兼容旧键并支持 chunk_id 兜底）
         StringBuilder context = new StringBuilder();
         List<Map<String, Object>> citations = new ArrayList<>();
+        // 样例日志：记录首条 Document 的实际 metadata keys，便于排查 Unknown file
+        if (!docs.isEmpty()) {
+            Document sample = docs.get(0);
+            Map<String, Object> sampleMeta = sample.getMetadata() != null ? sample.getMetadata() : Map.of();
+            log.info("ragQa 命中样例: docId={}, metadataKeys={}, metadata={}", sample.getId(), sampleMeta.keySet(), sampleMeta);
+        }
         int idx = 1;
         for (Document doc : docs) {
             String text = doc.getText() != null ? doc.getText() : "";
@@ -158,8 +178,26 @@ public class AiToolServiceImpl implements AiToolService {
             Map<String, Object> meta = doc.getMetadata() != null ? doc.getMetadata() : Map.of();
             Map<String, Object> citation = new LinkedHashMap<>();
             citation.put("index", idx);
-            citation.put("fileId", meta.get("file_id"));
-            citation.put("fileName", meta.getOrDefault("file_name", meta.get("fileName")));
+            // fileId：兼容 file_id/fileId/file-id，并支持从 chunk_id 解析
+            Object fileId = firstNonNull(meta.get("file_id"), meta.get("fileId"), meta.get("file-id"), meta.get("fileID"));
+            if (fileId == null || String.valueOf(fileId).isBlank()) {
+                String parsed = extractFileIdFromChunkId(doc.getId());
+                if (parsed != null) {
+                    fileId = parsed;
+                }
+            }
+            citation.put("fileId", fileId);
+            // fileName：兼容 file_name/fileName，缺失时通过 KnowledgeFileMapper 兜底
+            Object fileName = firstNonNull(meta.get("file_name"), meta.get("fileName"), meta.get("file-name"), meta.get("sourceFileName"));
+            if (fileName == null || String.valueOf(fileName).isBlank()) {
+                String fileIdStr = fileId != null ? String.valueOf(fileId) : extractFileIdFromChunkId(doc.getId());
+                String resolved = resolveFileNameViaMapper(fileIdStr);
+                if (resolved != null) {
+                    fileName = resolved;
+                    log.info("ragQa file_name 兜底成功: fileId={}, fileName={}", fileIdStr, resolved);
+                }
+            }
+            citation.put("fileName", fileName);
             citation.put("snippet", segment.length() > 200 ? segment.substring(0, 200) + "..." : segment);
             citations.add(citation);
             idx++;
@@ -305,6 +343,43 @@ public class AiToolServiceImpl implements AiToolService {
             return "{\"type\":\"citations\",\"data\":" + objectMapper.writeValueAsString(citations) + "}";
         } catch (JacksonException e) {
             return "{\"type\":\"citations\",\"data\":[]}";
+        }
+    }
+
+    /** 取首个非空值（兼容多键名） */
+    private static Object firstNonNull(Object... values) {
+        for (Object v : values) {
+            if (v != null && !String.valueOf(v).isBlank()) {
+                return v;
+            }
+        }
+        return null;
+    }
+
+    /** 从 chunk_id 前缀解析 file_id，形如 file-2075228410665365508-chunk-71 */
+    private static String extractFileIdFromChunkId(String chunkId) {
+        if (chunkId == null || chunkId.isBlank()) {
+            return null;
+        }
+        Matcher m = CHUNK_ID_PATTERN.matcher(chunkId);
+        if (m.matches()) {
+            return m.group(1);
+        }
+        return null;
+    }
+
+    /** 通过 KnowledgeFileMapper 兜底查询 file_name */
+    private String resolveFileNameViaMapper(String fileIdStr) {
+        if (fileIdStr == null || fileIdStr.isBlank() || knowledgeFileMapper == null) {
+            return null;
+        }
+        try {
+            long id = Long.parseLong(fileIdStr);
+            KnowledgeFile kf = knowledgeFileMapper.selectById(id);
+            return kf != null ? kf.getFileName() : null;
+        } catch (Exception e) {
+            log.warn("ragQa 兜底查询 file_name 失败: fileId={}", fileIdStr, e);
+            return null;
         }
     }
 }

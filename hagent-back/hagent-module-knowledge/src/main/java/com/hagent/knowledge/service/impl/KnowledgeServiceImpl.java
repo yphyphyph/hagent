@@ -286,10 +286,12 @@ public class KnowledgeServiceImpl extends ServiceImpl<KnowledgeFileMapper, Knowl
             List<String> chunks = semanticChunker.chunk(content, CHUNK_SIZE, CHUNK_OVERLAP);
             log.info("文件语义分块: id={}, chunks={}", id, chunks.size());
 
-            // 6. 存入向量存储（远程调用，必须在事务外执行）
+            // 6. 存入向量存储（远程调用，必须在事务外执行，元数据键统一为 file_id/file_name/chunk_index）
             if (vectorStoreService != null) {
+                // 确保 file_name 正确传递，对应 VectorStoreServiceImpl 中 metadata.put("file_name", fileName)
                 vectorStoreService.addDocuments(String.valueOf(id), knowledgeFile.getFileName(), chunks);
-                log.info("已存入向量存储: id={}, chunks={}", id, chunks.size());
+                log.info("已存入向量存储: id={}, fileName={}, chunks={}, metadataKeys=[file_id, file_name, chunk_index]",
+                        id, knowledgeFile.getFileName(), chunks.size());
             } else {
                 log.warn("VectorStoreService不可用，跳过向量存储");
             }

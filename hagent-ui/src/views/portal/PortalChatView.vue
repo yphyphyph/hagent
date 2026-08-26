@@ -24,8 +24,9 @@
       <!-- 顶部条 -->
       <header class="chat-topbar">
         <div class="chat-topbar__left">
-          <button class="collapse-btn" type="button" @click="toggleSide">
-            {{ sideCollapsed ? '展开' : '收起' }}
+          <!-- 顶部收起按钮：仅在侧栏展开时显示，收起后由悬浮按钮负责展开，避免重复 -->
+          <button v-if="!sideCollapsed" class="collapse-btn" type="button" @click="toggleSide">
+            收起
           </button>
           <template v-if="loggedIn">
             <span class="chat-topbar__title">{{ activeTitle }}</span>

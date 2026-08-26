@@ -3,6 +3,7 @@ import {
   streamChat,
   conversationApi,
   type ChatMessageItem,
+  type ChatSource,
   type Conversation,
 } from '@/api/chat'
 
@@ -22,7 +23,12 @@ export interface UiChatMessage {
   startTime?: number
   /** 回答耗时（毫秒，流结束后写入，用于底部耗时展示） */
   elapsedMs?: number
+  /** 溯源引用列表（type:source 累积，对应后端 RAG 命中） */
+  sources?: ChatSource[]
 }
+
+// 供外部引用
+export type { ChatSource }
 
 export interface UseChatOptions {
   /** SSE 端点（管理端/门户端） */
@@ -132,7 +138,7 @@ export function useChat(options: UseChatOptions) {
     controller = null
   }
 
-  /** 加载历史会话消息（管理端，含 thinkingContent 历史思考回显） */
+  /** 加载历史会话消息（管理端，含 thinkingContent 历史思考回显与溯源） */
   async function loadMessages(conversationId: number): Promise<void> {
     messages.value = []
     try {
@@ -148,6 +154,8 @@ export function useChat(options: UseChatOptions) {
         thinkingContent: m.thinkingContent ?? undefined,
         // 历史消息若有思考内容，默认展开
         thinkingExpanded: m.thinkingContent ? true : undefined,
+        // 溯源引用历史回显（后端 sources 字段，可能是 JSON 字符串）
+        sources: parseSources((m as unknown as Record<string, unknown>).sources),
       }))
     } catch {
       // 错误已由 request 拦截器统一 toast
@@ -164,7 +172,7 @@ export function useChat(options: UseChatOptions) {
 
     messages.value.push({ id: nextId(), role: 'user', content: trimmed, time: formatMsgTime(new Date().toISOString()) })
     // 思考块默认展开，确保首轮与增量思考均可见
-    const aiMsg: UiChatMessage = { id: nextId(), role: 'ai', content: '', time: '', thinkingContent: '', thinkingExpanded: true, startTime: Date.now() }
+    const aiMsg: UiChatMessage = { id: nextId(), role: 'ai', content: '', time: '', thinkingContent: '', thinkingExpanded: true, startTime: Date.now(), sources: [] }
     messages.value.push(aiMsg)
     activeAiMsg = aiMsg
     thinking.value = true
@@ -235,6 +243,28 @@ export function useChat(options: UseChatOptions) {
           }
           messages.value[idx] = activeAiMsg
         },
+        // 溯源引用事件（type:source）：按 file_id+chunk_id 去重后附加到当前 AI 消息
+        onSource: (chunks) => {
+          if (!activeAiMsg) return
+          const idx = messages.value.indexOf(activeAiMsg)
+          if (idx === -1) return
+          const existing = activeAiMsg.sources ?? []
+          const merged = [...existing]
+          for (const c of chunks) {
+            const fid = (c.file_id ?? c.fileName ?? c.file_name) as unknown
+            const cid = c.chunk_id as unknown
+            const dup = merged.some(
+              (e) =>
+                String(e.file_id ?? e.fileName ?? e.file_name ?? '') === String(fid ?? '') &&
+                String(e.chunk_id ?? '') === String(cid ?? '') &&
+                // 若无 chunk_id，则按 file_id+snippet 判重
+                (cid ? true : (e.snippet ?? e.content ?? '') === (c.snippet ?? c.content ?? ''))
+            )
+            if (!dup) merged.push(c)
+          }
+          activeAiMsg = { ...activeAiMsg, sources: merged }
+          messages.value[idx] = activeAiMsg
+        },
         onError: (msg) => {
           if (activeAiMsg && !activeAiMsg.content) {
             activeAiMsg.content = `（AI 响应失败：${msg}）`
@@ -281,7 +311,27 @@ export function useChat(options: UseChatOptions) {
     messages.value = []
   }
 
-  /** 会话时间分组：今天 / 7天内 / 30天内 / 更早 */
+  /** 解析溯源字段（兼容 JSON 字符串 / 数组 / 空值） */
+function parseSources(raw: unknown): ChatSource[] | undefined {
+  if (!raw) return undefined
+  if (Array.isArray(raw)) return raw as ChatSource[]
+  if (typeof raw === 'string') {
+    const s = raw.trim()
+    if (!s) return undefined
+    try {
+      const parsed = JSON.parse(s)
+      if (Array.isArray(parsed)) return parsed as ChatSource[]
+      // 若后端存单对象，包一层
+      if (parsed && typeof parsed === 'object') return [parsed as ChatSource]
+    } catch {
+      return undefined
+    }
+  }
+  if (typeof raw === 'object') return [raw as ChatSource]
+  return undefined
+}
+
+/** 会话时间分组：今天 / 7天内 / 30天内 / 更早 */
   function groupConversations(list: Conversation[]): Array<{ label: string; items: Conversation[] }> {
     const now = new Date()
     const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()

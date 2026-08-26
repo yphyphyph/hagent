@@ -20,6 +20,12 @@
             <artifactId>hagent-common</artifactId>
         </dependency>
 
+        <!-- 知识库模块：用于来源兜底时通过 KnowledgeFileMapper 查询 file_name -->
+        <dependency>
+            <groupId>com.hagent</groupId>
+            <artifactId>hagent-module-knowledge</artifactId>
+        </dependency>
+
         <!-- Spring AI OpenAI -->
         <dependency>
             <groupId>org.springframework.ai</groupId>

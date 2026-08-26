@@ -8,6 +8,19 @@ export interface Conversation {
   updatedAt?: string
 }
 
+/** 溯源引用单条（与后端 RAG 命中字段对齐） */
+export interface ChatSource {
+  file_id?: string | number
+  chunk_id?: string
+  score?: number
+  file_name?: string
+  // 兼容驼峰命名（后端可能返回 fileName）
+  fileName?: string
+  snippet?: string
+  // 兼容后端偶发字段
+  content?: string
+}
+
 export interface ChatMessageItem {
   id?: number
   role: 'user' | 'assistant'
@@ -16,6 +29,8 @@ export interface ChatMessageItem {
   toolName?: string
   /** 思考过程内容（历史消息回显） */
   thinkingContent?: string
+  /** 溯源引用 JSON 字符串或数组（历史消息回显，后端 sources 字段） */
+  sources?: string | ChatSource[]
 }
 
 /** SSE 流式事件处理器集合 */
@@ -30,6 +45,8 @@ export interface StreamEventHandlers {
   onStage?: (text: string) => void
   /** 工具调用事件（阶段1每执行一个工具触发一次） */
   onTool?: (name: string) => void
+  /** 溯源引用块（type:source），携带命中片段列表 */
+  onSource?: (sources: ChatSource[]) => void
   onError?: (msg: string) => void
   onDone?: () => void
 }
@@ -145,6 +162,22 @@ export function streamChat(
                 // token 增量立即透传，避免批量
                 if (obj.content) h.onToken(String(obj.content))
                 break
+              case 'source': {
+                // 溯源引用事件：后端推送 {"type":"source","chunks":[...]}，兼容多种字段名
+                const raw =
+                  (obj.chunks as unknown) ??
+                  (obj.sources as unknown) ??
+                  (obj.data as unknown) ??
+                  (obj.list as unknown) ??
+                  []
+                const list = Array.isArray(raw) ? (raw as ChatSource[]) : []
+                if (list.length) h.onSource?.(list)
+                else if (obj.file_name || obj.fileName) {
+                  // 兼容单条来源直接作为对象
+                  h.onSource?.([obj as unknown as ChatSource])
+                }
+                break
+              }
               default:
                 // 未知 type 静默忽略
                 break

@@ -3,6 +3,7 @@ package com.hagent.ai.service.impl;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.ObjectMapper;
 import com.hagent.ai.core.AiModelProvider;
+import com.hagent.ai.core.RagService;
 import com.hagent.ai.core.UserContextHolder;
 import com.hagent.ai.mapper.ChatMessageMapper;
 import com.hagent.ai.mcp.AnalyzeImageTool;
@@ -71,6 +72,8 @@ public class ChatServiceImpl implements ChatService {
     private final ObjectMapper objectMapper;
     /** 待确认操作服务，用于确认短路逻辑 */
     private final PendingActionService pendingActionService;
+    /** RAG服务，用于获取命中来源元数据（file_id、chunk_id、score、file_name、snippet） */
+    private final RagService ragService;
 
     /** 统一工具回调（管理端与门户端共用同一注册集：知识库检索 + Text to SQL + 图片识别） */
     private final ToolCallback[] unifiedToolCallbacks;
@@ -154,6 +157,9 @@ public class ChatServiceImpl implements ChatService {
 
     /** 取消词 */
     private static final String[] CANCEL_WORDS = {"取消", "不", "不用", "算了", "no", "No", "放弃", "停止"};
+
+    /** RAG检索工具名称（与 KnowledgeTool.searchKnowledge 对应） */
+    private static final String RAG_TOOL_NAME = "searchKnowledge";
 
     /**
      * 管理端系统提示词
@@ -242,12 +248,14 @@ public class ChatServiceImpl implements ChatService {
                            @Lazy KnowledgeTool knowledgeTool,
                            @Lazy TextToSqlTool textToSqlTool,
                            @Lazy AnalyzeImageTool analyzeImageTool,
-                           PendingActionService pendingActionService) {
+                           PendingActionService pendingActionService,
+                           RagService ragService) {
         this.aiModelProvider = aiModelProvider;
         this.conversationService = conversationService;
         this.chatMessageMapper = chatMessageMapper;
         this.objectMapper = objectMapper;
         this.pendingActionService = pendingActionService;
+        this.ragService = ragService;
         // 统一工具集：知识库检索 + Text to SQL + 图片识别（管理端与门户端共用）
         this.unifiedToolCallbacks = ToolCallbacks.from(knowledgeTool, textToSqlTool, analyzeImageTool);
     }
@@ -441,6 +449,8 @@ public class ChatServiceImpl implements ChatService {
 
             // 8. 累积思考内容，用于最终持久化（工具阶段 + 流式阶段共享）
             StringBuilder thinkingAccum = new StringBuilder();
+            // 累积RAG命中来源（用于SSE推送与持久化）
+            final List<Map<String, Object>> sourcesAccum = new ArrayList<>();
 
             // 9. 阶段2：构建不带工具回调的流式Options，避免流式阶段触发工具调用导致空文本
             OpenAiChatOptions streamOptions = OpenAiChatOptions.builder()
@@ -468,8 +478,8 @@ public class ChatServiceImpl implements ChatService {
                     // 阶段进度：正在分析问题...（进入工具调用循环前，顺序保证在 tool 事件前）
                     sink.next(wrapStage("正在分析问题..."));
 
-                    // 阶段1：同步工具循环（阻塞执行，但事件实时发射到前端）
-                    callWithTools(messages, toolOptions, chatModel, toolCallbacks, sink, thinkingAccum);
+                    // 阶段1：同步工具循环（阻塞执行，但事件实时发射到前端，命中来源一并推送）
+                    callWithTools(messages, toolOptions, chatModel, toolCallbacks, sink, thinkingAccum, sourcesAccum);
 
                     // 阶段进度：正在组织答案...（工具调用结束后、流式开始前）
                     sink.next(wrapStage("正在组织答案..."));
@@ -482,6 +492,12 @@ public class ChatServiceImpl implements ChatService {
                 } finally {
                     // 工具循环在本线程执行，清理 ThreadLocal 防止线程复用时身份串扰
                     UserContextHolder.clear();
+                    // 清理 RAG 命中 ThreadLocal，避免线程复用污染
+                    try {
+                        ragService.clearLastHits();
+                    } catch (Exception e) {
+                        log.warn("清理RAG命中缓存失败", e);
+                    }
                 }
 
                 log.info("开始流式输出: conversationId={}", finalConversationId);
@@ -526,20 +542,17 @@ public class ChatServiceImpl implements ChatService {
                         },
                         error -> {
                             log.error("流式输出异常: conversationId={}", finalConversationId, error);
-                            // 异常时保存已生成的部分文本+思考内容，保证历史上下文完整（访客模式跳过）
+                            // 异常时保存已生成的部分文本+思考内容+来源，保证历史上下文完整（访客模式跳过）
                             String partialText = fullText.toString();
                             String partialThinking = thinkingAccum.length() > 0 ? thinkingAccum.toString() : null;
-                            // 空白内容回退：幻觉过滤后为空时避免持久化空串导致前端显示"(无回复内容)"
+                            String partialSources = buildSourcesJson(sourcesAccum);
+                            // 空白内容回退：无论 thinking 是否存在，只要 content 为空白就使用兜底文案，避免持久化空串导致前端显示"(无回复内容)" @author H
                             if (partialText == null || partialText.isBlank()) {
-                                if (partialThinking != null && !partialThinking.isBlank()) {
-                                    partialText = "已根据已有信息整理回答，详见思考过程";
-                                } else if (partialText != null && partialText.isBlank()) {
-                                    partialText = "已根据已有信息整理回答，详见思考过程";
-                                }
+                                partialText = "已根据已有信息整理回答，详见思考过程";
                             }
-                            if (finalConversationId != null && (!partialText.isEmpty() || partialThinking != null)) {
+                            if (finalConversationId != null && (!partialText.isBlank() || partialThinking != null)) {
                                 saveMessage(finalConversationId, MessageRoleEnum.ASSISTANT.getCode(),
-                                        partialText, null, partialThinking);
+                                        partialText, null, partialThinking, partialSources);
                                 conversationService.updateStats(finalConversationId, partialText.length() / CHARS_PER_TOKEN);
                             }
                             sink.next(wrapError("AI服务暂时不可用，请稍后重试"));
@@ -547,22 +560,23 @@ public class ChatServiceImpl implements ChatService {
                             sink.complete();
                         },
                         () -> {
-                            // 流完成，保存完整回复+思考内容到DB（访客模式跳过）
+                            // 流完成，保存完整回复+思考内容+来源到DB（访客模式跳过）
                             String finalText = fullText.toString();
                             String finalThinking = thinkingAccum.length() > 0 ? thinkingAccum.toString() : null;
-                            // 空白内容回退：经幻觉过滤后为空则使用兜底文案，避免持久化空串导致前端显示"(无回复内容)"
-                            // @author H
+                            String finalSources = buildSourcesJson(sourcesAccum);
+                            // 空白内容回退：无论 thinking 是否存在，只要 content 为空白就使用兜底文案，避免持久化空串导致前端显示"(无回复内容)" @author H
                             if (finalText == null || finalText.isBlank()) {
                                 finalText = "已根据已有信息整理回答，详见思考过程";
                             }
-                            if (finalConversationId != null && (!finalText.isEmpty() || finalThinking != null)) {
+                            if (finalConversationId != null && (!finalText.isBlank() || finalThinking != null)) {
                                 saveMessage(finalConversationId, MessageRoleEnum.ASSISTANT.getCode(),
-                                        finalText, null, finalThinking);
+                                        finalText, null, finalThinking, finalSources);
                                 int tokenCount = finalText.length() / CHARS_PER_TOKEN;
                                 conversationService.updateStats(finalConversationId, tokenCount);
-                                log.info("流式输出完成并保存: conversationId={}, length={}, thinkingLength={}",
+                                log.info("流式输出完成并保存: conversationId={}, length={}, thinkingLength={}, sources={}",
                                         finalConversationId, finalText.length(),
-                                        finalThinking != null ? finalThinking.length() : 0);
+                                        finalThinking != null ? finalThinking.length() : 0,
+                                        finalSources != null ? sourcesAccum.size() : 0);
                             }
                             // 发送明确结束标记，前端据此判断流正常结束
                             sink.next("[FINAL]");
@@ -600,11 +614,13 @@ public class ChatServiceImpl implements ChatService {
      * @param toolCallbacks  当前可用工具回调
      * @param sink           SSE事件sink，工具/思考事件实时写入直达前端
      * @param thinkingAccum  思考内容累积器（用于入库持久化）
+     * @param sourcesAccum   RAG来源累积器（用于SSE推送与最终持久化）
      * @author H
      */
     private void callWithTools(List<Message> messages, OpenAiChatOptions options, ChatModel chatModel,
                                ToolCallback[] toolCallbacks, FluxSink<String> sink,
-                               StringBuilder thinkingAccum) {
+                               StringBuilder thinkingAccum,
+                               List<Map<String, Object>> sourcesAccum) {
         // 连续重复工具调用追踪：判定模型陷入发散循环（同一工具反复调用但无实质收敛）时强制结束
         String lastToolName = null;
         String lastToolArgsNormalized = null;
@@ -670,6 +686,10 @@ public class ChatServiceImpl implements ChatService {
                         sink.next("{\"type\":\"tool\",\"name\":"
                                 + objectMapper.writeValueAsString(synthetic.name()) + "}");
                         String result = executeTool(toolCallbacks, synthetic.name(), synthetic.arguments());
+                        // RAG工具结果后组装来源并推送 source 事件（与 thinking 同级结构化事件）
+                        if (RAG_TOOL_NAME.equals(synthetic.name())) {
+                            emitSourceIfAvailable(sink, sourcesAccum);
+                        }
                         messages.add(ToolResponseMessage.builder()
                                 .responses(List.of(new ToolResponseMessage.ToolResponse(
                                         synthetic.id(), synthetic.name(), truncateResult(result))))
@@ -719,6 +739,10 @@ public class ChatServiceImpl implements ChatService {
                 log.info("  工具结果: length={}, 截断后length={}",
                         result != null ? result.length() : 0,
                         truncatedResult.length());
+                // RAG工具结果后组装来源并推送 source 事件（结构化JSON，前端据 type=source 渲染角标/抽屉）
+                if (RAG_TOOL_NAME.equals(toolCall.name())) {
+                    emitSourceIfAvailable(sink, sourcesAccum);
+                }
 
                 // 将工具结果作为消息加入列表
                 messages.add(ToolResponseMessage.builder()
@@ -1028,6 +1052,91 @@ public class ChatServiceImpl implements ChatService {
     }
 
     /**
+     * 将RAG命中来源包装为结构化JSON字符串（类似 wrapThinking）
+     * 前端据 type=source 字段渲染行内角标与抽屉
+     *
+     * @param chunks 命中列表（每项含 file_id、chunk_id、score、file_name、snippet）
+     * @return 结构化JSON字符串，格式：{"type":"source","chunks":[...]}
+     * @author H
+     */
+    private String wrapSource(List<Map<String, Object>> chunks) {
+        try {
+            return "{\"type\":\"source\",\"chunks\":" + objectMapper.writeValueAsString(chunks) + "}";
+        } catch (JacksonException e) {
+            log.warn("JSON编码source失败，降级为空数组", e);
+            return "{\"type\":\"source\",\"chunks\":[]}";
+        }
+    }
+
+    /**
+     * 构建 sources JSON 字符串（用于持久化）
+     *
+     * @param sourcesAccum 累积的来源列表
+     * @return JSON字符串，为空时返回null
+     * @author H
+     */
+    private String buildSourcesJson(List<Map<String, Object>> sourcesAccum) {
+        if (sourcesAccum == null || sourcesAccum.isEmpty()) {
+            return null;
+        }
+        try {
+            return objectMapper.writeValueAsString(sourcesAccum);
+        } catch (JacksonException e) {
+            log.warn("序列化sources失败，跳过持久化", e);
+            return null;
+        }
+    }
+
+    /**
+     * 若存在RAG命中则推送 source 事件并累积到 sourcesAccum
+     * 去重：按 file_id+chunk_id 排重，避免同一片段多次推送
+     *
+     * @param sink         SSE sink
+     * @param sourcesAccum 累积器
+     * @author H
+     */
+    private void emitSourceIfAvailable(FluxSink<String> sink, List<Map<String, Object>> sourcesAccum) {
+        try {
+            List<Map<String, Object>> hits = ragService.getLastHits();
+            if (hits == null || hits.isEmpty()) {
+                log.debug("RAG命中为空，跳过source推送");
+                return;
+            }
+            // 组装本次推送列表，去重后追加到累积器
+            List<Map<String, Object>> toPush = new ArrayList<>();
+            for (Map<String, Object> hit : hits) {
+                // 按 file_id+chunk_id 判重
+                boolean exists = sourcesAccum.stream().anyMatch(existing ->
+                        java.util.Objects.equals(existing.get("file_id"), hit.get("file_id"))
+                                && java.util.Objects.equals(existing.get("chunk_id"), hit.get("chunk_id")));
+                if (!exists) {
+                    sourcesAccum.add(hit);
+                    toPush.add(hit);
+                }
+            }
+            if (toPush.isEmpty()) {
+                log.debug("RAG命中均已推送，跳过重复");
+                return;
+            }
+            if (sink.isCancelled()) {
+                log.debug("SSE已取消，跳过source推送");
+                return;
+            }
+            sink.next(wrapSource(toPush));
+            log.info("已推送source事件: chunks={}, totalAccum={}", toPush.size(), sourcesAccum.size());
+        } catch (Exception e) {
+            log.warn("推送source事件失败", e);
+        } finally {
+            // 本次命中已消费，清理 ThreadLocal 避免下一轮误复用
+            try {
+                ragService.clearLastHits();
+            } catch (Exception e) {
+                log.warn("清理RAG命中缓存失败", e);
+            }
+        }
+    }
+
+    /**
      * 从 ChatResponse 中提取思考/推理内容
      * 兼容多种来源与键名：
      * 1) AssistantMessage.getMetadata() 中的 "reasoning_content" / "reasoningContent" / "reasoning" / "thinking"
@@ -1284,6 +1393,21 @@ public class ChatServiceImpl implements ChatService {
      * @author H
      */
     private void saveMessage(Long conversationId, Integer role, String content, String toolName, String thinkingContent) {
+        saveMessage(conversationId, role, content, toolName, thinkingContent, null);
+    }
+
+    /**
+     * 保存聊天消息（含思考内容与来源持久化）
+     *
+     * @param conversationId 会话ID
+     * @param role           消息角色
+     * @param content        消息内容
+     * @param toolName       工具名称（非工具消息为null）
+     * @param thinkingContent 思考过程内容（仅助手消息可能携带，可为null）
+     * @param sourcesJson    来源引用JSON数组（RAG命中，可为null）
+     * @author H
+     */
+    private void saveMessage(Long conversationId, Integer role, String content, String toolName, String thinkingContent, String sourcesJson) {
         // 访客临时会话无持久化目标，直接跳过
         if (conversationId == null) {
             return;
@@ -1298,6 +1422,10 @@ public class ChatServiceImpl implements ChatService {
         // 思考过程内容持久化（历史回显用，空串按 null 处理）
         if (thinkingContent != null && !thinkingContent.isBlank()) {
             msg.setThinkingContent(thinkingContent);
+        }
+        // 来源引用持久化（RAG命中，空串按 null 处理）
+        if (sourcesJson != null && !sourcesJson.isBlank()) {
+            msg.setSources(sourcesJson);
         }
         msg.setStatus(MessageStatusEnum.COMPLETED.getCode());
         chatMessageMapper.insert(msg);

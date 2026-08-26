@@ -1,15 +1,23 @@
 package com.hagent.ai.core;
 
+import com.hagent.knowledge.entity.KnowledgeFile;
+import com.hagent.knowledge.mapper.KnowledgeFileMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.VectorStore;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * RAG服务
@@ -32,6 +40,20 @@ public class RagService {
 
     private final AiModelProvider aiModelProvider;
     private final StringRedisTemplate stringRedisTemplate;
+
+    /** 知识库文件 Mapper（可选注入，用于 file_name 兜底查询） */
+    @Autowired(required = false)
+    @Lazy
+    private KnowledgeFileMapper knowledgeFileMapper;
+
+    /** 命中元数据 ThreadLocal（同请求线程内透传，key：file_id、chunk_id、score、file_name、snippet） */
+    private static final ThreadLocal<List<Map<String, Object>>> LAST_HITS = new ThreadLocal<>();
+
+    /** snippet 最大字符数（避免过长撑爆上下文/前端） */
+    private static final int SNIPPET_MAX_LENGTH = 500;
+
+    /** chunk_id 前缀解析正则：file-<fileId>-chunk-<index> */
+    private static final Pattern CHUNK_ID_PATTERN = Pattern.compile("^file-(.+?)-chunk-.*$");
 
     /**
      * 搜索相似文档
@@ -56,6 +78,8 @@ public class RagService {
                     .build();
             log.debug("SearchRequest: {}", request);
             List<Document> results = vectorStore.similaritySearch(request);
+            // 保留命中元数据（供上层组装来源引用）
+            retainHitMetadata(results);
             incrementSearchCount();
             log.info("RAG搜索完成: query={}, results={}", query, results.size());
             for (Document doc : results) {
@@ -64,6 +88,8 @@ public class RagService {
             return results;
         } catch (Exception e) {
             log.error("RAG搜索失败: query={}", query, e);
+            // 异常时清空历史命中，避免脏数据被误用
+            LAST_HITS.remove();
             return List.of();
         }
     }
@@ -97,12 +123,15 @@ public class RagService {
                 }
             }
             List<Document> results = vectorStore.similaritySearch(builder.build());
+            // 保留命中元数据（带筛选分支）
+            retainHitMetadata(results);
             incrementSearchCount();
             log.info("RAG带筛选搜索: query={}, topK={}, fileIds={}, results={}",
                     query, topK, fileIds, results.size());
             return results;
         } catch (Exception e) {
             log.error("RAG带筛选搜索失败: query={}", query, e);
+            LAST_HITS.remove();
             return List.of();
         }
     }
@@ -172,6 +201,191 @@ public class RagService {
             throw new IllegalArgumentException("非法的文件ID: " + fileId);
         }
         return fileId;
+    }
+
+    /**
+     * 保留搜索命中元数据到 ThreadLocal（同线程内透传给上层 SSE 推送）
+     * 字段：file_id、chunk_id、score、file_name、snippet
+     * <p>
+     * 兼容逻辑：
+     * 1. 记录实际 Document metadata keys 以便排查键名不匹配问题（样例日志）
+     * 2. file_id / file_name 兼容多种键名：file_id、fileId、file-id、file_name、fileName、source 等
+     * 3. file_name 缺失时，尝试从 chunk_id 前缀 file-&lt;fileId&gt;-chunk-&lt;index&gt; 解析 file_id 并通过 KnowledgeFileMapper 兜底查询
+     *
+     * @param documents 命中文档列表
+     * @author H
+     */
+    private void retainHitMetadata(List<Document> documents) {
+        if (documents == null || documents.isEmpty()) {
+            LAST_HITS.set(List.of());
+            return;
+        }
+        // 打印样例元数据键，便于排查 Unknown file 问题
+        try {
+            Document sample = documents.get(0);
+            Map<String, Object> sampleMeta = sample.getMetadata() != null ? sample.getMetadata() : Map.of();
+            log.info("RAG命中元数据样例: docId={}, metadataKeys={}, metadata={}, score={}",
+                    sample.getId(), sampleMeta.keySet(), sampleMeta, sample.getScore());
+        } catch (Exception e) {
+            log.warn("记录RAG命中样例日志失败", e);
+        }
+        List<Map<String, Object>> hits = new ArrayList<>(documents.size());
+        for (Document doc : documents) {
+            Map<String, Object> meta = doc.getMetadata() != null ? doc.getMetadata() : Map.of();
+            Map<String, Object> hit = new LinkedHashMap<>();
+            // file_id：兼容多种键名，优先 file_id，其次 fileId / file-id
+            Object fileId = firstNonNull(
+                    meta.get("file_id"),
+                    meta.get("fileId"),
+                    meta.get("file-id"),
+                    meta.get("fileID"),
+                    meta.get("source") // 兜底：部分实现可能用 source 存 file_id
+            );
+            // 若元数据中仍无 file_id，尝试从 chunk_id 前缀解析
+            String chunkId = doc.getId();
+            if (fileId == null || String.valueOf(fileId).isBlank()) {
+                String parsed = extractFileIdFromChunkId(chunkId);
+                if (parsed != null) {
+                    fileId = parsed;
+                    log.debug("file_id 从 chunk_id 前缀解析: chunkId={}, parsedFileId={}", chunkId, parsed);
+                }
+            }
+            hit.put("file_id", fileId);
+            // chunk_id：优先文档ID（file-<fileId>-chunk-<i>），兜底 chunk_index / chunkId / chunk_id
+            if ((chunkId == null || chunkId.isBlank())) {
+                Object chunkIdx = firstNonNull(meta.get("chunk_index"), meta.get("chunkIndex"), meta.get("chunk_id"), meta.get("chunkId"));
+                if (chunkIdx != null) {
+                    chunkId = String.valueOf(chunkIdx);
+                }
+            }
+            hit.put("chunk_id", chunkId);
+            // score：优先 Document.score，兜底元数据 distance/score
+            Object score = doc.getScore();
+            if (score == null) {
+                score = meta.get("distance");
+            }
+            if (score == null) {
+                score = meta.get("score");
+            }
+            hit.put("score", score);
+            // file_name：兼容 file_name / fileName / source 等，缺失时通过 file_id 兜底查询 knowledge_file 表
+            Object fileName = firstNonNull(
+                    meta.get("file_name"),
+                    meta.get("fileName"),
+                    meta.get("file-name"),
+                    meta.get("sourceFileName"),
+                    meta.get("filename")
+            );
+            if (fileName == null || String.valueOf(fileName).isBlank()) {
+                // 尝试通过 file_id 兜底查询
+                String fileIdStr = fileId != null ? String.valueOf(fileId) : null;
+                if (fileIdStr == null || fileIdStr.isBlank()) {
+                    // 最后尝试从 chunk_id 解析
+                    fileIdStr = extractFileIdFromChunkId(chunkId);
+                }
+                String resolved = resolveFileNameViaMapper(fileIdStr);
+                if (resolved != null) {
+                    fileName = resolved;
+                    log.info("file_name 兜底查询成功: fileId={}, fileName={}", fileIdStr, resolved);
+                } else {
+                    log.warn("file_name 兜底查询失败: fileId={}, chunkId={}, metadataKeys={}", fileIdStr, chunkId, meta.keySet());
+                }
+            }
+            hit.put("file_name", fileName);
+            // snippet：原文前缀截断，避免过长
+            String text = doc.getText() != null ? doc.getText() : "";
+            String snippet = text.length() > SNIPPET_MAX_LENGTH
+                    ? text.substring(0, SNIPPET_MAX_LENGTH) + "..."
+                    : text;
+            hit.put("snippet", snippet);
+            hits.add(hit);
+        }
+        // 汇总日志：统计 file_name 缺失情况
+        long nullNameCount = hits.stream().filter(h -> h.get("file_name") == null || String.valueOf(h.get("file_name")).isBlank()).count();
+        if (nullNameCount > 0) {
+            log.warn("RAG命中中 file_name 仍为 null/空的条数: {}/{}，已记录样例元数据，请检查向量存储的元数据键是否一致(file_id/file_name/chunk_index)", nullNameCount, hits.size());
+        } else {
+            log.info("RAG命中 file_name 均已解析: count={}", hits.size());
+        }
+        LAST_HITS.set(hits);
+    }
+
+    /**
+     * 取首个非空值
+     */
+    private static Object firstNonNull(Object... values) {
+        for (Object v : values) {
+            if (v != null && !String.valueOf(v).isBlank()) {
+                return v;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 从 chunk_id 前缀解析 file_id，形如 file-2075228410665365508-chunk-71
+     *
+     * @param chunkId 文档ID
+     * @return fileId 字符串，无法解析时返回 null
+     */
+    private static String extractFileIdFromChunkId(String chunkId) {
+        if (chunkId == null || chunkId.isBlank()) {
+            return null;
+        }
+        Matcher m = CHUNK_ID_PATTERN.matcher(chunkId);
+        if (m.matches()) {
+            return m.group(1);
+        }
+        return null;
+    }
+
+    /**
+     * 通过 KnowledgeFileMapper 兜底查询 file_name
+     *
+     * @param fileIdStr file_id 字符串（应为数值型）
+     * @return fileName，查询不到或异常时返回 null
+     */
+    private String resolveFileNameViaMapper(String fileIdStr) {
+        if (fileIdStr == null || fileIdStr.isBlank()) {
+            return null;
+        }
+        if (knowledgeFileMapper == null) {
+            log.debug("KnowledgeFileMapper 未注入，跳过兜底查询: fileId={}", fileIdStr);
+            return null;
+        }
+        try {
+            long id = Long.parseLong(fileIdStr);
+            KnowledgeFile kf = knowledgeFileMapper.selectById(id);
+            if (kf != null) {
+                return kf.getFileName();
+            }
+            log.debug("KnowledgeFileMapper 查询为空: fileId={}", fileIdStr);
+        } catch (NumberFormatException e) {
+            log.warn("fileId 非数值，无法通过 KnowledgeFileMapper 查询: fileId={}", fileIdStr);
+        } catch (Exception e) {
+            log.warn("KnowledgeFileMapper 兜底查询异常: fileId={}", fileIdStr, e);
+        }
+        return null;
+    }
+
+    /**
+     * 获取当前线程最近一次搜索的命中元数据
+     *
+     * @return 命中列表（只读，不为null）
+     * @author H
+     */
+    public List<Map<String, Object>> getLastHits() {
+        List<Map<String, Object>> hits = LAST_HITS.get();
+        return hits != null ? hits : List.of();
+    }
+
+    /**
+     * 清理当前线程的命中元数据（防止线程复用时串扰）
+     *
+     * @author H
+     */
+    public void clearLastHits() {
+        LAST_HITS.remove();
     }
 
     /**
