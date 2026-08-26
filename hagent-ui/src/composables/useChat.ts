@@ -14,14 +14,6 @@ export interface UiChatMessage {
   time: string
   /** 本条回复涉及的工具名（工具徽章展示） */
   tools?: string[]
-  /** 待确认操作卡片（Text-to-SQL 先确认后执行） */
-  pendingAction?: {
-    id: number
-    sql?: string
-    question?: string
-    status: 'pending' | 'confirmed' | 'cancelled'
-    resultText?: string
-  }
 }
 
 export interface UseChatOptions {
@@ -55,7 +47,8 @@ export function normalizeRole(role: unknown): 'user' | 'ai' {
 
 /**
  * 共享聊天流控制：
- * - 结构化 SSE 事件解析（meta/token/tool/pending_action/error）
+ * - 结构化 SSE 事件解析（meta/token/tool/error）
+ * // 未知 type 静默忽略
  * - 发送/停止（AbortController）
  * - 消息列表状态管理（供门户与管理端两个视图复用）
  */
@@ -124,10 +117,6 @@ export function useChat(options: UseChatOptions) {
         onTool: (name) => {
           if (!activeAiMsg) return
           activeAiMsg.tools = [...(activeAiMsg.tools ?? []), name]
-        },
-        onPendingAction: (info) => {
-          if (!activeAiMsg) return
-          activeAiMsg.pendingAction = { ...info, status: 'pending' }
         },
         onError: (msg) => {
           if (activeAiMsg && !activeAiMsg.content) {

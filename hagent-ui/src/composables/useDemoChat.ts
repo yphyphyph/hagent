@@ -1,9 +1,6 @@
 import { ref, type Ref } from 'vue'
 import type { UiChatMessage } from '@/composables/useChat'
 
-/** 待确认操作卡片类型（复用共享消息模型，不改动 useChat 的导出） */
-type DemoPendingAction = NonNullable<UiChatMessage['pendingAction']>
-
 /** 演示剧本：思考阶段时长（毫秒） */
 const THINKING_MS = 600
 /** 演示剧本：逐字流式输出间隔（毫秒/字符） */
@@ -34,13 +31,8 @@ const DEMO_INTRO: string = '我已生成一条统计查询，请确认后执行�
 const DEMO_GUIDE: string =
   '以上为本地演示数据，登录后可体验真实 AI 能力（知识库问答 / 数据分析 / 图片识别）'
 
-/** 演示剧本：预置待确认操作（id=-1 表示本地演示数据，不与真实记录冲突） */
-const DEMO_PENDING_ACTION: DemoPendingAction = {
-  id: -1,
-  sql: 'SELECT COUNT(*) AS user_count FROM hagent_user',
-  question: '统计用户数量（演示数据）',
-  status: 'pending',
-}
+/** 演示剧本：预置演示数据（卡片已退役，预留占位注释） */
+// 待确认操作常量已移除
 
 /** 时间格式化：HH:mm（补零） */
 function nowTime(): string {
@@ -121,13 +113,12 @@ export function useDemoChat() {
       messages.value.push(answerMsg)
 
       streamInto(answerMsg, DEMO_ANSWER, () => {
-        // 阶段二：追加携带待确认操作卡片的消息并输出引导语
+        // 阶段二：追加引导语（卡片已退役，改为纯文本消息）
         const actionMsg: UiChatMessage = {
           id: 'm3',
           role: 'ai',
           content: '',
           time: nowTime(),
-          pendingAction: { ...DEMO_PENDING_ACTION },
         }
         messages.value.push(actionMsg)
 
@@ -140,16 +131,9 @@ export function useDemoChat() {
     }, THINKING_MS)
   }
 
-  /** 确认演示操作：本地翻转状态并回填结果文本（无网络请求） */
-  function confirmDemo(action: DemoPendingAction): void {
-    action.status = 'confirmed'
-    action.resultText = '执行完成：返回 1 行'
-  }
-
-  /** 取消演示操作：本地翻转状态（无网络请求） */
-  function cancelDemo(action: DemoPendingAction): void {
-    action.status = 'cancelled'
-  }
+  // 确认/取消卡片已退役，保留空实现以兼容旧调用
+  function confirmDemo(): void {}
+  function cancelDemo(): void {}
 
   return { messages, thinking, streaming, play, stop, confirmDemo, cancelDemo }
 }

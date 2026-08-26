@@ -9,13 +9,17 @@ import com.hagent.ai.mcp.AnalyzeImageTool;
 import com.hagent.ai.model.dto.ChatRequest;
 import com.hagent.ai.model.entity.ChatConversation;
 import com.hagent.ai.model.entity.ChatMessage;
+import com.hagent.ai.model.entity.ChatPendingAction;
 import com.hagent.ai.model.enums.MessageRoleEnum;
 import com.hagent.ai.model.enums.MessageStatusEnum;
 import com.hagent.ai.model.vo.ConversationVO;
+import com.hagent.ai.model.vo.PendingActionVO;
 import com.hagent.ai.service.ChatService;
 import com.hagent.ai.service.ConversationService;
+import com.hagent.ai.service.PendingActionService;
 import com.hagent.ai.tool.KnowledgeTool;
 import com.hagent.ai.tool.TextToSqlTool;
+import com.hagent.common.exception.BusinessException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
@@ -61,6 +65,8 @@ public class ChatServiceImpl implements ChatService {
     private final ChatMessageMapper chatMessageMapper;
     /** JSON序列化工具，用于SSE数据结构化编码 */
     private final ObjectMapper objectMapper;
+    /** 待确认操作服务，用于确认短路逻辑 */
+    private final PendingActionService pendingActionService;
 
     /** 统一工具回调（管理端与门户端共用同一注册集：知识库检索 + Text to SQL + 图片识别） */
     private final ToolCallback[] unifiedToolCallbacks;
@@ -76,6 +82,12 @@ public class ChatServiceImpl implements ChatService {
 
     /** 标题最大字符数 */
     private static final int TITLE_MAX_LENGTH = 20;
+
+    /** 日志中工具参数最大截断长度 */
+    private static final int MAX_LOG_ARGS_LEN = 100;
+
+    /** 字符数转 token 数的估算比例（约 4 字符/token） */
+    private static final int CHARS_PER_TOKEN = 4;
 
     /** 新会话默认标题 */
     private static final String DEFAULT_TITLE = "新会话";
@@ -101,6 +113,12 @@ public class ChatServiceImpl implements ChatService {
     /** 访客拦截提示消息（演示模式：未登录用户不消耗真实模型token） */
     private static final String GUEST_BLOCKED_MESSAGE = "演示模式：登录后可体验真实 AI 能力";
 
+    /** 确认词（精确匹配用，中文直接 equals，英文忽略大小写） */
+    private static final String[] CONFIRM_WORDS = {"是", "确认", "可以", "OK", "ok", "执行", "确定", "好", "yes", "Yes", "行", "嗯"};
+
+    /** 取消词 */
+    private static final String[] CANCEL_WORDS = {"取消", "不", "不用", "算了", "no", "No", "放弃", "停止"};
+
     /**
      * 管理端系统提示词
      * 工具说明与统一注册集一一对应：searchKnowledge / queryBusinessData / analyze_image
@@ -122,6 +140,7 @@ public class ChatServiceImpl implements ChatService {
             4. 不要用相似关键词重复调用同一工具；结果为空或不理想时，应换不同表述一次，
                仍不行就基于已有信息如实回答并说明局限
             5. 回答必须基于工具返回的真实数据，禁止编造数字或结论
+            6. 写操作（INSERT/UPDATE/DELETE）需用户回复确认后执行，询问确认时绝不展示SQL语句。
             """;
 
     /**
@@ -144,6 +163,7 @@ public class ChatServiceImpl implements ChatService {
             3. 当问题涉及知识库内容、要点、详情时，先调用 searchKnowledge 检索再回答
             4. 当用户提供图片或要求识别图片内容时，使用 analyze_image
             5. 不确定的内容不要编造，明确说明；回答必须基于工具返回的真实数据
+            6. 写操作（INSERT/UPDATE/DELETE）需用户回复确认后执行，询问确认时绝不展示SQL语句。
             """;
 
     /**
@@ -167,11 +187,13 @@ public class ChatServiceImpl implements ChatService {
                            ObjectMapper objectMapper,
                            @Lazy KnowledgeTool knowledgeTool,
                            @Lazy TextToSqlTool textToSqlTool,
-                           @Lazy AnalyzeImageTool analyzeImageTool) {
+                           @Lazy AnalyzeImageTool analyzeImageTool,
+                           PendingActionService pendingActionService) {
         this.aiModelProvider = aiModelProvider;
         this.conversationService = conversationService;
         this.chatMessageMapper = chatMessageMapper;
         this.objectMapper = objectMapper;
+        this.pendingActionService = pendingActionService;
         // 统一工具集：知识库检索 + Text to SQL + 图片识别（管理端与门户端共用）
         this.unifiedToolCallbacks = ToolCallbacks.from(knowledgeTool, textToSqlTool, analyzeImageTool);
     }
@@ -263,6 +285,47 @@ public class ChatServiceImpl implements ChatService {
         // 4. 设置工具执行用户上下文（ThreadLocal，供@Tool访问）
         UserContextHolder.setUserId(userId);
         UserContextHolder.setConversationId(finalConversationId);
+
+        // 4.1 确认/取消短路：若存在待确认操作且用户发送确认/取消词，直接执行对应操作
+        if (conversation != null && userId != null) {
+            ChatPendingAction pending = pendingActionService.findLatestPendingByConversationId(finalConversationId);
+            if (pending != null) {
+                String userMsg = request.getMessage();
+                if (isConfirm(userMsg)) {
+                    try {
+                        PendingActionVO confirmed = pendingActionService.confirmAction(pending.getId(), userId);
+                        int rowCount = extractRowCount(confirmed.getPayloadJson());
+                        String text = "操作已执行完成，共影响 " + rowCount + " 行数据。";
+                        // 保存助手回复到历史，确保上下文完整
+                        saveMessage(finalConversationId, MessageRoleEnum.ASSISTANT.getCode(), text, null);
+                        conversationService.updateStats(finalConversationId, text.length() / CHARS_PER_TOKEN);
+                        return Flux.just(wrapText(text), "[DONE]");
+                    } catch (BusinessException e) {
+                        log.warn("确认操作失败: pendingId={}, msg={}", pending.getId(), e.getMessage());
+                        String errText = e.getMessage() != null ? e.getMessage() : "操作执行失败";
+                        saveMessage(finalConversationId, MessageRoleEnum.ASSISTANT.getCode(), errText, null);
+                        return Flux.just(wrapText(errText), "[DONE]");
+                    } finally {
+                        UserContextHolder.clear();
+                    }
+                } else if (isCancel(userMsg)) {
+                    try {
+                        pendingActionService.cancelAction(pending.getId(), userId);
+                        String text = "操作已取消。";
+                        saveMessage(finalConversationId, MessageRoleEnum.ASSISTANT.getCode(), text, null);
+                        conversationService.updateStats(finalConversationId, text.length() / CHARS_PER_TOKEN);
+                        return Flux.just(wrapText(text), "[DONE]");
+                    } catch (BusinessException e) {
+                        log.warn("取消操作失败: pendingId={}, msg={}", pending.getId(), e.getMessage());
+                        String errText = e.getMessage() != null ? e.getMessage() : "取消失败";
+                        return Flux.just(wrapText(errText), "[DONE]");
+                    } finally {
+                        UserContextHolder.clear();
+                    }
+                }
+                // 非确认/取消词，落入正常工具循环，pending 保留
+            }
+        }
 
         try {
             // 5. 构建系统提示词（访客模式无会话，直接使用默认提示词）
@@ -365,7 +428,7 @@ public class ChatServiceImpl implements ChatService {
                             if (finalConversationId != null && !partialText.isEmpty()) {
                                 saveMessage(finalConversationId, MessageRoleEnum.ASSISTANT.getCode(),
                                         partialText, null);
-                                conversationService.updateStats(finalConversationId, partialText.length() / 4);
+                                conversationService.updateStats(finalConversationId, partialText.length() / CHARS_PER_TOKEN);
                             }
                             sink.next(wrapError("AI服务暂时不可用，请稍后重试"));
                             sink.next("[FINAL]");
@@ -377,7 +440,7 @@ public class ChatServiceImpl implements ChatService {
                             if (finalConversationId != null && !finalText.isEmpty()) {
                                 saveMessage(finalConversationId, MessageRoleEnum.ASSISTANT.getCode(),
                                         finalText, null);
-                                int tokenCount = finalText.length() / 4;
+                                int tokenCount = finalText.length() / CHARS_PER_TOKEN;
                                 conversationService.updateStats(finalConversationId, tokenCount);
                                 log.info("流式输出完成并保存: conversationId={}, length={}",
                                         finalConversationId, finalText.length());
@@ -437,7 +500,6 @@ public class ChatServiceImpl implements ChatService {
                         preStreamEvents.add("{\"type\":\"tool\",\"name\":"
                                 + objectMapper.writeValueAsString(synthetic.name()) + "}");
                         String result = executeTool(toolCallbacks, synthetic.name(), synthetic.arguments());
-                        collectPendingActionEvent(result, preStreamEvents);
                         messages.add(ToolResponseMessage.builder()
                                 .responses(List.of(new ToolResponseMessage.ToolResponse(
                                         synthetic.id(), synthetic.name(), truncateResult(result))))
@@ -457,15 +519,13 @@ public class ChatServiceImpl implements ChatService {
 
             for (AssistantMessage.ToolCall toolCall : assistantMsg.getToolCalls()) {
                 log.info("  执行工具: id={}, name={}, args={}", toolCall.id(), toolCall.name(),
-                        toolCall.arguments().length() > 100
-                                ? toolCall.arguments().substring(0, 100) + "..."
+                        toolCall.arguments().length() > MAX_LOG_ARGS_LEN
+                                ? toolCall.arguments().substring(0, MAX_LOG_ARGS_LEN) + "..."
                                 : toolCall.arguments());
                 // 收集工具事件（meta后发出，前端渲染工具调用徽章/步骤）
                 preStreamEvents.add("{\"type\":\"tool\",\"name\":"
                         + objectMapper.writeValueAsString(toolCall.name()) + "}");
                 String result = executeTool(toolCallbacks, toolCall.name(), toolCall.arguments());
-                // 待确认操作：解析工具结果，向流中注入结构化确认卡片事件
-                collectPendingActionEvent(result, preStreamEvents);
                 // 截断过长的工具结果，防止撑爆上下文
                 String truncatedResult = truncateResult(result);
                 log.info("  工具结果: length={}, 截断后length={}",
@@ -481,37 +541,6 @@ public class ChatServiceImpl implements ChatService {
             }
         }
         log.warn("工具调用达到最大迭代次数: {}", MAX_TOOL_ITERATIONS);
-    }
-
-    /**
-     * 解析工具结果中的待确认操作信息，向前置事件列表注入确认卡片事件
-     * 事件格式：{"type":"pending_action","id":123,"sql":"...","question":"..."}
-     *
-     * @param toolResult      工具原始结果JSON字符串
-     * @param preStreamEvents 前置事件收集器
-     */
-    private void collectPendingActionEvent(String toolResult, List<String> preStreamEvents) {
-        if (toolResult == null || !toolResult.contains("\"pendingActionId\"")) {
-            return;
-        }
-        try {
-            var node = objectMapper.readTree(toolResult);
-            if (node.get("pendingActionId") == null || node.get("pendingActionId").isNull()) {
-                return;
-            }
-            StringBuilder json = new StringBuilder("{\"type\":\"pending_action\",\"id\":")
-                    .append(node.get("pendingActionId").asLong());
-            if (node.get("sql") != null && !node.get("sql").isNull()) {
-                json.append(",\"sql\":").append(objectMapper.writeValueAsString(node.get("sql").asString()));
-            }
-            if (node.get("question") != null && !node.get("question").isNull()) {
-                json.append(",\"question\":").append(objectMapper.writeValueAsString(node.get("question").asString()));
-            }
-            json.append("}");
-            preStreamEvents.add(json.toString());
-        } catch (Exception e) {
-            log.warn("解析待确认操作事件失败，跳过确认卡片推送", e);
-        }
     }
 
     /**
@@ -616,6 +645,86 @@ public class ChatServiceImpl implements ChatService {
             }
         }
         return "未知工具: " + toolName;
+    }
+
+    /**
+     * 判断是否为确认词
+     * 逻辑：trim 后，中文精确 equals，英文精确 equalsIgnoreCase
+     *
+     * @param message 用户消息
+     * @return 是否为确认词
+     * @author H
+     */
+    private boolean isConfirm(String message) {
+        if (message == null) {
+            return false;
+        }
+        String normalized = message.trim();
+        if (normalized.isEmpty()) {
+            return false;
+        }
+        for (String word : CONFIRM_WORDS) {
+            if (word.equals(normalized) || word.equalsIgnoreCase(normalized)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 判断是否为取消词
+     *
+     * @param message 用户消息
+     * @return 是否为取消词
+     * @author H
+     */
+    private boolean isCancel(String message) {
+        if (message == null) {
+            return false;
+        }
+        String normalized = message.trim();
+        if (normalized.isEmpty()) {
+            return false;
+        }
+        for (String word : CANCEL_WORDS) {
+            if (word.equals(normalized) || word.equalsIgnoreCase(normalized)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 将文本包装为 token 类型的 SSE JSON 字符串
+     *
+     * @param text 文本内容
+     * @return SSE JSON 字符串
+     * @author H
+     */
+    private String wrapText(String text) {
+        return wrapToken(text);
+    }
+
+    /**
+     * 从 payloadJson 中提取 rowCount 字段
+     *
+     * @param payloadJson 载荷 JSON
+     * @return 行数，解析失败返回 0
+     * @author H
+     */
+    private int extractRowCount(String payloadJson) {
+        if (payloadJson == null || payloadJson.isBlank()) {
+            return 0;
+        }
+        try {
+            var node = objectMapper.readTree(payloadJson);
+            if (node.has("rowCount") && node.get("rowCount").isNumber()) {
+                return node.get("rowCount").asInt();
+            }
+        } catch (Exception e) {
+            log.warn("解析 rowCount 失败: {}", payloadJson, e);
+        }
+        return 0;
     }
 
     /**

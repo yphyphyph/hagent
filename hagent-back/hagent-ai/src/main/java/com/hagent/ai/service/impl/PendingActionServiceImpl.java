@@ -191,6 +191,21 @@ public class PendingActionServiceImpl extends ServiceImpl<ChatPendingActionMappe
         }
     }
 
+    @Override
+    @Transactional(readOnly = true)
+    public ChatPendingAction findLatestPendingByConversationId(Long conversationId) {
+        // 查询会话下最新一条待确认状态的记录
+        if (conversationId == null) {
+            return null;
+        }
+        LambdaQueryWrapper<ChatPendingAction> wrapper = new LambdaQueryWrapper<>();
+        wrapper.eq(ChatPendingAction::getConversationId, conversationId)
+                .eq(ChatPendingAction::getStatus, PendingActionStatusEnum.PENDING.getCode())
+                .orderByDesc(ChatPendingAction::getCreatedAt)
+                .last("LIMIT 1");
+        return super.getOne(wrapper, false);
+    }
+
     /**
      * 归属权校验，防止越权访问他人待确认操作
      *

@@ -16,22 +16,6 @@ export interface ChatMessageItem {
   toolName?: string
 }
 
-/** 待确认操作信息（SSE pending_action 事件载荷） */
-export interface PendingActionInfo {
-  id: number
-  sql?: string
-  question?: string
-}
-
-/** 待确认操作执行结果（confirm 接口返回的 payload 解析） */
-export interface PendingActionResult {
-  sql?: string
-  question?: string
-  rowCount?: number
-  data?: Array<Record<string, unknown>>
-  truncated?: boolean
-}
-
 /** SSE 流式事件处理器集合 */
 export interface StreamEventHandlers {
   /** 元数据事件：携带会话ID（访客模式为 "guest"） */
@@ -40,8 +24,6 @@ export interface StreamEventHandlers {
   onToken: (text: string) => void
   /** 工具调用事件（阶段1每执行一个工具触发一次） */
   onTool?: (name: string) => void
-  /** 待确认操作卡片事件 */
-  onPendingAction?: (info: PendingActionInfo) => void
   onError?: (msg: string) => void
   onDone?: () => void
 }
@@ -53,9 +35,9 @@ export interface StreamEventHandlers {
  * - {"type":"meta","conversationId":"123"|"guest"}
  * - {"type":"token","content":"..."}
  * - {"type":"tool","name":"searchKnowledge"}
- * - {"type":"pending_action","id":1,"sql":"...","question":"..."}
  * - {"type":"error","message":"..."}
  * - [FINAL] / [DONE] 结束标记
+ * // 未知 type 静默忽略（no-op）
  *
  * @param endpoint SSE 端点：'/api/admin/ai/chat'（管理端）| '/api/admin/ai/portal/chat'（门户端）
  */
@@ -122,13 +104,6 @@ export function streamChat(
               case 'tool':
                 h.onTool?.(String(obj.name ?? ''))
                 break
-              case 'pending_action':
-                h.onPendingAction?.({
-                  id: Number(obj.id),
-                  sql: obj.sql as string | undefined,
-                  question: obj.question as string | undefined,
-                })
-                break
               case 'token':
                 if (obj.content) h.onToken(String(obj.content))
                 break
@@ -176,18 +151,5 @@ export const conversationApi = {
   },
   rename(id: number, title: string): Promise<void> {
     return request.put(`/admin/ai/conversations/${id}/title`, { title })
-  },
-}
-
-/** 待确认操作接口（确认卡片的确认/取消动作） */
-export const pendingActionApi = {
-  async confirm(id: number): Promise<{ statusDesc?: string; payloadJson?: string }> {
-    const vo = await request.post<{ statusDesc?: string; payloadJson?: string }, { statusDesc?: string; payloadJson?: string }>(
-      `/admin/ai/pending-actions/${id}/confirm`
-    )
-    return vo ?? {}
-  },
-  cancel(id: number): Promise<void> {
-    return request.post(`/admin/ai/pending-actions/${id}/cancel`)
   },
 }

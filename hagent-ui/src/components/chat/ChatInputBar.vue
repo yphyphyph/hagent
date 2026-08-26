@@ -11,6 +11,7 @@
         @compositionend="composing = false"
         @keydown.enter.exact.prevent="onEnter"
         @input="onInput"
+        @focus="emit('focus')"
       ></textarea>
       <div class="input-bar__actions">
         <span class="input-bar__hint">
@@ -56,6 +57,7 @@ const emit = defineEmits<{
   (e: 'update:modelValue', v: string): void
   (e: 'send'): void
   (e: 'stop'): void
+  (e: 'focus'): void
 }>()
 
 const textareaRef = ref<HTMLTextAreaElement | null>(null)

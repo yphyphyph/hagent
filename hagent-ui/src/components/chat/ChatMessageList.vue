@@ -64,25 +64,7 @@
               @click="onContentClick($event)"
             ></div>
 
-            <!-- 待确认操作卡片（Text-to-SQL 先确认后执行） -->
-            <div v-if="m.pendingAction" class="pending-card" :class="`pending-card--${m.pendingAction.status}`">
-              <div class="pending-card__head">
-                <span class="pending-card__badge">待确认操作</span>
-                <span class="pending-card__status">{{ statusText(m.pendingAction.status) }}</span>
-              </div>
-              <p v-if="m.pendingAction.question" class="pending-card__question">{{ m.pendingAction.question }}</p>
-              <div class="code-block">
-                <div class="code-head"><span class="code-lang">sql</span></div>
-                <pre><code class="hljs">{{ m.pendingAction.sql }}</code></pre>
-              </div>
-              <div v-if="m.pendingAction.status === 'pending'" class="pending-card__actions">
-                <n-button size="small" type="primary" :loading="confirmingId === m.pendingAction.id" @click="$emit('confirm-action', m, m.pendingAction)">
-                  确认执行
-                </n-button>
-                <n-button size="small" quaternary @click="$emit('cancel-action', m, m.pendingAction)">取消</n-button>
-              </div>
-              <p v-else-if="m.pendingAction.resultText" class="pending-card__result">{{ m.pendingAction.resultText }}</p>
-            </div>
+
           </div>
         </div>
 
@@ -100,7 +82,6 @@
 
 <script setup lang="ts">
 import { nextTick, onMounted, ref, watch } from 'vue'
-import { NButton } from 'naive-ui'
 import { renderMarkdown } from '@/utils/markdown'
 import type { UiChatMessage } from '@/composables/useChat'
 
@@ -110,14 +91,11 @@ const props = withDefaults(
     loading?: boolean
     thinking?: boolean
     guest?: boolean
-    confirmingId?: number
   }>(),
-  { loading: false, thinking: false, guest: false, confirmingId: -1 }
+  { loading: false, thinking: false, guest: false }
 )
 
 const emit = defineEmits<{
-  (e: 'confirm-action', msg: UiChatMessage, action: NonNullable<UiChatMessage['pendingAction']>): void
-  (e: 'cancel-action', msg: UiChatMessage, action: NonNullable<UiChatMessage['pendingAction']>): void
   (e: 'send', text: string): void
 }>()
 
@@ -155,10 +133,6 @@ const TOOL_LABELS: Record<string, string> = {
 }
 function toolLabel(name: string): string {
   return TOOL_LABELS[name] ?? name
-}
-
-function statusText(status: NonNullable<UiChatMessage['pendingAction']>['status']): string {
-  return status === 'pending' ? '等待确认' : status === 'confirmed' ? '已执行' : '已取消'
 }
 
 /* ---------- 代码块复制（事件委托） ---------- */
@@ -401,55 +375,6 @@ defineExpose({ scrollToBottom })
   height: 6px;
   border-radius: 50%;
   background: var(--accent);
-}
-
-/* ---------- 待确认操作卡片 ---------- */
-.pending-card {
-  margin-top: var(--space-4);
-  border: 1px solid var(--accent-border);
-  background: var(--bg-elevated);
-  border-radius: 12px;
-  overflow: hidden;
-}
-.pending-card--cancelled {
-  opacity: 0.65;
-  border-color: var(--border);
-}
-.pending-card__head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--border);
-}
-.pending-card__badge {
-  font-size: var(--text-xs);
-  font-weight: 700;
-  color: var(--accent);
-}
-.pending-card__status {
-  font-size: var(--text-xs);
-  color: var(--text-3);
-}
-.pending-card__question {
-  margin: 0;
-  padding: 10px 14px 0;
-  font-size: var(--text-sm);
-  color: var(--text-2);
-}
-.pending-card .code-block {
-  margin: var(--space-3) 14px;
-}
-.pending-card__actions {
-  display: flex;
-  gap: var(--space-2);
-  padding: 0 14px 12px;
-}
-.pending-card__result {
-  margin: 0;
-  padding: 10px 14px 12px;
-  font-size: var(--text-sm);
-  color: var(--color-success, #4cc38a);
 }
 
 /* ---------- 思考中 ---------- */

@@ -47,7 +47,8 @@
           </template>
           <template v-else>
             <span class="conv-item__title">{{ c.title || '未命名会话' }}</span>
-            <span class="conv-item__ops" @click.stop>
+            <span v-if="c.id < 0" class="demo-badge">演示</span>
+            <span v-if="!guest" class="conv-item__ops" @click.stop>
               <span class="op op--rename" title="重命名" @click="startRename(c)">✎</span>
               <span class="op op--del" title="删除" @click="onDelete(c)">
                 {{ deletingId === c.id ? '确认?' : '✕' }}
@@ -61,7 +62,7 @@
     <!-- 访客提示 -->
     <div v-if="guest" class="conv-guest">
       <p>访客模式下对话不会被保存</p>
-      <router-link to="/login">登录后同步历史会话 →</router-link>
+      <button class="conv-guest__login" @click="$emit('login')">登录后可新建会话并保存历史</button>
     </div>
   </aside>
 </template>
@@ -82,6 +83,7 @@ const emit = defineEmits<{
   (e: 'new'): void
   (e: 'delete', id: number): void
   (e: 'rename', id: number, title: string): void
+  (e: 'login'): void
 }>()
 
 /* ---------- 搜索过滤 ---------- */
@@ -370,5 +372,35 @@ watch(deletingId, (v) => {
 .conv-guest a {
   color: var(--accent);
   text-decoration: none;
+}
+.demo-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: #dcfce7;
+  color: #15803d;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  flex-shrink: 0;
+  border: 1px solid #bbf7d0;
+}
+.conv-guest__login {
+  display: inline-flex;
+  align-items: center;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: none;
+}
+.conv-guest__login:hover {
+  text-decoration: underline;
 }
 </style>

@@ -61,4 +61,13 @@ public interface PendingActionService extends IService<ChatPendingAction> {
      * @return 已持久化的实体（含ID）
      */
     ChatPendingAction createAction(ChatPendingAction action, int expireHours);
+
+    /**
+     * 查询会话下最新一条待确认操作
+     *
+     * @param conversationId 会话ID
+     * @return 最新待确认操作，不存在时返回 null
+     * @author H
+     */
+    ChatPendingAction findLatestPendingByConversationId(Long conversationId);
 }
