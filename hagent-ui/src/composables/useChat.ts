@@ -78,9 +78,9 @@ export function useChat(options: UseChatOptions) {
   const thinkingHasContent = ref(false)
   /** 内容增量版本号：每收到 token 自增，驱动 ChatMessageList 的 flush:'post' 自动滚动 */
   const contentTick = ref(0)
-  /** 阶段进度提示文本（仅展示 3 个允许阶段：理解问题/分析问题/组织答案） */
+  /** 阶段文本仅作为思考块头部的副标题初始状态，不再单独渲染进度条（行业标准单载体） */
   const stageText = ref('')
-  /** 阶段提示是否可见 */
+  /** 阶段可见性已废弃：保留字段以兼容旧调用，始终为 false，UI 不再单独展示阶段条 */
   const stageVisible = ref(false)
 
   /** 需要屏蔽的阶段关键词（TextToSql 内部阶段，前端不展示） */
@@ -97,41 +97,28 @@ export function useChat(options: UseChatOptions) {
   /** 当前正在生成的 AI 消息引用 */
   let activeAiMsg: UiChatMessage | null = null
 
-  /** 阶段提示自动隐藏定时器 */
-  let stageHideTimer: ReturnType<typeof setTimeout> | null = null
-
-  /** 清除阶段隐藏定时器 */
-  function clearStageTimer() {
-    if (stageHideTimer) {
-      clearTimeout(stageHideTimer)
-      stageHideTimer = null
-    }
-  }
-
-  /** 立即隐藏阶段提示 */
+  // 阶段条已移除，无需定时器；保留空实现以保持调用兼容
+  function clearStageTimer() {}
   function hideStageImmediate() {
-    clearStageTimer()
     stageVisible.value = false
   }
-
-  /** 延迟 2s 自动隐藏阶段提示（完成/出错后） */
   function scheduleStageHide() {
-    clearStageTimer()
-    stageHideTimer = setTimeout(() => {
-      stageVisible.value = false
-      stageHideTimer = null
-    }, 2000)
+    stageVisible.value = false
   }
 
   function finishStream() {
     thinking.value = false
     streaming.value = false
-    // 计算回答耗时并回写当前消息（含停止/异常场景，已结束的消息也会被标记）
-    if (activeAiMsg && activeAiMsg.startTime && activeAiMsg.elapsedMs === undefined) {
+    // 计算回答耗时并回写当前消息，同时收起思考块（满足“默认展开、完成后收起”）
+    if (activeAiMsg) {
       const idx = messages.value.indexOf(activeAiMsg)
       if (idx !== -1) {
-        activeAiMsg = { ...activeAiMsg, elapsedMs: Date.now() - activeAiMsg.startTime }
-        messages.value[idx] = activeAiMsg
+        let updated: UiChatMessage = { ...activeAiMsg, thinkingExpanded: false }
+        if (updated.startTime && updated.elapsedMs === undefined) {
+          updated = { ...updated, elapsedMs: Date.now() - updated.startTime }
+        }
+        messages.value[idx] = updated
+        activeAiMsg = updated
       }
     }
     activeAiMsg = null
@@ -209,16 +196,11 @@ export function useChat(options: UseChatOptions) {
           // 收到实际 thinking 内容后，隐藏“AI 思考中”占位，由思考折叠面板展示
           thinkingHasContent.value = true
         },
-        // 阶段进度提示（type:stage）：屏蔽“生成查询/执行查询”，仅展示 3 个允许阶段
+        // 阶段提示仅作为思考块副标题（单载体），不单独展示进度条；首个阶段映射为思考头部初始状态
         onStage: (text) => {
-          // 若命中被屏蔽关键词则隐藏进度条，不更新文本
-          if (isBlockedStage(text)) {
-            hideStageImmediate()
-            return
-          }
-          clearStageTimer()
+          if (isBlockedStage(text)) return
           stageText.value = text
-          stageVisible.value = true
+          stageVisible.value = false
         },
         onToken: (chunk) => {
           if (!activeAiMsg) return
@@ -270,7 +252,6 @@ export function useChat(options: UseChatOptions) {
             activeAiMsg.content = `（AI 响应失败：${msg}）`
           }
           options.onError?.(msg)
-          // 出错后延迟隐藏阶段提示
           scheduleStageHide()
           finishStream()
         },
@@ -278,7 +259,6 @@ export function useChat(options: UseChatOptions) {
           if (activeAiMsg && !activeAiMsg.content) {
             activeAiMsg.content = '（无回复内容）'
           }
-          // 完成后延迟 2s 自动隐藏阶段提示
           scheduleStageHide()
           finishStream()
           options.onDone?.()

@@ -565,7 +565,8 @@ public class ChatServiceImpl implements ChatService {
                             String finalThinking = thinkingAccum.length() > 0 ? thinkingAccum.toString() : null;
                             String finalSources = buildSourcesJson(sourcesAccum);
                             // 空白内容回退：无论 thinking 是否存在，只要 content 为空白就使用兜底文案，避免持久化空串导致前端显示"(无回复内容)" @author H
-                            if (finalText == null || finalText.isBlank()) {
+                            boolean isEmptyFallback = finalText == null || finalText.isBlank();
+                            if (isEmptyFallback) {
                                 finalText = "已根据已有信息整理回答，详见思考过程";
                             }
                             if (finalConversationId != null && (!finalText.isBlank() || finalThinking != null)) {
@@ -577,6 +578,10 @@ public class ChatServiceImpl implements ChatService {
                                         finalConversationId, finalText.length(),
                                         finalThinking != null ? finalThinking.length() : 0,
                                         finalSources != null ? sourcesAccum.size() : 0);
+                            }
+                            // 空内容兜底增量推送：当过滤后 fullText 为空时，前端尚未收到任何 token，需将兜底文案作为 token 事件增量推送，避免前端显示"(无回复内容)"直至刷库 @author H
+                            if (isEmptyFallback && !sink.isCancelled()) {
+                                sink.next(wrapToken(finalText));
                             }
                             // 发送明确结束标记，前端据此判断流正常结束
                             sink.next("[FINAL]");

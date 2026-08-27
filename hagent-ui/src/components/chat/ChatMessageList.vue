@@ -57,21 +57,24 @@
               </span>
             </div>
 
-            <!-- 思考过程折叠块（默认展开，点击收起，markdown 渲染，增量更新时自动贴底） -->
-            <!-- 修复：外层 v-if 确保首个 thinking chunk 立即挂载；内层改用 v-if 而非 v-show，避免 v-show 初始 display:none 导致增量不可见与批量渲染延迟 -->
-            <div v-if="m.thinkingContent" class="thinking-block">
+            <!-- 思考过程折叠块：唯一进度载体，头部含阶段副标题，默认首片展开、完成后自动收起 -->
+            <div v-if="shouldShowThinkingBlock(m)" class="thinking-block">
               <button class="thinking-block__header" type="button" @click="toggleThinking(m)">
                 <span class="thinking-block__icon" :class="{ 'is-expanded': isExpanded(m) }">▸</span>
                 <span class="thinking-block__title">思考过程</span>
+                <span v-if="showStageSubtitle(m)" class="thinking-block__subtitle">{{ props.stageText }}</span>
                 <span class="thinking-block__hint">{{ isExpanded(m) ? '收起' : '展开' }}</span>
               </button>
               <div
                 v-if="isExpanded(m)"
                 ref="thinkingBodyRefs"
                 class="thinking-block__body md-body"
-                v-html="renderMarkdown(m.thinkingContent)"
                 @click="onContentClick($event)"
-              ></div>
+              >
+                <div v-if="m.thinkingContent" v-html="renderMarkdown(m.thinkingContent)"></div>
+                <div v-else-if="showStageSubtitle(m)" class="thinking-block__placeholder">{{ props.stageText }}</div>
+                <div v-else class="thinking-block__placeholder">正在思考...</div>
+              </div>
             </div>
 
             <!-- 正文（支持行内引用角标：[1] 点击可打开抽屉） -->
@@ -138,9 +141,11 @@ const props = withDefaults(
     messages: UiChatMessage[]
     loading?: boolean
     thinking?: boolean
+    stageText?: string
+    streaming?: boolean
     guest?: boolean
   }>(),
-  { loading: false, thinking: false, guest: false }
+  { loading: false, thinking: false, stageText: '', streaming: false, guest: false }
 )
 
 const emit = defineEmits<{
@@ -201,6 +206,79 @@ function toggleThinking(m: UiChatMessage): void {
   ;(m as UiChatMessage).thinkingExpanded = next
   expandedMap[key] = next
 }
+
+/* ---------- 思考块显隐与阶段副标题（单一收敛载体） ---------- */
+function isLastAiMessage(m: UiChatMessage): boolean {
+  for (let i = props.messages.length - 1; i >= 0; i--) {
+    if (props.messages[i].role === 'ai') return String(props.messages[i].id) === String(m.id)
+  }
+  return false
+}
+function showStageSubtitle(m: UiChatMessage): boolean {
+  if (!props.stageText) return false
+  if (isBlockedStage(props.stageText)) return false
+  if (!isLastAiMessage(m)) return false
+  return !!(props.streaming || props.thinking)
+}
+function shouldShowThinkingBlock(m: UiChatMessage): boolean {
+  if (m.thinkingContent && m.thinkingContent.length > 0) return true
+  // 流式进行中的最后一条 AI 消息，即使尚无 thinkingContent，也展示思考块（以阶段副标题为初始状态）
+  if (isLastAiMessage(m) && (props.thinking || props.streaming)) return true
+  return false
+}
+
+/* 首次收到 thinking 首片时自动展开；流式结束后自动收起，满足“默认展开、完成后收起” */
+watch(
+  () => props.messages.map((m) => (m.thinkingContent ?? '').length).join(','),
+  (curr, prev) => {
+    if (!prev) return
+    const currLens = curr.split(',').map((v) => Number(v))
+    const prevLens = prev.split(',').map((v) => Number(v))
+    props.messages.forEach((m, idx) => {
+      const cl = currLens[idx] ?? 0
+      const pl = prevLens[idx] ?? 0
+      if (cl > 0 && pl === 0) {
+        const key = String(m.id)
+        ;(m as UiChatMessage).thinkingExpanded = true
+        expandedMap[key] = true
+      }
+    })
+  },
+  { flush: 'post' }
+)
+watch(
+  () => props.streaming,
+  (streaming, prev) => {
+    if (prev && !streaming) {
+      const last = [...props.messages].reverse().find((m) => m.role === 'ai' && m.thinkingContent)
+      if (last) {
+        const key = String(last.id)
+        setTimeout(() => {
+          ;(last as UiChatMessage).thinkingExpanded = false
+          expandedMap[key] = false
+        }, 800)
+      }
+    }
+  },
+  { flush: 'post' }
+)
+// thinking 标志结束时亦收起（兼容无 streaming 的场景）
+watch(
+  () => props.thinking,
+  (thinking, prev) => {
+    if (prev && !thinking && !props.streaming) {
+      const last = [...props.messages].reverse().find((m) => m.role === 'ai' && m.thinkingContent)
+      if (last) {
+        const key = String(last.id)
+        setTimeout(() => {
+          ;(last as UiChatMessage).thinkingExpanded = false
+          expandedMap[key] = false
+        }, 800)
+      }
+    }
+  },
+  { flush: 'post' }
+)
 
 /* ---------- 工具徽章文案映射 ---------- */
 const TOOL_LABELS: Record<string, string> = {
@@ -675,11 +753,33 @@ defineExpose({ scrollToBottom })
 .thinking-block__title {
   flex-shrink: 0;
 }
+.thinking-block__subtitle {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--text-2);
+  font-weight: 400;
+  letter-spacing: 0.02em;
+  opacity: 0.9;
+}
+.thinking-block__subtitle::before {
+  content: '—';
+  margin: 0 6px;
+  color: var(--text-3);
+}
 .thinking-block__hint {
   margin-left: auto;
   font-size: 11px;
   color: var(--text-3);
   font-weight: 400;
+}
+.thinking-block__placeholder {
+  color: var(--text-3);
+  font-size: var(--text-xs);
+  font-style: italic;
 }
 .thinking-block__body {
   padding: 10px 14px 14px;
