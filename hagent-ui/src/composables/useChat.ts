@@ -85,9 +85,9 @@ export function useChat(options: UseChatOptions) {
 
   // 8 阶段动态标题（与后端 THINK_STAGE_* 对齐，前端据此切换折叠块标题）
   const THINKING_TITLES = [
-    '思考中…',
-    '正在理解问题…',
-    '正在分析问题…',
+    '思考中',
+    '正在理解问题',
+    '正在分析问题',
     '制定解题策略',
     '检索知识库',
     '生成查询 SQL',
@@ -95,19 +95,16 @@ export function useChat(options: UseChatOptions) {
     '最终润色',
   ] as const
   const THINK_DONE_TITLE = '思考结束'
-  // 阶段到标题的精确映射（含后端可能发送的多种文案变体）
+  // 阶段到标题的精确映射（已去除省略号，历史带省略号的输入由 normalizeStageToTitle 模糊匹配兼容）
   const STAGE_TO_TITLE: Record<string, string> = {
-    '思考中…': THINKING_TITLES[0],
-    '正在理解问题…': THINKING_TITLES[1],
-    '正在理解问题...': THINKING_TITLES[1],
-    '正在分析问题…': THINKING_TITLES[2],
-    '正在分析问题...': THINKING_TITLES[2],
+    '思考中': THINKING_TITLES[0],
+    '正在理解问题': THINKING_TITLES[1],
+    '正在分析问题': THINKING_TITLES[2],
     '制定解题策略': THINKING_TITLES[3],
     '检索知识库': THINKING_TITLES[4],
     '生成查询 SQL': THINKING_TITLES[5],
     '构建输出结构': THINKING_TITLES[6],
-    '正在组织答案...': THINKING_TITLES[6],
-    '正在组织答案…': THINKING_TITLES[6],
+    '正在组织答案': THINKING_TITLES[6],
     '最终润色': THINKING_TITLES[7],
     '思考结束': THINK_DONE_TITLE,
   }
@@ -249,22 +246,22 @@ export function useChat(options: UseChatOptions) {
     const trimmed = text.trim()
     if (!trimmed || thinking.value || streaming.value) return false
 
+    // 立即进入思考态，避免 7s SSE 空白期内 UI 无反馈（先置位再推消息，确保首帧即渲染思考块）
+    thinking.value = true
+    streaming.value = true
+    thinkingContent.value = ''
+    thinkingHasContent.value = false
+    thinkingTitle.value = THINKING_TITLES[0] // 思考中
+    stageText.value = THINKING_TITLES[0]
+    thinkingStageIndex = 0
+    stageVisible.value = false
+    clearStageTimer()
+
     messages.value.push({ id: nextId(), role: 'user', content: trimmed, time: formatMsgTime(new Date().toISOString()) })
-    // 思考块默认展开，确保首轮与增量思考均可见
+    // 立即创建空 AI 消息，思考块以 thinkingContent="" 与标题“思考中”空内容起步，后续 SSE thinking 增量追加
     const aiMsg: UiChatMessage = { id: nextId(), role: 'ai', content: '', time: '', thinkingContent: '', thinkingExpanded: true, startTime: Date.now(), sources: [] }
     messages.value.push(aiMsg)
     activeAiMsg = aiMsg
-    thinking.value = true
-    streaming.value = true
-    // 新一轮思考内容重置
-    thinkingContent.value = ''
-    thinkingHasContent.value = false
-    // 新一轮阶段提示重置（标题回到初始“思考中…”）
-    clearStageTimer()
-    stageText.value = THINKING_TITLES[0]
-    thinkingTitle.value = THINKING_TITLES[0]
-    thinkingStageIndex = 0
-    stageVisible.value = false
 
     controller = streamChat(options.endpoint, trimmed, {
       scene: options.scene ?? 1,

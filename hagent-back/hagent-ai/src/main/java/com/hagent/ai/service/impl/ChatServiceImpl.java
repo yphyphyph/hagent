@@ -120,13 +120,13 @@ public class ChatServiceImpl implements ChatService {
     /** 思考分片间的发射间隔，确保前端收到事件在时间上分散而非一次性爆发 */
     private static final Duration THINKING_DELAY = Duration.ofMillis(30);
 
-    // ===== 思考阶段标题（8 阶段动态标题，前端据此切换折叠块标题） =====
+    // ===== 思考阶段标题（8 阶段动态标题，前端据此切换折叠块标题，已去除省略号保持和谐） =====
     /** 初始思考 */
-    private static final String THINK_STAGE_INITIAL = "思考中…";
+    private static final String THINK_STAGE_INITIAL = "思考中";
     /** 正在理解问题 */
-    private static final String THINK_STAGE_UNDERSTAND = "正在理解问题…";
+    private static final String THINK_STAGE_UNDERSTAND = "正在理解问题";
     /** 正在分析问题 */
-    private static final String THINK_STAGE_ANALYZE = "正在分析问题…";
+    private static final String THINK_STAGE_ANALYZE = "正在分析问题";
     /** 制定解题策略 */
     private static final String THINK_STAGE_STRATEGY = "制定解题策略";
     /** 检索知识库 */
@@ -1137,10 +1137,10 @@ public class ChatServiceImpl implements ChatService {
 
     /**
      * 将阶段进度包装为结构化JSON字符串
-     * 前端据 type=stage 字段展示阶段进度（如“正在理解问题...”）
+     * 前端据 type=stage 字段展示阶段进度（如“正在理解问题”）
      * 通过 objectMapper 编码 content，确保中文与特殊字符安全传输
      *
-     * @param content 阶段文案（如“正在理解问题...”）
+     * @param content 阶段文案（如“正在理解问题”）
      * @return 结构化JSON字符串，格式：{"type":"stage","content":"<阶段文案>"}
      */
     private String wrapStage(String content) {

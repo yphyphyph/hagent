@@ -45,11 +45,12 @@
         </div>
       </header>
 
-      <!-- 思考过程为唯一进度载体，已移除顶部阶段进度条，避免与思考折叠块重复展示 -->
+      <!-- 思考块为唯一进度载体：移除独立占位，直接由 thinking-block 从首个信号起渲染 -->
       <ChatMessageList
         ref="listRef"
         :messages="displayMessages"
         :thinking="displayThinking"
+        :thinking-title="thinkingTitle"
         :stage-text="stageText"
         :streaming="displayStreaming"
         :guest="guest"
@@ -155,8 +156,8 @@ const chat = useChat({
     if (loggedIn.value) void loadConversations()
   },
 })
-// 仅保留 thinking 折叠块为唯一进度载体，stageText 仅作为思考头部的副标题初始状态传入，不再单独渲染进度条
-const { messages, thinking, streaming, thinkingHasContent, stageText, stop } = chat
+// 思考块为唯一进度载体：thinking-block 从首个 thinking 信号即渲染，标题“思考中…”空内容起步，随后递增
+const { messages, thinking, streaming, stageText, thinkingTitle, stop } = chat
 
 /* ---------- 视图绑定：访客展示演示消息，登录展示真实流 ---------- */
 const displayMessages = computed(() => {
@@ -169,13 +170,9 @@ const displayMessages = computed(() => {
   }
   return messages.value
 })
-// 思考中占位：收到真实 thinking 内容后隐藏，由消息列表的思考折叠面板展示
+// 思考块直通：不再区分占位与折叠块，首个 thinking 信号即由 ChatMessageList 的 thinking-block 统一承载
 const displayThinking = computed(() => {
   if (guest.value) return false
-  // 已有实际 thinking 内容时隐藏占位，避免与折叠面板重复显示
-  if (thinkingHasContent.value) return false
-  // 流式期间即使 thinking 短暂为 false，8.5s 工具间隙仍保持可见
-  if (streaming.value) return true
   return thinking.value
 })
 const displayStreaming = computed(() => (guest.value ? false : streaming.value))

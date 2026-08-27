@@ -48,8 +48,8 @@
             <div class="user-bubble">{{ m.content }}</div>
           </template>
 
-          <!-- AI 回复：去气泡全宽排版 -->
-          <div v-else-if="m.role === 'ai' && (m.content || m.tools?.length || m.thinkingContent || m.sources?.length)" class="ai-msg">
+          <!-- AI 回复：去气泡全宽排版（思考中的空内容也需立即渲染，避免 7s 空白） -->
+          <div v-else-if="m.role === 'ai' && (m.content || m.tools?.length || m.thinkingContent !== undefined || m.sources?.length)" class="ai-msg">
             <!-- 工具徽章行：去重后展示，同名工具合并为一次并追加 xN 计数 -->
             <div v-if="m.tools?.length" class="tool-row">
               <span v-for="badge in dedupedTools(m.tools)" :key="badge.name" class="tool-chip">
@@ -57,13 +57,13 @@
               </span>
             </div>
 
-            <!-- 思考过程折叠块：唯一进度载体，标题 8 阶段动态切换，默认展开、完成后 800ms 自动收起 -->
+            <!-- 思考过程折叠块：唯一进度载体，首个 thinking 信号即渲染（标题“思考中…”空内容起步），随 thinking/tool 事件递增标题与内容 -->
             <div v-if="shouldShowThinkingBlock(m)" class="thinking-block">
               <button class="thinking-block__header" type="button" @click="toggleThinking(m)">
                 <span class="thinking-block__icon" :class="{ 'is-expanded': isExpanded(m) }">▸</span>
                 <!-- 思考标题脉冲点：流式进行时带动画，思考结束时静止 -->
                 <span class="thinking-title-dot" :class="{ 'thinking-title-dot--pulse': isThinkingActive(m) }"></span>
-                <!-- 思考标题：主标题黑粗（思考中/思考结束/思考过程），副标题灰色展示阶段，避免重复；思考中时标题带呼吸渐变 -->
+                <!-- 思考标题：主标题黑粗（思考中…/思考结束/思考过程），副标题灰色展示阶段，避免重复；思考中时标题带呼吸渐变 -->
                 <span
                   class="thinking-block__title thinking-block__title--main"
                   :class="{ 'thinking-block__title--breathing': isThinkingActive(m) }"
@@ -78,9 +78,12 @@
                 class="thinking-block__body md-body"
                 @click="onContentClick($event)"
               >
+                <!-- 首个 thinking 信号时内容为空，显示脉冲点占位，后续增量追加 -->
                 <div v-if="m.thinkingContent" v-html="renderMarkdown(m.thinkingContent)"></div>
-                <div v-else-if="getThinkingStageSubtitle(m)" class="thinking-block__placeholder">{{ getThinkingStageSubtitle(m) }}</div>
-                <div v-else class="thinking-block__placeholder">正在思考...</div>
+                <div v-else class="thinking-block__placeholder thinking-block__placeholder--empty">
+                  <!-- 空思考内容时的即时反馈：脉冲点 + 文案，避免 7s 空白 -->
+                  <span class="thinking-dots"><i></i><i></i><i></i></span>
+                </div>
               </div>
             </div>
 
@@ -99,7 +102,11 @@
                 :title="`${m.sources.length}个来源，点击查看`"
                 @click="openDrawer(m, 0)"
               >
-                {{ m.sources.length }}个来源 &gt;
+                <!-- 文档图标 -->
+                <n-icon :component="FileTextOutlined" class="source-pill__icon" />
+                <span class="source-pill__text">{{ m.sources.length }}个来源</span>
+                <!-- 优雅箭头（替代字符 >） -->
+                <n-icon :component="RightOutlined" class="source-pill__arrow" />
               </button>
             </div>
 
@@ -110,13 +117,7 @@
           </div>
         </div>
 
-        <!-- 思考中占位（首字延迟） -->
-        <div v-if="thinking" class="thinking fade-up">
-          <span class="thinking-dot"></span>
-          <span class="thinking-dot"></span>
-          <span class="thinking-dot"></span>
-          <span class="thinking-label">AI 思考中</span>
-        </div>
+        <!-- 已移除独立“AI 思考中”占位（3 绿点），由上方 thinking-block 统一承载，避免视觉跳变 -->
       </div>
     </template>
 
@@ -134,7 +135,8 @@
 <script setup lang="ts">
 import { nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { useMessage } from 'naive-ui'
+import { NIcon, useMessage } from 'naive-ui'
+import { FileTextOutlined, RightOutlined } from '@vicons/antd'
 import { renderMarkdown } from '@/utils/markdown'
 import type { UiChatMessage, ChatSource } from '@/composables/useChat'
 import SourceDrawer from '@/components/chat/SourceDrawer.vue'
@@ -197,9 +199,9 @@ function isBlockedStage(text: string): boolean {
 
 // 8 阶段动态标题（与 useChat 及后端保持一致）
 const THINKING_TITLES = [
-  '思考中…',
-  '正在理解问题…',
-  '正在分析问题…',
+  '思考中',
+  '正在理解问题',
+  '正在分析问题',
   '制定解题策略',
   '检索知识库',
   '生成查询 SQL',
@@ -208,16 +210,16 @@ const THINKING_TITLES = [
 ] as const
 const THINK_DONE_TITLE = '思考结束'
 const STAGE_TO_TITLE: Record<string, string> = {
-  '思考中…': THINKING_TITLES[0],
-  '正在理解问题…': THINKING_TITLES[1],
+  '思考中': THINKING_TITLES[0],
+  '正在理解问题': THINKING_TITLES[1],
   '正在理解问题...': THINKING_TITLES[1],
-  '正在分析问题…': THINKING_TITLES[2],
+  '正在分析问题': THINKING_TITLES[2],
   '正在分析问题...': THINKING_TITLES[2],
   '制定解题策略': THINKING_TITLES[3],
   '检索知识库': THINKING_TITLES[4],
   '生成查询 SQL': THINKING_TITLES[5],
   '构建输出结构': THINKING_TITLES[6],
-  '正在组织答案...': THINKING_TITLES[6],
+  '正在组织答案': THINKING_TITLES[6],
   '正在组织答案…': THINKING_TITLES[6],
   '最终润色': THINKING_TITLES[7],
   '思考结束': THINK_DONE_TITLE,
@@ -256,17 +258,27 @@ function getThinkingTitle(m: UiChatMessage): string {
   return THINKING_TITLES[0]
 }
 
-/** 获取思考块主标题：流式时为“思考中”，结束后为“思考结束”，历史消息为“思考过程” */
+/** 获取思考块主标题：流式时为“思考中…”，结束后为“思考结束”，历史消息为“思考过程” */
 function getThinkingMainTitle(m: UiChatMessage): string {
-  // 流式活跃中的最后一条 AI 消息统一显示“思考中”
-  if (isLastAiMessage(m) && (props.streaming || props.thinking)) return '思考中'
+  // 流式活跃中的最后一条 AI 消息：优先使用 thinkingTitle 驱动的 8 阶段首项“思考中…”，保证首信号即有标题
+  if (isLastAiMessage(m) && (props.streaming || props.thinking)) {
+    // 若上层已传入 thinkingTitle 且处于初始阶段，直接返回“思考中…”
+    if (props.thinkingTitle && props.thinkingTitle.trim()) {
+      const t = props.thinkingTitle.trim()
+      // 初始阶段保持“思考中…”不被副标题重复覆盖
+      if (t === THINKING_TITLES[0] || t === '思考中' || t === '思考中…') return THINKING_TITLES[0]
+      // 后续阶段标题由副标题承载，主标题仍保持“思考中…”作为前缀，避免标题跳变
+      return THINKING_TITLES[0]
+    }
+    return THINKING_TITLES[0]
+  }
   // 有思考内容且流式已结束：最后一条显示“思考结束”，历史消息显示“思考过程”
   if (m.thinkingContent && m.thinkingContent.length > 0) {
     if (isLastAiMessage(m) && !props.streaming && !props.thinking) return THINK_DONE_TITLE
     return '思考过程'
   }
   // 无思考内容但处于流式占位阶段
-  if (isLastAiMessage(m) && (props.streaming || props.thinking)) return '思考中'
+  if (isLastAiMessage(m) && (props.streaming || props.thinking)) return THINKING_TITLES[0]
   return '思考过程'
 }
 
@@ -335,8 +347,8 @@ function shouldShowThinkingBlock(m: UiChatMessage): boolean {
 /** 判断思考标题是否处于活跃流式状态（用于脉冲点动画：streaming 时脉冲，思考结束时静止） */
 function isThinkingActive(m: UiChatMessage): boolean {
   const main = getThinkingMainTitle(m)
-  // 仅主标题为“思考中”且流式进行时脉冲，思考结束/思考过程静止
-  if (main !== '思考中') return false
+  // 仅主标题为“思考中…”且流式进行时脉冲，思考结束/思考过程静止
+  if (main !== THINKING_TITLES[0]) return false
   // 仅最后一条 AI 消息且处于流式状态时脉冲
   return !!props.streaming && isLastAiMessage(m)
 }
@@ -951,6 +963,45 @@ defineExpose({ scrollToBottom })
   font-size: var(--text-xs);
   font-style: italic;
 }
+.thinking-block__placeholder--empty {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 22px;
+  padding: 6px 0;
+  font-style: normal;
+}
+/* 空思考内容的脉冲点（立即反馈，避免空白） */
+.thinking-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.thinking-dots i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-3, #94a3b8);
+  animation: thinking-dots-pulse 1.2s ease-in-out infinite;
+}
+.thinking-dots i:nth-child(2) {
+  animation-delay: 0.2s;
+}
+.thinking-dots i:nth-child(3) {
+  animation-delay: 0.4s;
+}
+@keyframes thinking-dots-pulse {
+  0%,
+  80%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.75);
+  }
+  40% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
 .thinking-block__body {
   padding: 10px 14px 14px;
   border-top: 1px dashed var(--border);
@@ -970,36 +1021,18 @@ defineExpose({ scrollToBottom })
   background: rgba(255, 255, 255, 0.02);
 }
 
-/* ---------- 思考中 ---------- */
-.thinking {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-}
-.thinking-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--accent);
-  animation: pulse-dot 1.2s var(--ease) infinite;
-}
-.thinking-dot:nth-child(2) {
-  animation-delay: 0.15s;
-}
-.thinking-dot:nth-child(3) {
-  animation-delay: 0.3s;
-}
+/* 已移除独立“AI 思考中”占位样式（3 绿点），由 thinking-block 统一承载进度，保留占位避免旧快照报错 */
+.thinking,
+.thinking-dot,
 .thinking-label {
-  margin-left: var(--space-2);
-  font-size: var(--text-xs);
-  color: var(--text-3);
+  display: none;
 }
 
 .fade-up {
   animation: fade-up 0.35s var(--ease) both;
 }
 
-/* ---------- 溯源聚合胶囊（ChatGLM 风格紧凑 pill） ---------- */
+/* ---------- 溯源聚合胶囊（ChatGLM 风格紧凑 pill · 精致化） ---------- */
 .source-pill-bar {
   display: flex;
   flex-wrap: wrap;
@@ -1011,30 +1044,77 @@ defineExpose({ scrollToBottom })
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  height: 28px;
-  padding: 0 12px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  background: var(--bg-hover);
+  gap: 6px;
+  height: 30px;
+  padding: 0 14px 0 12px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--accent-border);
+  /* 细腻渐变：accent-soft 向 bg-elevated 过渡，呼应 tokens --accent 体系 */
+  background: linear-gradient(135deg, var(--accent-soft) 0%, var(--bg-elevated) 72%);
   color: var(--text-2);
-  font-size: 12px;
+  font-size: 12.5px;
   line-height: 1;
-  font-weight: 500;
-  letter-spacing: 0.02em;
+  font-weight: 600;
+  letter-spacing: 0.03em;
   cursor: pointer;
   user-select: none;
   white-space: nowrap;
-  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease),
-    border-color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+  box-shadow: 0 1px 6px rgba(2, 6, 23, 0.06);
+  transition:
+    background var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease),
+    box-shadow var(--dur-fast) var(--ease),
+    transform var(--dur-fast) var(--ease);
 }
 .source-pill:hover {
-  background: var(--bg-elevated);
-  border-color: var(--border-strong);
-  color: var(--text-1);
-  transform: translateY(-1px);
+  background: linear-gradient(135deg, var(--accent-soft) 0%, var(--bg-hover) 72%);
+  border-color: var(--accent-border);
+  color: var(--accent);
+  box-shadow: 0 4px 16px rgba(2, 6, 23, 0.1), 0 1px 4px rgba(2, 6, 23, 0.06);
+  transform: translateY(-1px) scale(1.02);
 }
 .source-pill:active {
-  transform: translateY(0);
+  transform: translateY(0) scale(0.98);
+  box-shadow: 0 1px 4px rgba(2, 6, 23, 0.06);
+}
+.source-pill:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+/* 图标：文档感，默认跟随文字色，悬停时随 pill 变为 accent */
+.source-pill__icon {
+  font-size: 14px;
+  color: var(--text-3);
+  transition: color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+  flex-shrink: 0;
+}
+.source-pill:hover .source-pill__icon {
+  color: var(--accent);
+}
+.source-pill__text {
+  font-variant-numeric: tabular-nums;
+}
+/* 箭头：优雅 chevron，悬停时右移微动效 */
+.source-pill__arrow {
+  font-size: 10px;
+  color: var(--text-3);
+  margin-left: 1px;
+  opacity: 0.9;
+  transition: color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease), opacity var(--dur-fast) var(--ease);
+  flex-shrink: 0;
+}
+.source-pill:hover .source-pill__arrow {
+  color: var(--accent);
+  transform: translateX(2px);
+  opacity: 1;
+}
+/* 浅色主题：加深边框对比，阴影更柔和 */
+[data-theme='light'] .source-pill {
+  box-shadow: 0 1px 8px rgba(15, 23, 42, 0.06);
+}
+[data-theme='light'] .source-pill:hover {
+  box-shadow: 0 6px 20px rgba(15, 23, 42, 0.08), 0 1px 4px rgba(15, 23, 42, 0.06);
 }
 
 /* 行内角标（正文中的 [1] 替换） */
