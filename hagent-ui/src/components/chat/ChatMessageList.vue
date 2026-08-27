@@ -57,12 +57,19 @@
               </span>
             </div>
 
-            <!-- 思考过程折叠块：唯一进度载体，头部含阶段副标题，默认首片展开、完成后自动收起 -->
+            <!-- 思考过程折叠块：唯一进度载体，标题 8 阶段动态切换，默认展开、完成后 800ms 自动收起 -->
             <div v-if="shouldShowThinkingBlock(m)" class="thinking-block">
               <button class="thinking-block__header" type="button" @click="toggleThinking(m)">
                 <span class="thinking-block__icon" :class="{ 'is-expanded': isExpanded(m) }">▸</span>
-                <span class="thinking-block__title">思考过程</span>
-                <span v-if="showStageSubtitle(m)" class="thinking-block__subtitle">{{ props.stageText }}</span>
+                <!-- 思考标题脉冲点：流式进行时带动画，思考结束时静止 -->
+                <span class="thinking-title-dot" :class="{ 'thinking-title-dot--pulse': isThinkingActive(m) }"></span>
+                <!-- 思考标题：主标题黑粗（思考中/思考结束/思考过程），副标题灰色展示阶段，避免重复；思考中时标题带呼吸渐变 -->
+                <span
+                  class="thinking-block__title thinking-block__title--main"
+                  :class="{ 'thinking-block__title--breathing': isThinkingActive(m) }"
+                  >{{ getThinkingMainTitle(m) }}</span
+                >
+                <span v-if="getThinkingStageSubtitle(m)" class="thinking-block__subtitle">{{ getThinkingStageSubtitle(m) }}</span>
                 <span class="thinking-block__hint">{{ isExpanded(m) ? '收起' : '展开' }}</span>
               </button>
               <div
@@ -72,7 +79,7 @@
                 @click="onContentClick($event)"
               >
                 <div v-if="m.thinkingContent" v-html="renderMarkdown(m.thinkingContent)"></div>
-                <div v-else-if="showStageSubtitle(m)" class="thinking-block__placeholder">{{ props.stageText }}</div>
+                <div v-else-if="getThinkingStageSubtitle(m)" class="thinking-block__placeholder">{{ getThinkingStageSubtitle(m) }}</div>
                 <div v-else class="thinking-block__placeholder">正在思考...</div>
               </div>
             </div>
@@ -84,20 +91,16 @@
               @click="onContentClick($event)"
             ></div>
 
-            <!-- 行内引用角标行（当正文未包含 [n] 标记或始终展示徽章便于点击） -->
-            <div v-if="m.sources?.length" class="source-citations">
-              <span class="source-citations__label">引用</span>
+            <!-- 溯源聚合胶囊（ChatGLM 风格：紧凑 pill 排列于搜索块底部，点击打开抽屉） -->
+            <div v-if="m.sources?.length" class="source-pill-bar">
               <button
-                v-for="(s, idx) in m.sources"
-                :key="citationKey(s, idx)"
-                class="source-badge"
+                class="source-pill"
                 type="button"
-                :title="sourceTitle(s)"
-                @click="openDrawer(m, idx)"
+                :title="`${m.sources.length}个来源，点击查看`"
+                @click="openDrawer(m, 0)"
               >
-                [{{ idx + 1 }}]
+                {{ m.sources.length }}个来源 &gt;
               </button>
-              <span class="source-citations__hint">{{ m.sources.length }} 个来源</span>
             </div>
 
             <!-- 回答耗时统计（仅展示：毫秒转秒，保留1位小数） -->
@@ -144,8 +147,10 @@ const props = withDefaults(
     stageText?: string
     streaming?: boolean
     guest?: boolean
+    /** 动态思考标题（来自 useChat.thinkingTitle，8 阶段之一） */
+    thinkingTitle?: string
   }>(),
-  { loading: false, thinking: false, stageText: '', streaming: false, guest: false }
+  { loading: false, thinking: false, stageText: '', streaming: false, guest: false, thinkingTitle: '' }
 )
 
 const emit = defineEmits<{
@@ -184,10 +189,102 @@ const expandedMap = reactive<Record<string, boolean>>({})
 // 思考块内容容器引用（用于增量滚动）
 const thinkingBodyRefs = ref<HTMLElement[]>([])
 
-/** 判断是否被屏蔽的阶段关键词（与 useChat 保持一致，前端不展示生成/执行查询） */
-const BLOCKED_STAGE_KEYWORDS = ['生成查询', '执行查询']
+/** 判断是否被屏蔽的阶段关键词（执行查询内部阶段不展示，生成查询已纳入 8 阶段） */
+const BLOCKED_STAGE_KEYWORDS = ['执行查询']
 function isBlockedStage(text: string): boolean {
   return BLOCKED_STAGE_KEYWORDS.some((k) => text.includes(k))
+}
+
+// 8 阶段动态标题（与 useChat 及后端保持一致）
+const THINKING_TITLES = [
+  '思考中…',
+  '正在理解问题…',
+  '正在分析问题…',
+  '制定解题策略',
+  '检索知识库',
+  '生成查询 SQL',
+  '构建输出结构',
+  '最终润色',
+] as const
+const THINK_DONE_TITLE = '思考结束'
+const STAGE_TO_TITLE: Record<string, string> = {
+  '思考中…': THINKING_TITLES[0],
+  '正在理解问题…': THINKING_TITLES[1],
+  '正在理解问题...': THINKING_TITLES[1],
+  '正在分析问题…': THINKING_TITLES[2],
+  '正在分析问题...': THINKING_TITLES[2],
+  '制定解题策略': THINKING_TITLES[3],
+  '检索知识库': THINKING_TITLES[4],
+  '生成查询 SQL': THINKING_TITLES[5],
+  '构建输出结构': THINKING_TITLES[6],
+  '正在组织答案...': THINKING_TITLES[6],
+  '正在组织答案…': THINKING_TITLES[6],
+  '最终润色': THINKING_TITLES[7],
+  '思考结束': THINK_DONE_TITLE,
+}
+/** 将 stage 文案归一为 8 阶段标题（用于标题动态切换兜底） */
+function normalizeStageToTitle(stage: string): string | null {
+  if (!stage) return null
+  const t = stage.trim()
+  if (STAGE_TO_TITLE[t]) return STAGE_TO_TITLE[t]
+  if (t.includes('理解')) return THINKING_TITLES[1]
+  if (t.includes('分析')) return THINKING_TITLES[2]
+  if (t.includes('策略')) return THINKING_TITLES[3]
+  if (t.includes('检索')) return THINKING_TITLES[4]
+  if (t.includes('SQL') || t.includes('查询')) return THINKING_TITLES[5]
+  if (t.includes('结构') || t.includes('组织')) return THINKING_TITLES[6]
+  if (t.includes('润色')) return THINKING_TITLES[7]
+  if (t.includes('结束')) return THINK_DONE_TITLE
+  return t
+}
+/** 获取当前消息的思考块动态标题（单折叠块标题随流式阶段切换，保留用于兼容旧逻辑与脉冲判断） */
+function getThinkingTitle(m: UiChatMessage): string {
+  // 流式进行中的最后一条 AI 消息：优先使用父组件传入的 thinkingTitle（useChat 驱动的 8 阶段标题）
+  if (isLastAiMessage(m) && (props.streaming || props.thinking)) {
+    if (props.thinkingTitle && props.thinkingTitle.trim()) return props.thinkingTitle
+    if (props.stageText) {
+      const normalized = normalizeStageToTitle(props.stageText)
+      if (normalized) return normalized
+    }
+    return THINKING_TITLES[0]
+  }
+  // 流式结束后：若存在思考内容则显示“思考结束”，便于区分已完成状态
+  if (m.thinkingContent && m.thinkingContent.length > 0) {
+    if (isLastAiMessage(m) && !props.streaming && !props.thinking) return THINK_DONE_TITLE
+    return THINK_DONE_TITLE
+  }
+  return THINKING_TITLES[0]
+}
+
+/** 获取思考块主标题：流式时为“思考中”，结束后为“思考结束”，历史消息为“思考过程” */
+function getThinkingMainTitle(m: UiChatMessage): string {
+  // 流式活跃中的最后一条 AI 消息统一显示“思考中”
+  if (isLastAiMessage(m) && (props.streaming || props.thinking)) return '思考中'
+  // 有思考内容且流式已结束：最后一条显示“思考结束”，历史消息显示“思考过程”
+  if (m.thinkingContent && m.thinkingContent.length > 0) {
+    if (isLastAiMessage(m) && !props.streaming && !props.thinking) return THINK_DONE_TITLE
+    return '思考过程'
+  }
+  // 无思考内容但处于流式占位阶段
+  if (isLastAiMessage(m) && (props.streaming || props.thinking)) return '思考中'
+  return '思考过程'
+}
+
+/** 获取思考块阶段副标题：仅流式活跃时展示阶段，结束后不展示，避免与主标题重复 */
+function getThinkingStageSubtitle(m: UiChatMessage): string | null {
+  if (!isLastAiMessage(m)) return null
+  if (!props.streaming && !props.thinking) return null
+  // 屏蔽阶段不展示
+  const rawStage = props.thinkingTitle?.trim() ? props.thinkingTitle : props.stageText
+  if (!rawStage) return null
+  if (isBlockedStage(rawStage)) return null
+  const normalized = normalizeStageToTitle(rawStage)
+  if (!normalized) return null
+  // 主标题已为“思考中”，过滤通用“思考中…”避免重复
+  if (normalized === THINKING_TITLES[0]) return null
+  if (normalized === THINK_DONE_TITLE) return null
+  if (normalized === '思考中' || normalized === '思考中…') return null
+  return normalized
 }
 
 function isExpanded(m: UiChatMessage): boolean {
@@ -218,6 +315,14 @@ function showStageSubtitle(m: UiChatMessage): boolean {
   if (!props.stageText) return false
   if (isBlockedStage(props.stageText)) return false
   if (!isLastAiMessage(m)) return false
+  // 标题已由 thinkingTitle 动态驱动时，不再重复显示副标题，避免标题与副标题同文
+  if (props.thinkingTitle && props.thinkingTitle.trim()) {
+    const titleNorm = normalizeStageToTitle(props.thinkingTitle)
+    const stageNorm = normalizeStageToTitle(props.stageText)
+    if (titleNorm && stageNorm && titleNorm === stageNorm) return false
+    // 若标题处于 8 阶段序列中，整体隐藏副标题，标题即为唯一载体
+    if ((THINKING_TITLES as readonly string[]).includes(props.thinkingTitle) || props.thinkingTitle === THINK_DONE_TITLE) return false
+  }
   return !!(props.streaming || props.thinking)
 }
 function shouldShowThinkingBlock(m: UiChatMessage): boolean {
@@ -225,6 +330,15 @@ function shouldShowThinkingBlock(m: UiChatMessage): boolean {
   // 流式进行中的最后一条 AI 消息，即使尚无 thinkingContent，也展示思考块（以阶段副标题为初始状态）
   if (isLastAiMessage(m) && (props.thinking || props.streaming)) return true
   return false
+}
+
+/** 判断思考标题是否处于活跃流式状态（用于脉冲点动画：streaming 时脉冲，思考结束时静止） */
+function isThinkingActive(m: UiChatMessage): boolean {
+  const main = getThinkingMainTitle(m)
+  // 仅主标题为“思考中”且流式进行时脉冲，思考结束/思考过程静止
+  if (main !== '思考中') return false
+  // 仅最后一条 AI 消息且处于流式状态时脉冲
+  return !!props.streaming && isLastAiMessage(m)
 }
 
 /* 首次收到 thinking 首片时自动展开；流式结束后自动收起，满足“默认展开、完成后收起” */
@@ -750,8 +864,64 @@ defineExpose({ scrollToBottom })
 .thinking-block__icon.is-expanded {
   transform: rotate(90deg);
 }
+/* 思考标题前的绿色脉冲点：静态为绿点，流式时带缩放+透明度脉冲动画 */
+.thinking-title-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #22c55e;
+  flex-shrink: 0;
+}
+.thinking-title-dot--pulse {
+  animation: thinking-pulse 1.2s ease-in-out infinite;
+}
+@keyframes thinking-pulse {
+  0% {
+    transform: scale(0.8);
+    opacity: 0.6;
+  }
+  50% {
+    transform: scale(1.2);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(0.8);
+    opacity: 0.6;
+  }
+}
 .thinking-block__title {
   flex-shrink: 0;
+}
+/* 主标题黑色加粗，副标题灰色细体，避免重复导致的双黑粗标题 */
+.thinking-block__title--main {
+  color: var(--text-1);
+  font-weight: 700;
+  font-size: var(--text-xs);
+  letter-spacing: 0.04em;
+}
+/* 思考中标题呼吸渐变：仅在流式活跃时生效，静态时保持原有黑色 */
+.thinking-block__title--breathing {
+  background: linear-gradient(90deg, var(--text-1) 0%, var(--accent) 45%, var(--text-1) 85%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: thinking-shimmer 2s ease-in-out infinite;
+}
+/* 呼吸渐变关键帧：背景位置往返移动形成微光扫过效果 */
+@keyframes thinking-shimmer {
+  0% {
+    background-position: 100% 0;
+    opacity: 0.92;
+  }
+  50% {
+    background-position: 0% 0;
+    opacity: 1;
+  }
+  100% {
+    background-position: 100% 0;
+    opacity: 0.92;
+  }
 }
 .thinking-block__subtitle {
   flex: 1;
@@ -829,54 +999,42 @@ defineExpose({ scrollToBottom })
   animation: fade-up 0.35s var(--ease) both;
 }
 
-/* ---------- 溯源引用角标 ---------- */
-.source-citations {
+/* ---------- 溯源聚合胶囊（ChatGLM 风格紧凑 pill） ---------- */
+.source-pill-bar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-2);
+  gap: 8px;
   margin-top: var(--space-3);
-  padding: 8px 10px;
-  border-radius: 10px;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
 }
-.source-citations__label {
-  font-size: var(--text-xs);
-  font-weight: 600;
-  color: var(--text-3);
-  letter-spacing: 0.04em;
-}
-.source-citations__hint {
-  margin-left: auto;
-  font-size: 11px;
-  color: var(--text-3);
-  font-family: var(--font-mono);
-}
-.source-badge {
+.source-pill {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 28px;
-  height: 24px;
-  padding: 0 8px;
+  height: 28px;
+  padding: 0 12px;
   border-radius: 999px;
-  border: 1px solid var(--accent-border);
-  background: var(--accent-soft);
-  color: var(--accent);
-  font-size: var(--text-xs);
-  font-family: var(--font-mono);
-  font-weight: 700;
+  border: 1px solid var(--border);
+  background: var(--bg-hover);
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1;
+  font-weight: 500;
+  letter-spacing: 0.02em;
   cursor: pointer;
-  transition: all var(--dur-fast) var(--ease);
+  user-select: none;
+  white-space: nowrap;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
 }
-.source-badge:hover {
-  background: var(--accent);
-  color: #0f172a;
+.source-pill:hover {
+  background: var(--bg-elevated);
+  border-color: var(--border-strong);
+  color: var(--text-1);
   transform: translateY(-1px);
 }
-[data-theme='light'] .source-badge:hover {
-  color: #fff;
+.source-pill:active {
+  transform: translateY(0);
 }
 
 /* 行内角标（正文中的 [1] 替换） */

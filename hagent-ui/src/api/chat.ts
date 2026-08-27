@@ -143,10 +143,14 @@ export function streamChat(
               case 'tool':
                 h.onTool?.(String(obj.name ?? ''))
                 break
-              case 'thinking':
+              case 'thinking': {
                 // 思考过程流（reasoning/thinking 模型增量）—— 立即回调，不做任何缓冲或防抖
                 if (obj.content) h.onThinking?.(String(obj.content))
+                // 后端可在 thinking 事件中附带 stage 字段（8 阶段之一），透传给阶段处理器以驱动标题动态切换
+                const thinkingStage = (obj.stage as string) ?? (obj.title as string) ?? ''
+                if (thinkingStage) h.onStage?.(String(thinkingStage))
                 break
+              }
               case 'stage': {
                 // 阶段进度提示（与 onThinking 同级，轻量文本展示）
                 // 前端仅展示 3 个允许阶段，屏蔽“生成查询/执行查询”由上层 useChat 统一过滤，此处透传

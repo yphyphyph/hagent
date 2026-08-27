@@ -120,6 +120,31 @@ public class ChatServiceImpl implements ChatService {
     /** 思考分片间的发射间隔，确保前端收到事件在时间上分散而非一次性爆发 */
     private static final Duration THINKING_DELAY = Duration.ofMillis(30);
 
+    // ===== 思考阶段标题（8 阶段动态标题，前端据此切换折叠块标题） =====
+    /** 初始思考 */
+    private static final String THINK_STAGE_INITIAL = "思考中…";
+    /** 正在理解问题 */
+    private static final String THINK_STAGE_UNDERSTAND = "正在理解问题…";
+    /** 正在分析问题 */
+    private static final String THINK_STAGE_ANALYZE = "正在分析问题…";
+    /** 制定解题策略 */
+    private static final String THINK_STAGE_STRATEGY = "制定解题策略";
+    /** 检索知识库 */
+    private static final String THINK_STAGE_RETRIEVE = "检索知识库";
+    /** 生成查询 SQL */
+    private static final String THINK_STAGE_SQL = "生成查询 SQL";
+    /** 构建输出结构 */
+    private static final String THINK_STAGE_STRUCTURE = "构建输出结构";
+    /** 最终润色 */
+    private static final String THINK_STAGE_POLISH = "最终润色";
+    /** 思考结束（流式完成后的最终标题） */
+    private static final String THINK_STAGE_DONE = "思考结束";
+    /** 8 阶段标题有序列表（供前端阶段推演） */
+    private static final List<String> THINK_STAGE_ORDERED = List.of(
+            THINK_STAGE_INITIAL, THINK_STAGE_UNDERSTAND, THINK_STAGE_ANALYZE,
+            THINK_STAGE_STRATEGY, THINK_STAGE_RETRIEVE, THINK_STAGE_SQL,
+            THINK_STAGE_STRUCTURE, THINK_STAGE_POLISH);
+
     /** 新会话默认标题 */
     private static final String DEFAULT_TITLE = "新会话";
 
@@ -473,16 +498,18 @@ public class ChatServiceImpl implements ChatService {
                     UserContextHolder.setConversationId(finalConversationId);
 
                     sink.next(metaJson);
-                    // 阶段进度：正在理解问题...
-                    sink.next(wrapStage("正在理解问题..."));
-                    // 阶段进度：正在分析问题...（进入工具调用循环前，顺序保证在 tool 事件前）
-                    sink.next(wrapStage("正在分析问题..."));
+                    // 阶段进度：8 阶段序列前三阶段（前端据此将折叠块标题动态置为对应阶段）
+                    sink.next(wrapStage(THINK_STAGE_UNDERSTAND));
+                    sink.next(wrapStage(THINK_STAGE_ANALYZE));
+                    sink.next(wrapStage(THINK_STAGE_STRATEGY));
 
                     // 阶段1：同步工具循环（阻塞执行，但事件实时发射到前端，命中来源一并推送）
                     callWithTools(messages, toolOptions, chatModel, toolCallbacks, sink, thinkingAccum, sourcesAccum);
 
-                    // 阶段进度：正在组织答案...（工具调用结束后、流式开始前）
-                    sink.next(wrapStage("正在组织答案..."));
+                    // 阶段进度：构建输出结构（工具调用结束、流式开始前，对应第 7 阶段）
+                    sink.next(wrapStage(THINK_STAGE_STRUCTURE));
+                    // 最终润色阶段（流式正文输出前的最后准备）
+                    sink.next(wrapStage(THINK_STAGE_POLISH));
                 } catch (Exception e) {
                     log.error("聊天失败: conversationId={}", finalConversationId, e);
                     sink.next(wrapError("AI服务暂时不可用，请稍后重试"));
@@ -582,6 +609,10 @@ public class ChatServiceImpl implements ChatService {
                             // 空内容兜底增量推送：当过滤后 fullText 为空时，前端尚未收到任何 token，需将兜底文案作为 token 事件增量推送，避免前端显示"(无回复内容)"直至刷库 @author H
                             if (isEmptyFallback && !sink.isCancelled()) {
                                 sink.next(wrapToken(finalText));
+                            }
+                            // 思考结束阶段推送（前端据此将标题置为“思考结束”，800ms 后自动收起）
+                            if (!sink.isCancelled()) {
+                                sink.next(wrapStage(THINK_STAGE_DONE));
                             }
                             // 发送明确结束标记，前端据此判断流正常结束
                             sink.next("[FINAL]");
@@ -690,6 +721,8 @@ public class ChatServiceImpl implements ChatService {
                                 .build());
                         sink.next("{\"type\":\"tool\",\"name\":"
                                 + objectMapper.writeValueAsString(synthetic.name()) + "}");
+                        // 根据工具名推送对应阶段标题（前端据 stage 动态切换思考标题）
+                        emitStageForTool(sink, synthetic.name());
                         String result = executeTool(toolCallbacks, synthetic.name(), synthetic.arguments());
                         // RAG工具结果后组装来源并推送 source 事件（与 thinking 同级结构化事件）
                         if (RAG_TOOL_NAME.equals(synthetic.name())) {
@@ -738,6 +771,8 @@ public class ChatServiceImpl implements ChatService {
                 // 工具事件实时发射（前端渲染工具调用徽章/步骤）
                 sink.next("{\"type\":\"tool\",\"name\":"
                         + objectMapper.writeValueAsString(toolCall.name()) + "}");
+                // 根据工具名推送对应阶段标题（前端据 stage 动态切换思考标题）
+                emitStageForTool(sink, toolCall.name());
                 String result = executeTool(toolCallbacks, toolCall.name(), toolCall.arguments());
                 // 截断过长的工具结果，防止撑爆上下文
                 String truncatedResult = truncateResult(result);
@@ -1031,12 +1066,73 @@ public class ChatServiceImpl implements ChatService {
      * @return 结构化JSON字符串，格式：{"type":"thinking","content":"<思考增量>"}
      */
     private String wrapThinking(String thinkingChunk) {
+        // 兼容旧调用：推断阶段后带 stage 字段一并下发，便于前端动态切换标题
+        String stage = inferThinkingStage(thinkingChunk);
+        if (stage != null) {
+            return wrapThinking(thinkingChunk, stage);
+        }
         try {
             return "{\"type\":\"thinking\",\"content\":" + objectMapper.writeValueAsString(thinkingChunk) + "}";
         } catch (JacksonException e) {
             log.warn("JSON编码thinking失败，降级为空内容", e);
             return "{\"type\":\"thinking\",\"content\":\"\"}";
         }
+    }
+
+    /**
+     * 将思考增量与阶段提示一并包装（供前端动态标题切换）
+     *
+     * @param thinkingChunk 思考内容增量
+     * @param stage 阶段标题（8 阶段之一）
+     * @return 结构化JSON：{"type":"thinking","content":"...","stage":"..."}
+     */
+    private String wrapThinking(String thinkingChunk, String stage) {
+        try {
+            String contentJson = objectMapper.writeValueAsString(thinkingChunk);
+            String stageJson = objectMapper.writeValueAsString(stage);
+            return "{\"type\":\"thinking\",\"content\":" + contentJson + ",\"stage\":" + stageJson + "}";
+        } catch (JacksonException e) {
+            log.warn("JSON编码thinking+stage失败，降级为仅content", e);
+            try {
+                return "{\"type\":\"thinking\",\"content\":" + objectMapper.writeValueAsString(thinkingChunk) + "}";
+            } catch (JacksonException ex) {
+                return "{\"type\":\"thinking\",\"content\":\"\"}";
+            }
+        }
+    }
+
+    /**
+     * 根据思考文本推断阶段标题（关键词映射，前端可据 stage 字段切换标题）
+     * 若无明显关键词则返回 null，由调用方决定是否附带 stage
+     */
+    private String inferThinkingStage(String chunk) {
+        if (chunk == null || chunk.isBlank()) {
+            return null;
+        }
+        String lower = chunk.toLowerCase();
+        // 优先级从具体到宽泛，避免误判
+        if (lower.contains("sql") || chunk.contains("查询") || chunk.contains("SELECT") || chunk.contains("select")) {
+            return THINK_STAGE_SQL;
+        }
+        if (chunk.contains("检索") || chunk.contains("知识库") || lower.contains("rag") || lower.contains("searchknowledge")) {
+            return THINK_STAGE_RETRIEVE;
+        }
+        if (chunk.contains("策略") || chunk.contains("方案") || chunk.contains("计划") || lower.contains("strategy")) {
+            return THINK_STAGE_STRATEGY;
+        }
+        if (chunk.contains("结构") || chunk.contains("组织") || chunk.contains("构建输出") || lower.contains("structure")) {
+            return THINK_STAGE_STRUCTURE;
+        }
+        if (chunk.contains("润色") || chunk.contains("优化") || chunk.contains("完善") || lower.contains("polish")) {
+            return THINK_STAGE_POLISH;
+        }
+        if (chunk.contains("分析")) {
+            return THINK_STAGE_ANALYZE;
+        }
+        if (chunk.contains("理解")) {
+            return THINK_STAGE_UNDERSTAND;
+        }
+        return null;
     }
 
     /**
@@ -1053,6 +1149,31 @@ public class ChatServiceImpl implements ChatService {
         } catch (JacksonException e) {
             log.warn("JSON编码stage失败，降级为空内容", e);
             return "{\"type\":\"stage\",\"content\":\"\"}";
+        }
+    }
+
+    /**
+     * 根据工具名推送对应阶段标题（前端据此切换折叠块标题）
+     * searchKnowledge → 检索知识库，queryBusinessData → 生成查询 SQL，analyze_image → 构建输出结构
+     */
+    private void emitStageForTool(FluxSink<String> sink, String toolName) {
+        if (sink.isCancelled()) {
+            return;
+        }
+        try {
+            String stage = null;
+            if (RAG_TOOL_NAME.equals(toolName)) {
+                stage = THINK_STAGE_RETRIEVE;
+            } else if ("queryBusinessData".equals(toolName)) {
+                stage = THINK_STAGE_SQL;
+            } else if ("analyze_image".equals(toolName)) {
+                stage = THINK_STAGE_STRUCTURE;
+            }
+            if (stage != null) {
+                sink.next(wrapStage(stage));
+            }
+        } catch (Exception e) {
+            log.warn("推送工具对应阶段失败: {}", toolName, e);
         }
     }
 

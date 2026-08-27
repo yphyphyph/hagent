@@ -83,8 +83,97 @@ export function useChat(options: UseChatOptions) {
   /** 阶段可见性已废弃：保留字段以兼容旧调用，始终为 false，UI 不再单独展示阶段条 */
   const stageVisible = ref(false)
 
-  /** 需要屏蔽的阶段关键词（TextToSql 内部阶段，前端不展示） */
-  const BLOCKED_STAGE_KEYWORDS = ['生成查询', '执行查询']
+  // 8 阶段动态标题（与后端 THINK_STAGE_* 对齐，前端据此切换折叠块标题）
+  const THINKING_TITLES = [
+    '思考中…',
+    '正在理解问题…',
+    '正在分析问题…',
+    '制定解题策略',
+    '检索知识库',
+    '生成查询 SQL',
+    '构建输出结构',
+    '最终润色',
+  ] as const
+  const THINK_DONE_TITLE = '思考结束'
+  // 阶段到标题的精确映射（含后端可能发送的多种文案变体）
+  const STAGE_TO_TITLE: Record<string, string> = {
+    '思考中…': THINKING_TITLES[0],
+    '正在理解问题…': THINKING_TITLES[1],
+    '正在理解问题...': THINKING_TITLES[1],
+    '正在分析问题…': THINKING_TITLES[2],
+    '正在分析问题...': THINKING_TITLES[2],
+    '制定解题策略': THINKING_TITLES[3],
+    '检索知识库': THINKING_TITLES[4],
+    '生成查询 SQL': THINKING_TITLES[5],
+    '构建输出结构': THINKING_TITLES[6],
+    '正在组织答案...': THINKING_TITLES[6],
+    '正在组织答案…': THINKING_TITLES[6],
+    '最终润色': THINKING_TITLES[7],
+    '思考结束': THINK_DONE_TITLE,
+  }
+  // 工具名到阶段标题的映射（工具徽章与思考标题联动）
+  const TOOL_TO_TITLE: Record<string, string> = {
+    searchKnowledge: THINKING_TITLES[4],
+    queryBusinessData: THINKING_TITLES[5],
+    analyze_image: THINKING_TITLES[6],
+  }
+  /** 思考标题（动态切换的核心状态，暴露给 ChatMessageList 作为单折叠块标题） */
+  const thinkingTitle = ref<string>(THINKING_TITLES[0])
+  /** 当前阶段索引（单调递增，避免回退闪烁） */
+  let thinkingStageIndex = 0
+  /** 根据标题文本获取索引（用于单调推进） */
+  function titleIndex(title: string): number {
+    const idx = (THINKING_TITLES as readonly string[]).indexOf(title)
+    if (idx !== -1) return idx
+    if (title === THINK_DONE_TITLE) return THINKING_TITLES.length
+    return -1
+  }
+  /** 仅向前推进标题（避免阶段回退） */
+  function advanceThinkingTitle(next: string) {
+    const currIdx = titleIndex(thinkingTitle.value)
+    const nextIdx = titleIndex(next)
+    // 若无法识别索引则直接更新（兼容未预设的 stage）
+    if (nextIdx === -1 || currIdx === -1) {
+      thinkingTitle.value = next
+      return
+    }
+    if (nextIdx >= currIdx) {
+      thinkingTitle.value = next
+      thinkingStageIndex = nextIdx
+    }
+  }
+  /** 将任意 stage 文本归一为 8 阶段标题之一（映射失败返回原文） */
+  function normalizeStageToTitle(stage: string): string | null {
+    if (!stage) return null
+    const trimmed = stage.trim()
+    if (STAGE_TO_TITLE[trimmed]) return STAGE_TO_TITLE[trimmed]
+    // 模糊匹配：包含关键词即映射
+    if (trimmed.includes('理解')) return THINKING_TITLES[1]
+    if (trimmed.includes('分析')) return THINKING_TITLES[2]
+    if (trimmed.includes('策略')) return THINKING_TITLES[3]
+    if (trimmed.includes('检索')) return THINKING_TITLES[4]
+    if (trimmed.includes('SQL') || trimmed.includes('查询')) return THINKING_TITLES[5]
+    if (trimmed.includes('结构') || trimmed.includes('组织')) return THINKING_TITLES[6]
+    if (trimmed.includes('润色')) return THINKING_TITLES[7]
+    if (trimmed.includes('结束')) return THINK_DONE_TITLE
+    return trimmed
+  }
+  /** 根据思考内容增量推断阶段（与后端 inferThinkingStage 逻辑对齐，前端兜底） */
+  function inferTitleFromContent(chunk: string): string | null {
+    if (!chunk) return null
+    const lower = chunk.toLowerCase()
+    if (lower.includes('sql') || chunk.includes('SELECT') || chunk.includes('查询')) return THINKING_TITLES[5]
+    if (chunk.includes('检索') || chunk.includes('知识库') || lower.includes('searchknowledge')) return THINKING_TITLES[4]
+    if (chunk.includes('策略') || chunk.includes('方案') || chunk.includes('计划')) return THINKING_TITLES[3]
+    if (chunk.includes('结构') || chunk.includes('组织') || chunk.includes('构建输出')) return THINKING_TITLES[6]
+    if (chunk.includes('润色') || chunk.includes('优化') || chunk.includes('完善')) return THINKING_TITLES[7]
+    if (chunk.includes('分析')) return THINKING_TITLES[2]
+    if (chunk.includes('理解')) return THINKING_TITLES[1]
+    return null
+  }
+
+  /** 需要屏蔽的阶段关键词（保留执行查询屏蔽，生成查询已纳入 8 阶段不再屏蔽） */
+  const BLOCKED_STAGE_KEYWORDS: string[] = ['执行查询']
   /** 判断阶段文本是否被屏蔽 */
   function isBlockedStage(text: string): boolean {
     return BLOCKED_STAGE_KEYWORDS.some((k) => text.includes(k))
@@ -109,6 +198,9 @@ export function useChat(options: UseChatOptions) {
   function finishStream() {
     thinking.value = false
     streaming.value = false
+    // 流式结束将标题置为“思考结束”，800ms 后由 ChatMessageList 自动收起（此处立即更新标题）
+    thinkingTitle.value = THINK_DONE_TITLE
+    stageText.value = THINK_DONE_TITLE
     // 计算回答耗时并回写当前消息，同时收起思考块（满足“默认展开、完成后收起”）
     if (activeAiMsg) {
       const idx = messages.value.indexOf(activeAiMsg)
@@ -167,9 +259,11 @@ export function useChat(options: UseChatOptions) {
     // 新一轮思考内容重置
     thinkingContent.value = ''
     thinkingHasContent.value = false
-    // 新一轮阶段提示重置
+    // 新一轮阶段提示重置（标题回到初始“思考中…”）
     clearStageTimer()
-    stageText.value = ''
+    stageText.value = THINKING_TITLES[0]
+    thinkingTitle.value = THINKING_TITLES[0]
+    thinkingStageIndex = 0
     stageVisible.value = false
 
     controller = streamChat(options.endpoint, trimmed, {
@@ -177,8 +271,7 @@ export function useChat(options: UseChatOptions) {
       conversationId: options.getConversationId(),
       handlers: {
         onMeta: (id) => options.onConversationId?.(id),
-        // 思考过程增量累积（type:thinking）：默认展开，增量更新自动贴底
-        // 关键修复：Vue 默认批量合并同步修改，需用 triggerRef + nextTick 强制逐片刷新，避免一次性全量渲染
+        // 思考过程增量累积（type:thinking）：默认展开，标题随内容动态切换
         onThinking: (chunk) => {
           if (!activeAiMsg) return
           const idx = messages.value.indexOf(activeAiMsg)
@@ -195,12 +288,22 @@ export function useChat(options: UseChatOptions) {
           thinkingTick.value++
           // 收到实际 thinking 内容后，隐藏“AI 思考中”占位，由思考折叠面板展示
           thinkingHasContent.value = true
+          // 动态标题：根据思考内容关键词推断阶段并推进标题（与后端 stage 互补，前端兜底映射）
+          const inferred = inferTitleFromContent(chunk)
+          if (inferred) {
+            advanceThinkingTitle(inferred)
+            stageText.value = inferred
+          }
         },
-        // 阶段提示仅作为思考块副标题（单载体），不单独展示进度条；首个阶段映射为思考头部初始状态
+        // 阶段提示：后端 stage 事件与 thinking 内嵌 stage 均经此统一归一为 8 标题之一并推进标题
         onStage: (text) => {
           if (isBlockedStage(text)) return
-          stageText.value = text
+          const normalized = normalizeStageToTitle(text)
+          if (!normalized) return
+          stageText.value = normalized
           stageVisible.value = false
+          // 标题随 stage 动态切换（单调推进）
+          advanceThinkingTitle(normalized)
         },
         onToken: (chunk) => {
           if (!activeAiMsg) return
@@ -224,6 +327,12 @@ export function useChat(options: UseChatOptions) {
             tools: [...(activeAiMsg.tools ?? []), name],
           }
           messages.value[idx] = activeAiMsg
+          // 工具触发的阶段标题联动（如 searchKnowledge → 检索知识库）
+          const toolTitle = TOOL_TO_TITLE[name]
+          if (toolTitle) {
+            advanceThinkingTitle(toolTitle)
+            stageText.value = toolTitle
+          }
         },
         // 溯源引用事件（type:source）：按 file_id+chunk_id 去重后附加到当前 AI 消息
         onSource: (chunks) => {
@@ -331,5 +440,5 @@ function parseSources(raw: unknown): ChatSource[] | undefined {
     return groups.filter((g) => g.items.length > 0)
   }
 
-  return { messages, thinking, streaming, thinkingContent, thinkingHasContent, thinkingTick, contentTick, stageText, stageVisible, loadMessages, send, stop, clear, groupConversations }
+  return { messages, thinking, streaming, thinkingContent, thinkingHasContent, thinkingTick, contentTick, stageText, stageVisible, thinkingTitle, THINKING_TITLES, THINK_DONE_TITLE, loadMessages, send, stop, clear, groupConversations }
 }
