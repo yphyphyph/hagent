@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hagent.common.PageResult;
+import com.hagent.common.annotation.OperationLog;
 import com.hagent.common.context.UserContext;
 import com.hagent.common.exception.BusinessException;
 import com.hagent.common.service.VectorStoreService;
@@ -100,6 +101,13 @@ public class KnowledgeServiceImpl extends ServiceImpl<KnowledgeFileMapper, Knowl
 
     @Override
     public KnowledgeFileVO uploadDocument(MultipartFile file) {
+        // 不显式指定时默认公有，保持既有全库可检索行为
+        return uploadDocument(file, 1);
+    }
+
+    @Override
+    @OperationLog(module = "knowledge", operationType = "CREATE", description = "上传知识库文件", saveParams = true, saveResult = false)
+    public KnowledgeFileVO uploadDocument(MultipartFile file, Integer visibility) {
         // 文件安全校验：扩展名、MIME 类型、文件名清洗（无需事务保护）
         String originalFilename = sanitizeFilename(file.getOriginalFilename());
         String fileExt = getFileExtension(originalFilename);
@@ -123,6 +131,9 @@ public class KnowledgeServiceImpl extends ServiceImpl<KnowledgeFileMapper, Knowl
             knowledgeFile.setFileSize(file.getSize());
             knowledgeFile.setFileType(file.getContentType());
             knowledgeFile.setFileExt(fileExt);
+            // 公私属性：默认公有；私有文件归属当前上传用户
+            knowledgeFile.setVisibility(visibility == null ? 1 : visibility);
+            knowledgeFile.setUserId(UserContext.getUserId());
             knowledgeFile.setVectorStatus(VectorStatusEnum.PENDING.getCode());
             knowledgeFile.setVectorVersion(1);
             knowledgeFile.setChunkCount(0);
@@ -191,6 +202,7 @@ public class KnowledgeServiceImpl extends ServiceImpl<KnowledgeFileMapper, Knowl
     }
 
     @Override
+    @OperationLog(module = "knowledge", operationType = "DELETE", description = "删除知识库文件", saveParams = true, saveResult = false)
     public void deleteFile(Long id) {
         // 查询 DB 获取文件信息（单次读操作，无需事务保护）
         KnowledgeFile knowledgeFile = super.getById(id);
@@ -224,6 +236,37 @@ public class KnowledgeServiceImpl extends ServiceImpl<KnowledgeFileMapper, Knowl
         if (knowledgeFile == null) {
             throw new BusinessException("知识库文件不存在");
         }
+        return convertToVO(knowledgeFile);
+    }
+
+    @Override
+    @OperationLog(module = "knowledge", operationType = "UPDATE", description = "切换知识库文件可见性", saveParams = true, saveResult = false)
+    public KnowledgeFileVO updateVisibility(Long id, Integer visibility) {
+        if (visibility == null || (visibility != 0 && visibility != 1)) {
+            throw new BusinessException("可见性取值不合法（0=私有 1=公有）");
+        }
+        KnowledgeFile knowledgeFile = super.getById(id);
+        if (knowledgeFile == null) {
+            throw new BusinessException("知识库文件不存在");
+        }
+        knowledgeFile.setVisibility(visibility);
+        super.updateById(knowledgeFile);
+        // 同库 jsonb_set 即时生效：切公私无需重嵌入，直接同步向量元数据
+        if (vectorStoreService != null) {
+            try {
+                Long currentUserId = knowledgeFile.getUserId();
+                java.util.Map<String, Object> patch = currentUserId != null
+                        ? Map.of("visibility", visibility, "user_id", currentUserId)
+                        : Map.of("visibility", visibility);
+                vectorStoreService.updateMetadataByFileId(String.valueOf(id), patch);
+                log.info("文件可见性已同步至向量库: id={}, patch={}", id, patch);
+            } catch (Exception e) {
+                log.warn("向量库可见性同步失败: id={}, error={}", id, e.getMessage());
+            }
+        } else {
+            log.warn("VectorStoreService 不可用，跳过向量可见性同步: id={}", id);
+        }
+        log.info("文件可见性已切换: id={}, visibility={}", id, visibility);
         return convertToVO(knowledgeFile);
     }
 
@@ -286,12 +329,11 @@ public class KnowledgeServiceImpl extends ServiceImpl<KnowledgeFileMapper, Knowl
             List<String> chunks = semanticChunker.chunk(content, CHUNK_SIZE, CHUNK_OVERLAP);
             log.info("文件语义分块: id={}, chunks={}", id, chunks.size());
 
-            // 6. 存入向量存储（远程调用，必须在事务外执行，元数据键统一为 file_id/file_name/chunk_index）
+            // 6. 存入向量存储（远程调用，必须在事务外执行，权限入向量库第一档：visibility/user_id 写入 metadata）
             if (vectorStoreService != null) {
-                // 确保 file_name 正确传递，对应 VectorStoreServiceImpl 中 metadata.put("file_name", fileName)
-                vectorStoreService.addDocuments(String.valueOf(id), knowledgeFile.getFileName(), chunks);
-                log.info("已存入向量存储: id={}, fileName={}, chunks={}, metadataKeys=[file_id, file_name, chunk_index]",
-                        id, knowledgeFile.getFileName(), chunks.size());
+                vectorStoreService.addDocuments(String.valueOf(id), knowledgeFile.getFileName(), knowledgeFile.getVisibility(), knowledgeFile.getUserId(), chunks);
+                log.info("已存入向量存储: id={}, fileName={}, chunks={}, visibility={}, userId={}",
+                        id, knowledgeFile.getFileName(), chunks.size(), knowledgeFile.getVisibility(), knowledgeFile.getUserId());
             } else {
                 log.warn("VectorStoreService不可用，跳过向量存储");
             }
@@ -529,6 +571,8 @@ public class KnowledgeServiceImpl extends ServiceImpl<KnowledgeFileMapper, Knowl
         vo.setFileSize(entity.getFileSize());
         vo.setFileType(entity.getFileType());
         vo.setFileExt(entity.getFileExt());
+        vo.setVisibility(entity.getVisibility());
+        vo.setUserId(entity.getUserId());
         vo.setVectorStatus(entity.getVectorStatus());
         vo.setVectorStatusDesc(VectorStatusEnum.getByCode(entity.getVectorStatus()).getDesc());
         vo.setVectorVersion(entity.getVectorVersion());

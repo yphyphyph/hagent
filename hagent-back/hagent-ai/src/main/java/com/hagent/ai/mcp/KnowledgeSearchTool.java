@@ -36,7 +36,8 @@ public class KnowledgeSearchTool {
             @ToolParam(description = "搜索查询文本") String query,
             @ToolParam(description = "返回的Top结果数量，默认5") int topK) {
         log.info("MCP工具 - searchKnowledge: query={}, topK={}", query, topK);
-        List<Document> docs = ragService.search(query, topK, 0.25);
+        // 可见性过滤：MCP 侧通常无用户身份，仅公有文件可检索
+        List<Document> docs = ragService.searchAccessible(query, topK, 0.25);
         return docs.stream()
                 .map(Document::getText)
                 .collect(Collectors.toList());

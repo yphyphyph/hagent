@@ -39,10 +39,10 @@
             <version>4.39.1</version>
         </dependency>
 
-        <!-- Spring AI Redis VectorStore -->
+        <!-- Spring AI PgVector VectorStore（PostgreSQL + pgvector）-->
         <dependency>
             <groupId>org.springframework.ai</groupId>
-            <artifactId>spring-ai-starter-vector-store-redis</artifactId>
+            <artifactId>spring-ai-starter-vector-store-pgvector</artifactId>
         </dependency>
 
         <!-- WebFlux (SSE streaming) -->

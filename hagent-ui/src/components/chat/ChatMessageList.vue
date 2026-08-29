@@ -94,7 +94,7 @@
               @click="onContentClick($event)"
             ></div>
 
-            <!-- 溯源聚合胶囊（ChatGLM 风格：紧凑 pill 排列于搜索块底部，点击打开抽屉） -->
+            <!-- 溯源聚合胶囊（风格：紧凑 pill 排列于搜索块底部，点击打开抽屉） -->
             <div v-if="m.sources?.length" class="source-pill-bar">
               <button
                 class="source-pill"
@@ -1032,7 +1032,7 @@ defineExpose({ scrollToBottom })
   animation: fade-up 0.35s var(--ease) both;
 }
 
-/* ---------- 溯源聚合胶囊（ChatGLM 风格紧凑 pill · 精致化） ---------- */
+/* ---------- 溯源聚合胶囊（风格紧凑 pill · 精致化） ---------- */
 .source-pill-bar {
   display: flex;
   flex-wrap: wrap;

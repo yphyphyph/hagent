@@ -4,9 +4,10 @@
     <aside
       class="portal-chat__side"
       :class="{ 'portal-chat__side--collapsed': sideCollapsed }"
-      :style="sideCollapsed ? 'width:0;min-width:0;overflow:hidden;border-right:none;' : ''"
     >
+      <!-- 展开态：完整会话侧栏 -->
       <ConversationSidebar
+        v-if="!sideCollapsed"
         :conversations="sideConvs as unknown as Conversation[]"
         :active-id="activeId"
         :loading="convLoading"
@@ -17,6 +18,27 @@
         @rename="onRenameConversation"
         @login="openLogin"
       />
+      <!-- 收起态：64px 窄图标栏 -->
+      <div v-else class="narrow-bar">
+        <!-- 顶部 logo，点击展开侧栏 -->
+        <button class="narrow-bar__logo" type="button" title="展开侧栏" @click="toggleSide">H</button>
+        <!-- 垂直图标区 -->
+        <div class="narrow-bar__icons">
+          <button class="narrow-bar__icon" type="button" title="新建会话" @click="handleNewExpand">
+            <span class="narrow-bar__icon-glyph">＋</span>
+          </button>
+          <button class="narrow-bar__icon" type="button" title="搜索会话" @click="toggleSide">
+            <span class="narrow-bar__icon-glyph">⌕</span>
+          </button>
+          <button class="narrow-bar__icon" type="button" title="展开侧栏" @click="toggleSide">
+            <span class="narrow-bar__icon-glyph">≡</span>
+          </button>
+        </div>
+        <!-- 底部展开按钮（辅助） -->
+        <button class="narrow-bar__expand" type="button" title="展开侧栏" @click="toggleSide">
+          <span class="narrow-bar__expand-glyph">›</span>
+        </button>
+      </div>
     </aside>
 
     <!-- 主聊天区：铺满剩余空间，内容列居中限宽 -->
@@ -24,9 +46,9 @@
       <!-- 顶部条 -->
       <header class="chat-topbar">
         <div class="chat-topbar__left">
-          <!-- 顶部收起按钮：仅在侧栏展开时显示，收起后由悬浮按钮负责展开，避免重复 -->
-          <button v-if="!sideCollapsed" class="collapse-btn" type="button" @click="toggleSide">
-            收起
+          <!-- 顶部折叠切换：展开/收起均显示，点击切换侧栏状态 -->
+          <button class="collapse-btn" type="button" :title="sideCollapsed ? '展开侧栏' : '收起侧栏'" @click="toggleSide">
+            {{ sideCollapsed ? '展开' : '收起' }}
           </button>
           <template v-if="loggedIn">
             <span class="chat-topbar__title">{{ activeTitle }}</span>
@@ -69,16 +91,7 @@
       </div>
     </section>
 
-    <!-- 侧栏收起时的悬浮展开按钮 -->
-    <button
-      v-if="sideCollapsed"
-      class="side-expand-float"
-      type="button"
-      title="展开侧栏"
-      @click="toggleSide"
-    >
-      展开
-    </button>
+    <!-- 已移除悬浮展开按钮，改为 64px 窄栏内展开 -->
 
     <LoginModal v-model:show="showLogin" @success="onLoginSuccess" />
   </div>
@@ -113,6 +126,11 @@ const SIDE_COLLAPSED_KEY = 'hagent_side_collapsed'
 const sideCollapsed = ref(localStorage.getItem(SIDE_COLLAPSED_KEY) === '1')
 function toggleSide() {
   sideCollapsed.value = !sideCollapsed.value
+}
+/** 窄栏中点击新建：先展开侧栏再新建会话（保持与展开态一致的交互） */
+function handleNewExpand() {
+  if (sideCollapsed.value) sideCollapsed.value = false
+  handleNew()
 }
 watch(sideCollapsed, (v) => {
   localStorage.setItem(SIDE_COLLAPSED_KEY, v ? '1' : '0')
@@ -322,9 +340,101 @@ onUnmounted(() => {
   transition: width var(--dur, 220ms) var(--ease);
 }
 .portal-chat__side--collapsed {
-  width: 0 !important;
-  min-width: 0 !important;
-  border-right: none;
+  width: 64px !important;
+  min-width: 64px !important;
+  background: var(--bg);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  overflow: hidden;
+}
+
+/* ---------- 窄栏（收起态 64px 垂直图标栏 ---------- */
+.narrow-bar {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  height: 100%;
+  min-height: 0;
+  padding: 12px 0 14px;
+  gap: 0;
+}
+.narrow-bar__logo {
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  background: var(--accent);
+  color: #fff;
+  font-family: var(--font-mono);
+  font-weight: 800;
+  font-size: 16px;
+  border-radius: 10px;
+  border: none;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: opacity var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+}
+.narrow-bar__logo:hover {
+  opacity: 0.92;
+  transform: translateY(-1px);
+}
+[data-theme='dark'] .narrow-bar__logo {
+  color: #0f172a;
+}
+.narrow-bar__icons {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  margin-top: 18px;
+  width: 100%;
+  padding: 0 10px;
+}
+.narrow-bar__icon {
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+.narrow-bar__icon:hover {
+  background: var(--bg-hover);
+  color: var(--text-1);
+  border-color: var(--border);
+}
+.narrow-bar__icon-glyph {
+  font-size: 16px;
+  line-height: 1;
+  font-weight: 600;
+}
+.narrow-bar__expand {
+  margin-top: auto;
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text-3);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+.narrow-bar__expand:hover {
+  background: var(--bg-hover);
+  color: var(--text-1);
+  border-color: var(--border-strong);
+}
+.narrow-bar__expand-glyph {
+  font-size: 16px;
+  line-height: 1;
 }
 
 /* ---------- 主区 ---------- */
@@ -433,34 +543,10 @@ onUnmounted(() => {
   padding: var(--space-2) var(--space-5) var(--space-4);
 }
 
-/* ---------- 悬浮展开按钮 ---------- */
-.side-expand-float {
-  position: absolute;
-  left: 12px;
-  top: 68px;
-  z-index: 10;
-  height: 32px;
-  padding: 0 14px;
-  border-radius: 999px;
-  border: 1px solid var(--border-strong);
-  background: var(--bg-elevated);
-  color: var(--text-1);
-  font-size: var(--text-xs);
-  font-weight: 600;
-  cursor: pointer;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
-  transition: background var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
-}
-.side-expand-float:hover {
-  background: var(--bg-hover);
-  transform: translateY(-1px);
-}
+/* 已移除悬浮展开按钮样式，收起态由 .narrow-bar 承载 */
 
 @media (max-width: 900px) {
   .portal-chat__side {
-    display: none;
-  }
-  .side-expand-float {
     display: none;
   }
 }

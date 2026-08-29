@@ -52,6 +52,8 @@ import { NIcon, NMenu, NLayout, NLayoutSider, NLayoutHeader, NLayoutContent, NBu
 import {
   ToolOutlined,
   DatabaseOutlined,
+  SafetyOutlined,
+  FileSearchOutlined,
   SettingOutlined,
 } from '@vicons/antd'
 import HsThemeToggle from '@/components/ui/HsThemeToggle.vue'
@@ -68,6 +70,8 @@ function renderIcon(icon: ReturnType<typeof h>) {
 const menuOptions: MenuOption[] = [
   { label: 'AI 工具', key: '/admin/tools', icon: renderIcon(h(ToolOutlined)) },
   { label: '知识库', key: '/admin/knowledge', icon: renderIcon(h(DatabaseOutlined)) },
+  { label: 'SQL 表策略', key: '/admin/sql-policy', icon: renderIcon(h(SafetyOutlined)) },
+  { label: '操作日志', key: '/admin/logs', icon: renderIcon(h(FileSearchOutlined)) },
   { label: '设置', key: '/admin/settings', icon: renderIcon(h(SettingOutlined)) },
 ]
 

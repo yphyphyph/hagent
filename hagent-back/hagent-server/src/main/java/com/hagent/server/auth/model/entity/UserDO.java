@@ -1,4 +1,4 @@
-package com.hagent.server.auth;
+package com.hagent.server.auth.model.entity;
 
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;

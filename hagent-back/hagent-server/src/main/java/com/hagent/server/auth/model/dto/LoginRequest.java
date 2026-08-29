@@ -1,4 +1,4 @@
-package com.hagent.server.auth;
+package com.hagent.server.auth.model.dto;
 
 import jakarta.validation.constraints.NotBlank;
 import lombok.Data;

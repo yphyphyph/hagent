@@ -1,4 +1,8 @@
-package com.hagent.server.auth;
+package com.hagent.server.auth.service;
+
+import com.hagent.server.auth.model.dto.LoginRequest;
+import com.hagent.server.auth.model.vo.CurrentUserVO;
+import com.hagent.server.auth.model.vo.LoginVO;
 
 /**
  * 认证服务接口

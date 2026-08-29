@@ -1,14 +1,5 @@
 <template>
   <div class="login-page">
-    <router-link to="/" class="login-return" aria-label="返回前台">
-      <n-button quaternary size="small">
-        <template #icon>
-          <n-icon :component="ArrowLeftOutlined" />
-        </template>
-        返回前台
-      </n-button>
-    </router-link>
-
     <div class="login-page__glow" aria-hidden="true"></div>
     <div class="login-page__grid" aria-hidden="true"></div>
 
@@ -78,6 +69,12 @@
           >
             登 录
           </n-button>
+
+          <!-- 返回前台：移至登录按钮左下方，便于用户发现 -->
+          <router-link to="/" class="login-form__back" aria-label="返回前台">
+            <n-icon :component="ArrowLeftOutlined" :size="14" />
+            返回前台
+          </router-link>
         </n-form>
 
         <div class="login-form__foot">
@@ -153,22 +150,6 @@ async function onSubmit() {
   justify-content: center;
   padding: var(--space-5);
   overflow: hidden;
-}
-.login-return {
-  position: absolute;
-  top: var(--space-5);
-  left: var(--space-5);
-  z-index: 2;
-  text-decoration: none;
-}
-.login-return :deep(.n-button) {
-  color: var(--text-2);
-}
-.login-return :deep(.n-button:hover) {
-  color: var(--text-1);
-}
-.login-return :deep(.n-button .n-button__content) {
-  font-size: var(--text-sm);
 }
 .login-page__glow {
   position: absolute;
@@ -293,6 +274,27 @@ async function onSubmit() {
 }
 .login-form__submit {
   margin-top: var(--space-2);
+}
+/* 返回前台文本链接：位于登录按钮下方左对齐，保证可发现性 */
+.login-form__back {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 12px;
+  font-size: 13px;
+  color: #64748b;
+  text-decoration: none;
+  min-height: 32px; /* 无障碍最小点击高度 */
+  line-height: 32px;
+  transition: color 0.2s var(--ease);
+}
+.login-form__back:hover {
+  color: #0f172a;
+}
+.login-form__back:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
 }
 .login-form__foot {
   display: flex;

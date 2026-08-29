@@ -2,8 +2,12 @@ package com.hagent.ai.service.impl;
 
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.ObjectMapper;
+import com.hagent.ai.core.AgentToolLoopService;
 import com.hagent.ai.core.AiModelProvider;
+import com.hagent.ai.core.ChatPromptHolder;
+import com.hagent.ai.core.ConversationTitleService;
 import com.hagent.ai.core.RagService;
+import com.hagent.ai.core.ThinkingStageSupport;
 import com.hagent.ai.core.UserContextHolder;
 import com.hagent.ai.mapper.ChatMessageMapper;
 import com.hagent.ai.mcp.AnalyzeImageTool;
@@ -25,7 +29,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
-import org.springframework.ai.chat.messages.ToolResponseMessage;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
@@ -42,18 +45,15 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.FluxSink;
 import reactor.core.scheduler.Schedulers;
 
-import java.time.Duration;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 /**
- * 聊天服务实现
- * 实现Agent模式：工具 + 多轮对话 + 真正流式输出
+ * 聊天服务实现（编排层）
+ * 负责会话生命周期、鉴权短路、历史组装、流式输出订阅与消息持久化；
+ * 工具循环/收敛委托 {@link AgentToolLoopService}，思考阶段事件委托 {@link ThinkingStageSupport}，
+ * 提示词委托 {@link ChatPromptHolder}，标题生成委托 {@link ConversationTitleService}
  * <p>
  * 两阶段策略：
  * 1. 工具调用阶段：同步执行 chatModel.call()，处理工具循环
@@ -74,102 +74,29 @@ public class ChatServiceImpl implements ChatService {
     private final PendingActionService pendingActionService;
     /** RAG服务，用于获取命中来源元数据（file_id、chunk_id、score、file_name、snippet） */
     private final RagService ragService;
+    /** 工具调用循环服务 */
+    private final AgentToolLoopService agentToolLoopService;
+    /** 思考阶段支持组件 */
+    private final ThinkingStageSupport stageSupport;
+    /** 聊天提示词持有者 */
+    private final ChatPromptHolder promptHolder;
+    /** 会话标题异步生成服务 */
+    private final ConversationTitleService titleService;
 
     /** 统一工具回调（管理端与门户端共用同一注册集：知识库检索 + Text to SQL + 图片识别） */
     private final ToolCallback[] unifiedToolCallbacks;
 
-    /** 工具调用最大迭代次数 */
-    private static final int MAX_TOOL_ITERATIONS = 8;
-
-    /** 连续重复工具调用检测阈值：同一工具连续调用达到该次数视为发散循环，强制收敛，避免无限空转 */
-    private static final int REPEAT_TOOL_CALL_LIMIT = 4;
-
-    /**
-     * 重复工具调用阈值（稳定收敛方案）
-     * 同一工具连续相似调用达到该次数则强制收敛
-     *
-     * @author H
-     */
-    private static final int REPEAT_TOOL_LIMIT = 4;
-
-    /**
-     * 收敛指令：工具阶段结束，强制模型基于已有信息直接回答，禁止再发起工具调用
-     *
-     * @author H
-     */
-    private static final String CONVERGE_INSTRUCTION = "工具调用阶段已结束，请基于已有信息直接回答用户问题，不要再发起或以文本形式输出任何工具调用（如 <tool_call> 等标签）。";
-
     /** 历史消息最大保留条数（滑动窗口，防止上下文超限） */
     private static final int MAX_HISTORY_MESSAGES = 20;
-
-    /** 工具结果最大字符数（超出截断，防止撑爆上下文） */
-    private static final int MAX_TOOL_RESULT_LENGTH = 4000;
 
     /** 标题最大字符数 */
     private static final int TITLE_MAX_LENGTH = 20;
 
-    /** 日志中工具参数最大截断长度 */
-    private static final int MAX_LOG_ARGS_LEN = 100;
-
-    /** 字符数转 token 数的估算比例（约 4 字符/token） */
-    private static final int CHARS_PER_TOKEN = 4;
-
-    /** 思考内容分片大小（用于非流式场景的模拟流式分片） */
-    private static final int THINKING_CHUNK_SIZE = 30;
-
-    /** 思考分片间的发射间隔，确保前端收到事件在时间上分散而非一次性爆发 */
-    private static final Duration THINKING_DELAY = Duration.ofMillis(30);
-
-    // ===== 思考阶段标题（8 阶段动态标题，前端据此切换折叠块标题，已去除省略号保持和谐） =====
-    /** 初始思考 */
-    private static final String THINK_STAGE_INITIAL = "思考中";
-    /** 正在理解问题 */
-    private static final String THINK_STAGE_UNDERSTAND = "正在理解问题";
-    /** 正在分析问题 */
-    private static final String THINK_STAGE_ANALYZE = "正在分析问题";
-    /** 制定解题策略 */
-    private static final String THINK_STAGE_STRATEGY = "制定解题策略";
-    /** 检索知识库 */
-    private static final String THINK_STAGE_RETRIEVE = "检索知识库";
-    /** 生成查询 SQL */
-    private static final String THINK_STAGE_SQL = "生成查询 SQL";
-    /** 构建输出结构 */
-    private static final String THINK_STAGE_STRUCTURE = "构建输出结构";
-    /** 最终润色 */
-    private static final String THINK_STAGE_POLISH = "最终润色";
-    /** 思考结束（流式完成后的最终标题） */
-    private static final String THINK_STAGE_DONE = "思考结束";
-    /** 8 阶段标题有序列表（供前端阶段推演） */
-    private static final List<String> THINK_STAGE_ORDERED = List.of(
-            THINK_STAGE_INITIAL, THINK_STAGE_UNDERSTAND, THINK_STAGE_ANALYZE,
-            THINK_STAGE_STRATEGY, THINK_STAGE_RETRIEVE, THINK_STAGE_SQL,
-            THINK_STAGE_STRUCTURE, THINK_STAGE_POLISH);
-
     /** 新会话默认标题 */
     private static final String DEFAULT_TITLE = "新会话";
 
-    /** 文本形式工具调用标记（部分模型在无工具定义阶段会退化为此格式） */
-    private static final String TEXT_TOOL_CALL_MARKER = "<tool_call>";
-
-    /** 文本形式工具调用解析：<function=name> */
-    private static final Pattern TEXT_FUNCTION_PATTERN = Pattern.compile("<function=([\\w.-]+)\\s*>");
-
-    /** 文本形式工具调用解析：<parameter=key>value</parameter> */
-    private static final Pattern TEXT_PARAM_PATTERN = Pattern.compile("<parameter=([\\w.-]+)\\s*>\\s*([\\s\\S]*?)</parameter>");
-
-    /** 纯数字（用于 topK 等参数的字符串→数值转换） */
-    private static final Pattern NUMERIC_PATTERN = Pattern.compile("-?\\d+");
-
-    /** 幻觉工具调用标签过滤：匹配 <tool_call>...</tool_call>（DOTALL，大小写敏感） */
-    private static final Pattern HALLUCINATED_TOOL_CALL_PATTERN =
-            Pattern.compile("<tool_call>.*?</tool_call>", Pattern.DOTALL);
-
-    /** 幻觉函数标签残留过滤：匹配 <function=...> 片段 */
-    private static final Pattern HALLUCINATED_FUNCTION_PATTERN =
-            Pattern.compile("<function=.*?>");
-
-    /** 文本形式工具调用的合成ID序列 */
-    private final AtomicInteger textToolCallSeq = new AtomicInteger();
+    /** 空内容兜底文案（落库与前端推送共用；历史组装时跳过该类消息，避免污染模型上下文） */
+    private static final String FALLBACK_TEXT = "已根据已有信息整理回答，详见思考过程";
 
     /** 消息类型文本 */
     private static final String MESSAGE_TYPE_TEXT = "TEXT";
@@ -183,86 +110,24 @@ public class ChatServiceImpl implements ChatService {
     /** 取消词 */
     private static final String[] CANCEL_WORDS = {"取消", "不", "不用", "算了", "no", "No", "放弃", "停止"};
 
-    /** RAG检索工具名称（与 KnowledgeTool.searchKnowledge 对应） */
-    private static final String RAG_TOOL_NAME = "searchKnowledge";
-
-    /**
-     * 管理端系统提示词
-     * 工具说明与统一注册集一一对应：searchKnowledge / queryBusinessData / analyze_image
-     *
-     * @author H
-     */
-    private static final String ADMIN_SYSTEM_PROMPT = """
-            你是 HAgent 智能助手，可以使用以下三个工具：
-            - searchKnowledge: 按语义检索知识库文档的内容片段。适用于问"某主题讲了什么/要点/内容/细节"
-            - queryBusinessData: 把问题转成 SQL 查询业务数据（生成后需用户在确认卡片上确认才执行）。适用于任何计数/统计/排名/聚合类问题
-            - analyze_image: 使用多模态视觉模型识别图片并回答问题，图片支持本地路径、http(s) 链接或 base64
-
-            工具选择规则（必须严格遵守）：
-            1. 问"有多少/数量/几个/统计/排名/前N/最大/最小/平均"等计数或聚合类问题时，
-               必须使用 queryBusinessData（如"知识库有多少文件"→统计 knowledge_file 表），
-               禁止用 searchKnowledge 检索结果来猜测数量
-            2. 问某主题的内容、要点、详情时，使用 searchKnowledge
-            3. 当用户提供图片或要求识别图片内容时，使用 analyze_image
-            4. 不要用相似关键词重复调用同一工具；结果为空或不理想时，应换不同表述一次，
-               仍不行就基于已有信息如实回答并说明局限
-            5. 回答必须基于工具返回的真实数据，禁止编造数字或结论
-            6. 写操作（INSERT/UPDATE/DELETE）需用户回复确认后执行，询问确认时绝不展示SQL语句。
-
-            数据库 Schema（精简）：
-            - knowledge_file(id,file_name,deleted)
-            - chat_conversation(id,user_id,title,deleted)
-            - chat_message(id,conversation_id,role,deleted)
-            - hagent_user(id,username,deleted)
-            - chat_pending_action(...)
-
-            规则：仅生成单条 SELECT/INSERT/UPDATE/DELETE，需符合校验器规则，UPDATE/DELETE 必须带 WHERE。
-            """;
-
-    /**
-     * 门户端系统提示词
-     * 与管理端共用同一工具注册集，仅人设定位不同：作品集网站助手
-     *
-     * @author H
-     */
-    private static final String PORTAL_SYSTEM_PROMPT = """
-            你是 HAgent 智能助手，一个 Java 全栈与 AI 应用开发者（H）的作品集网站助手。
-            你可以使用以下三个工具：
-            - searchKnowledge: 按语义检索网站知识库文档的内容片段。适用于问"某主题讲了什么/要点/内容/细节"
-            - queryBusinessData: 把问题转成 SQL 查询业务数据（生成后需用户在确认卡片上确认才执行）。适用于任何计数/统计/排名/聚合类问题
-            - analyze_image: 使用多模态视觉模型识别图片并回答问题，图片支持本地路径、http(s) 链接或 base64
-
-            请遵循以下原则：
-            1. 保持友好、简洁、专业，回答中文，以清晰易读的格式展示结果
-            2. 问"有多少/数量/几个/统计/排名"等计数或聚合类问题时，使用 queryBusinessData，
-               禁止用 searchKnowledge 检索结果来猜测数量
-            3. 当问题涉及知识库内容、要点、详情时，先调用 searchKnowledge 检索再回答
-            4. 当用户提供图片或要求识别图片内容时，使用 analyze_image
-            5. 不确定的内容不要编造，明确说明；回答必须基于工具返回的真实数据
-            6. 写操作（INSERT/UPDATE/DELETE）需用户回复确认后执行，询问确认时绝不展示SQL语句。
-
-            数据库 Schema（精简）：
-            - knowledge_file(id,file_name,deleted)
-            - chat_conversation(id,user_id,title,deleted)
-            - chat_message(id,conversation_id,role,deleted)
-            - hagent_user(id,username,deleted)
-            - chat_pending_action(...)
-
-            规则：仅生成单条 SELECT/INSERT/UPDATE/DELETE，需符合校验器规则，UPDATE/DELETE 必须带 WHERE。
-            """;
-
     /**
      * 构造方法：注入聊天依赖并统一注册工具回调
      * 管理端与门户端共用同一工具集（知识库检索 + Text to SQL + 图片识别），仅系统提示词不同
      *
-     * @param aiModelProvider    AI模型提供者
+     * @param aiModelProvider     AI模型提供者
      * @param conversationService 会话服务
-     * @param chatMessageMapper  聊天消息Mapper
-     * @param chatClient         ChatClient（可空，当前未使用）
-     * @param objectMapper       JSON序列化工具
-     * @param knowledgeTool      知识库检索工具
-     * @param textToSqlTool      Text to SQL 工具
-     * @param analyzeImageTool   图片识别工具
+     * @param chatMessageMapper   聊天消息Mapper
+     * @param chatClient          ChatClient（可空，当前未使用）
+     * @param objectMapper        JSON序列化工具
+     * @param knowledgeTool       知识库检索工具
+     * @param textToSqlTool       Text to SQL 工具
+     * @param analyzeImageTool    图片识别工具
+     * @param pendingActionService 待确认操作服务
+     * @param ragService          RAG服务
+     * @param agentToolLoopService 工具调用循环服务
+     * @param stageSupport        思考阶段支持组件
+     * @param promptHolder        聊天提示词持有者
+     * @param titleService        会话标题异步生成服务
      * @author H
      */
     public ChatServiceImpl(AiModelProvider aiModelProvider,
@@ -274,13 +139,21 @@ public class ChatServiceImpl implements ChatService {
                            @Lazy TextToSqlTool textToSqlTool,
                            @Lazy AnalyzeImageTool analyzeImageTool,
                            PendingActionService pendingActionService,
-                           RagService ragService) {
+                           RagService ragService,
+                           AgentToolLoopService agentToolLoopService,
+                           ThinkingStageSupport stageSupport,
+                           ChatPromptHolder promptHolder,
+                           ConversationTitleService titleService) {
         this.aiModelProvider = aiModelProvider;
         this.conversationService = conversationService;
         this.chatMessageMapper = chatMessageMapper;
         this.objectMapper = objectMapper;
         this.pendingActionService = pendingActionService;
         this.ragService = ragService;
+        this.agentToolLoopService = agentToolLoopService;
+        this.stageSupport = stageSupport;
+        this.promptHolder = promptHolder;
+        this.titleService = titleService;
         // 统一工具集：知识库检索 + Text to SQL + 图片识别（管理端与门户端共用）
         this.unifiedToolCallbacks = ToolCallbacks.from(knowledgeTool, textToSqlTool, analyzeImageTool);
     }
@@ -295,7 +168,7 @@ public class ChatServiceImpl implements ChatService {
      */
     @Override
     public Flux<String> chatAdmin(Long userId, ChatRequest request) {
-        return doChat(userId, request, unifiedToolCallbacks, ADMIN_SYSTEM_PROMPT);
+        return doChat(userId, request, promptHolder.getAdminPrompt());
     }
 
     /**
@@ -308,7 +181,7 @@ public class ChatServiceImpl implements ChatService {
      */
     @Override
     public Flux<String> chatPortal(Long userId, ChatRequest request) {
-        return doChat(userId, request, unifiedToolCallbacks, PORTAL_SYSTEM_PROMPT);
+        return doChat(userId, request, promptHolder.getPortalPrompt());
     }
 
     /**
@@ -319,12 +192,10 @@ public class ChatServiceImpl implements ChatService {
      *
      * @param userId              用户ID
      * @param request             聊天请求
-     * @param toolCallbacks       可用工具回调
      * @param defaultSystemPrompt 默认系统提示词
      * @return SSE流式响应
      */
-    private Flux<String> doChat(Long userId, ChatRequest request,
-                                ToolCallback[] toolCallbacks, String defaultSystemPrompt) {
+    private Flux<String> doChat(Long userId, ChatRequest request, String defaultSystemPrompt) {
         // 1. 获取或创建会话（访客匿名模式：userId为空时不落库，使用内存临时会话）
         Long conversationId = request.getConversationId();
         ChatConversation conversation;
@@ -361,7 +232,7 @@ public class ChatServiceImpl implements ChatService {
             saveMessage(finalConversationId, MessageRoleEnum.USER.getCode(), request.getMessage(), null);
         }
 
-        // 3. 首条消息自动生成标题（访客模式无会话，跳过）
+        // 3. 首条消息自动生成标题：先以截断占位（列表立即可见），回答完成后由 ConversationTitleService 异步 LLM 生成
         if (userId != null && DEFAULT_TITLE.equals(conversation.getTitle())) {
             String newTitle = request.getMessage().length() > TITLE_MAX_LENGTH
                     ? request.getMessage().substring(0, TITLE_MAX_LENGTH) + "..."
@@ -385,7 +256,7 @@ public class ChatServiceImpl implements ChatService {
                         String text = "操作已执行完成，共影响 " + rowCount + " 行数据。";
                         // 保存助手回复到历史，确保上下文完整
                         saveMessage(finalConversationId, MessageRoleEnum.ASSISTANT.getCode(), text, null);
-                        conversationService.updateStats(finalConversationId, text.length() / CHARS_PER_TOKEN);
+                        conversationService.updateStats(finalConversationId, estimateTokens(text));
                         return Flux.just(wrapText(text), "[DONE]");
                     } catch (BusinessException e) {
                         log.warn("确认操作失败: pendingId={}, msg={}", pending.getId(), e.getMessage());
@@ -400,7 +271,7 @@ public class ChatServiceImpl implements ChatService {
                         pendingActionService.cancelAction(pending.getId(), userId);
                         String text = "操作已取消。";
                         saveMessage(finalConversationId, MessageRoleEnum.ASSISTANT.getCode(), text, null);
-                        conversationService.updateStats(finalConversationId, text.length() / CHARS_PER_TOKEN);
+                        conversationService.updateStats(finalConversationId, estimateTokens(text));
                         return Flux.just(wrapText(text), "[DONE]");
                     } catch (BusinessException e) {
                         log.warn("取消操作失败: pendingId={}, msg={}", pending.getId(), e.getMessage());
@@ -422,6 +293,9 @@ public class ChatServiceImpl implements ChatService {
             }
 
             // 6. 构建消息历史（滑动窗口，保留最近N条，防止上下文超限；访客模式无历史）
+            // 说明：工具调用过程不落库（仅落最终回复），因此历史中不会出现 TOOL 角色；
+            // 若未来开始落库 TOOL 消息，必须同时落库带 tool_calls 的 assistant 消息，否则重建的
+            // 消息序列会被 OpenAI 接口以 "tool must follow tool_calls" 拒绝
             List<Message> messages = new ArrayList<>();
             messages.add(new SystemMessage(systemPrompt));
 
@@ -440,18 +314,16 @@ public class ChatServiceImpl implements ChatService {
                 if (roleEnum == null) {
                     continue;
                 }
+                // 跳过空回复兜底文案：它不是真实回答，进入上下文会误导模型认为上一问已被作答
+                if (roleEnum == MessageRoleEnum.ASSISTANT && FALLBACK_TEXT.equals(msg.getContent())) {
+                    continue;
+                }
                 switch (roleEnum) {
                     case USER -> messages.add(new UserMessage(msg.getContent()));
                     case ASSISTANT -> messages.add(new AssistantMessage(msg.getContent()));
                     case SYSTEM -> messages.add(new SystemMessage(msg.getContent()));
-                    case TOOL -> {
-                        // 历史工具结果消息：重建为ToolResponseMessage，保证上下文完整
-                        if (msg.getToolName() != null && msg.getContent() != null) {
-                            messages.add(ToolResponseMessage.builder()
-                                    .responses(List.of(new ToolResponseMessage.ToolResponse(
-                                            msg.getToolName(), msg.getToolName(), msg.getContent())))
-                                    .build());
-                        }
+                    default -> {
+                        // TOOL 角色当前不落库（见方法注释），忽略历史中的意外角色
                     }
                 }
             }
@@ -469,7 +341,7 @@ public class ChatServiceImpl implements ChatService {
                     .apiKey(baseOptions.getApiKey())
                     .baseUrl(baseOptions.getBaseUrl())
                     .model(baseOptions.getModel())
-                    .toolCallbacks(toolCallbacks)
+                    .toolCallbacks(unifiedToolCallbacks)
                     .build();
 
             // 8. 累积思考内容，用于最终持久化（工具阶段 + 流式阶段共享）
@@ -499,17 +371,18 @@ public class ChatServiceImpl implements ChatService {
 
                     sink.next(metaJson);
                     // 阶段进度：8 阶段序列前三阶段（前端据此将折叠块标题动态置为对应阶段）
-                    sink.next(wrapStage(THINK_STAGE_UNDERSTAND));
-                    sink.next(wrapStage(THINK_STAGE_ANALYZE));
-                    sink.next(wrapStage(THINK_STAGE_STRATEGY));
+                    sink.next(stageSupport.wrapStage(ThinkingStageSupport.THINK_STAGE_UNDERSTAND));
+                    sink.next(stageSupport.wrapStage(ThinkingStageSupport.THINK_STAGE_ANALYZE));
+                    sink.next(stageSupport.wrapStage(ThinkingStageSupport.THINK_STAGE_STRATEGY));
 
                     // 阶段1：同步工具循环（阻塞执行，但事件实时发射到前端，命中来源一并推送）
-                    callWithTools(messages, toolOptions, chatModel, toolCallbacks, sink, thinkingAccum, sourcesAccum);
+                    agentToolLoopService.callWithTools(messages, toolOptions, chatModel,
+                            unifiedToolCallbacks, sink, thinkingAccum, sourcesAccum);
 
                     // 阶段进度：构建输出结构（工具调用结束、流式开始前，对应第 7 阶段）
-                    sink.next(wrapStage(THINK_STAGE_STRUCTURE));
+                    sink.next(stageSupport.wrapStage(ThinkingStageSupport.THINK_STAGE_STRUCTURE));
                     // 最终润色阶段（流式正文输出前的最后准备）
-                    sink.next(wrapStage(THINK_STAGE_POLISH));
+                    sink.next(stageSupport.wrapStage(ThinkingStageSupport.THINK_STAGE_POLISH));
                 } catch (Exception e) {
                     log.error("聊天失败: conversationId={}", finalConversationId, e);
                     sink.next(wrapError("AI服务暂时不可用，请稍后重试"));
@@ -542,11 +415,11 @@ public class ChatServiceImpl implements ChatService {
                         response -> {
                             // 1) 优先发射 thinking 增量（若模型提供了 reasoning_content / thinking）
                             // 真流式：直接透传每个增量的 thinking delta；大块增量切分后同步按间隔发射，保证与 token 的先后顺序
-                            String thinkingChunk = extractThinking(response);
+                            String thinkingChunk = stageSupport.extractThinking(response);
                             if (thinkingChunk != null && !thinkingChunk.isEmpty()) {
                                 // 累积思考内容用于入库持久化
                                 thinkingAccum.append(thinkingChunk);
-                                emitThinkingToSink(sink, thinkingChunk);
+                                stageSupport.emitThinkingToSink(sink, thinkingChunk);
                             }
                             // 2) 再发射 token 增量
                             String text = null;
@@ -555,10 +428,9 @@ public class ChatServiceImpl implements ChatService {
                             }
                             if (text != null && !text.isEmpty()) {
                                 // 剥离可能被拆分到多个 token 的文本工具调用块（如 <tool_call>...</tool_call>），防止 XML 碎片泄漏为正文
-                                String filtered = stripToolCallBlock(text, inToolCallBlock, toolCallBlockBuf);
+                                String filtered = AgentToolLoopService.stripToolCallBlock(text, inToolCallBlock, toolCallBlockBuf);
                                 // 兜底：过滤单 token 内完整的幻觉工具调用标签残留
-                                filtered = HALLUCINATED_TOOL_CALL_PATTERN.matcher(filtered).replaceAll("");
-                                filtered = HALLUCINATED_FUNCTION_PATTERN.matcher(filtered).replaceAll("");
+                                filtered = AgentToolLoopService.filterHallucinatedTags(filtered);
                                 // 过滤后为空或仅空白则跳过该 token，不向前端发射
                                 if (filtered.isBlank()) {
                                     return;
@@ -575,12 +447,12 @@ public class ChatServiceImpl implements ChatService {
                             String partialSources = buildSourcesJson(sourcesAccum);
                             // 空白内容回退：无论 thinking 是否存在，只要 content 为空白就使用兜底文案，避免持久化空串导致前端显示"(无回复内容)" @author H
                             if (partialText == null || partialText.isBlank()) {
-                                partialText = "已根据已有信息整理回答，详见思考过程";
+                                partialText = FALLBACK_TEXT;
                             }
                             if (finalConversationId != null && (!partialText.isBlank() || partialThinking != null)) {
                                 saveMessage(finalConversationId, MessageRoleEnum.ASSISTANT.getCode(),
                                         partialText, null, partialThinking, partialSources);
-                                conversationService.updateStats(finalConversationId, partialText.length() / CHARS_PER_TOKEN);
+                                conversationService.updateStats(finalConversationId, estimateTokens(partialText));
                             }
                             sink.next(wrapError("AI服务暂时不可用，请稍后重试"));
                             sink.next("[FINAL]");
@@ -594,13 +466,12 @@ public class ChatServiceImpl implements ChatService {
                             // 空白内容回退：无论 thinking 是否存在，只要 content 为空白就使用兜底文案，避免持久化空串导致前端显示"(无回复内容)" @author H
                             boolean isEmptyFallback = finalText == null || finalText.isBlank();
                             if (isEmptyFallback) {
-                                finalText = "已根据已有信息整理回答，详见思考过程";
+                                finalText = FALLBACK_TEXT;
                             }
                             if (finalConversationId != null && (!finalText.isBlank() || finalThinking != null)) {
                                 saveMessage(finalConversationId, MessageRoleEnum.ASSISTANT.getCode(),
                                         finalText, null, finalThinking, finalSources);
-                                int tokenCount = finalText.length() / CHARS_PER_TOKEN;
-                                conversationService.updateStats(finalConversationId, tokenCount);
+                                conversationService.updateStats(finalConversationId, estimateTokens(finalText));
                                 log.info("流式输出完成并保存: conversationId={}, length={}, thinkingLength={}, sources={}",
                                         finalConversationId, finalText.length(),
                                         finalThinking != null ? finalThinking.length() : 0,
@@ -610,9 +481,11 @@ public class ChatServiceImpl implements ChatService {
                             if (isEmptyFallback && !sink.isCancelled()) {
                                 sink.next(wrapToken(finalText));
                             }
-                            // 思考结束阶段推送（前端据此将标题置为“思考结束”，800ms 后自动收起）
+                            // 首轮回答完成后异步生成 LLM 标题（仅当标题仍为占位时触发）
+                            titleService.generateIfNeeded(finalConversationId, conversation.getTitle(), request.getMessage());
+                            // 思考结束阶段推送（前端据此将标题置为"思考结束"，800ms 后自动收起）
                             if (!sink.isCancelled()) {
-                                sink.next(wrapStage(THINK_STAGE_DONE));
+                                sink.next(stageSupport.wrapStage(ThinkingStageSupport.THINK_STAGE_DONE));
                             }
                             // 发送明确结束标记，前端据此判断流正常结束
                             sink.next("[FINAL]");
@@ -632,399 +505,27 @@ public class ChatServiceImpl implements ChatService {
     }
 
     /**
-     * 工具调用循环（同步）— 稳定收敛方案
-     * 最多执行 MAX_TOOL_ITERATIONS 轮，每轮处理AI返回的工具调用
-     * <p>
-     * 当AI返回无工具调用时，该最终回复不加入messages（留给stream阶段重新生成），
-     * 避免stream阶段看到"已回答过"导致返回空流。
-     * <p>
-     * 收敛机制：
-     * 1. 跟踪 lastToolName / lastToolArgsNormalized / repeatCount
-     * 2. 对每次工具调用归一化参数后判定相似度>80%则视为重复
-     * 3. 连续重复达到 REPEAT_TOOL_LIMIT 时注入 CONVERGE_INSTRUCTION 并结束工具循环
-     * 4. 循环结束后无论是否自然退出，均确保流式阶段带有收敛指令（hasConvergedMessage 判定）
+     * 估算文本 token 数（中英混合）
+     * 中文字符约 0.6 token/字，其他字符约 4 字符/token；比单一 len/4 对中文场景更接近真实
      *
-     * @param messages       消息列表（会被追加工具调用链）
-     * @param options        带工具回调的Options
-     * @param chatModel      聊天模型
-     * @param toolCallbacks  当前可用工具回调
-     * @param sink           SSE事件sink，工具/思考事件实时写入直达前端
-     * @param thinkingAccum  思考内容累积器（用于入库持久化）
-     * @param sourcesAccum   RAG来源累积器（用于SSE推送与最终持久化）
+     * @param text 文本
+     * @return 估算 token 数
      * @author H
      */
-    private void callWithTools(List<Message> messages, OpenAiChatOptions options, ChatModel chatModel,
-                               ToolCallback[] toolCallbacks, FluxSink<String> sink,
-                               StringBuilder thinkingAccum,
-                               List<Map<String, Object>> sourcesAccum) {
-        // 连续重复工具调用追踪：判定模型陷入发散循环（同一工具反复调用但无实质收敛）时强制结束
-        String lastToolName = null;
-        String lastToolArgsNormalized = null;
-        int repeatCount = 0;
-        for (int i = 0; i < MAX_TOOL_ITERATIONS; i++) {
-            // 客户端断连后终止工具循环，避免继续消耗模型token
-            if (sink.isCancelled()) {
-                log.info("SSE已取消，终止工具调用循环");
-                return;
-            }
-            // 已注入收敛指令（模型陷入重复调用被强制收尾），直接结束工具循环
-            if (hasConvergedMessage(messages)) {
-                log.info("已注入收敛指令，结束工具调用循环");
-                return;
-            }
-            ChatResponse response = chatModel.call(new Prompt(messages, options));
-            AssistantMessage assistantMsg = response.getResult().getOutput();
-
-            // 提取推理过程：兼容 reasoning_content / reasoningContent / thinking / reasoning 等键
-            // 工具阶段使用 chatModel.call() 同步获取，thinking 到达后实时切分发射到前端（边执行边展示）
-            String thinkingChunk = extractThinking(response);
-            if (thinkingChunk != null && !thinkingChunk.isEmpty()) {
-                // 累积到 thinkingAccum 用于入库，并实时发射供前端流式展示
-                if (thinkingAccum != null) {
-                    thinkingAccum.append(thinkingChunk);
-                }
-                emitThinkingToSink(sink, thinkingChunk);
-                log.debug("工具阶段思考内容已实时发射: length={}, iter={}", thinkingChunk.length(), i + 1);
-            }
-
-            // 无工具调用 = 最终回复，不加入messages，交给stream阶段生成
-            if (assistantMsg.getToolCalls() == null || assistantMsg.getToolCalls().isEmpty()) {
-                // 兜底：部分模型会以 <tool_call> 文本格式输出工具调用（而非原生 tool_calls），
-                // 若不处理，这段XML会泄漏为最终回答。此处解析并按原生协议执行
-                String text = assistantMsg.getText() == null ? "" : assistantMsg.getText();
-                if (text.contains(TEXT_TOOL_CALL_MARKER) && i < MAX_TOOL_ITERATIONS - 1) {
-                    AssistantMessage.ToolCall synthetic = parseTextToolCall(text);
-                    if (synthetic != null) {
-                        // 归一化当前参数并判定与上次是否相似（相似度>80%视为重复）
-                        // @author H
-                        String currentNormalized = normalizeArgs(synthetic.arguments());
-                        boolean similar = lastToolName != null
-                                && lastToolName.equals(synthetic.name())
-                                && isSimilarArgs(lastToolArgsNormalized, currentNormalized);
-                        if (similar) {
-                            repeatCount++;
-                        } else {
-                            repeatCount = 1;
-                        }
-                        lastToolName = synthetic.name();
-                        lastToolArgsNormalized = currentNormalized;
-                        if (repeatCount >= REPEAT_TOOL_LIMIT) {
-                            log.warn("检测到连续重复工具调用: {}（相似参数），强制收敛终止工具循环，repeatCount={}", synthetic.name(), repeatCount);
-                            injectConvergenceMessage(messages);
-                            return;
-                        }
-                        log.warn("检测到文本形式工具调用，已转换执行: name={}, args={}", synthetic.name(), synthetic.arguments());
-                        // 以原生 tool_calls 结构回填消息，保证协议合法（tool 消息必须跟在带 tool_calls 的 assistant 消息之后）
-                        messages.add(AssistantMessage.builder()
-                                .content("")
-                                .toolCalls(List.of(synthetic))
-                                .build());
-                        sink.next("{\"type\":\"tool\",\"name\":"
-                                + objectMapper.writeValueAsString(synthetic.name()) + "}");
-                        // 根据工具名推送对应阶段标题（前端据 stage 动态切换思考标题）
-                        emitStageForTool(sink, synthetic.name());
-                        String result = executeTool(toolCallbacks, synthetic.name(), synthetic.arguments());
-                        // RAG工具结果后组装来源并推送 source 事件（与 thinking 同级结构化事件）
-                        if (RAG_TOOL_NAME.equals(synthetic.name())) {
-                            emitSourceIfAvailable(sink, sourcesAccum);
-                        }
-                        messages.add(ToolResponseMessage.builder()
-                                .responses(List.of(new ToolResponseMessage.ToolResponse(
-                                        synthetic.id(), synthetic.name(), truncateResult(result))))
-                                .build());
-                        continue;
-                    }
-                }
-                log.info("工具调用阶段结束，无更多工具调用，迭代次数={}", i + 1);
-                break;
-            }
-
-            // 仅含工具调用的assistant消息才加入（保持调用链完整）
-            messages.add(assistantMsg);
-
-            // 处理工具调用
-            log.info("工具调用迭代 {}: {} 次工具调用", i + 1, assistantMsg.getToolCalls().size());
-
-            for (AssistantMessage.ToolCall toolCall : assistantMsg.getToolCalls()) {
-                // 归一化当前参数并与上次对比，相似度>80%视为重复
-                // @author H
-                String currentNormalized = normalizeArgs(toolCall.arguments());
-                boolean similar = lastToolName != null
-                        && lastToolName.equals(toolCall.name())
-                        && isSimilarArgs(lastToolArgsNormalized, currentNormalized);
-                if (similar) {
-                    repeatCount++;
-                } else {
-                    repeatCount = 1;
-                }
-                lastToolName = toolCall.name();
-                lastToolArgsNormalized = currentNormalized;
-                if (repeatCount >= REPEAT_TOOL_LIMIT) {
-                    log.warn("检测到连续重复工具调用: {}（相似参数），强制收敛终止工具循环，repeatCount={}", toolCall.name(), repeatCount);
-                    injectConvergenceMessage(messages);
-                    return;
-                }
-                log.info("  执行工具: id={}, name={}, args={}", toolCall.id(), toolCall.name(),
-                        toolCall.arguments().length() > MAX_LOG_ARGS_LEN
-                                ? toolCall.arguments().substring(0, MAX_LOG_ARGS_LEN) + "..."
-                                : toolCall.arguments());
-                // 工具事件实时发射（前端渲染工具调用徽章/步骤）
-                sink.next("{\"type\":\"tool\",\"name\":"
-                        + objectMapper.writeValueAsString(toolCall.name()) + "}");
-                // 根据工具名推送对应阶段标题（前端据 stage 动态切换思考标题）
-                emitStageForTool(sink, toolCall.name());
-                String result = executeTool(toolCallbacks, toolCall.name(), toolCall.arguments());
-                // 截断过长的工具结果，防止撑爆上下文
-                String truncatedResult = truncateResult(result);
-                log.info("  工具结果: length={}, 截断后length={}",
-                        result != null ? result.length() : 0,
-                        truncatedResult.length());
-                // RAG工具结果后组装来源并推送 source 事件（结构化JSON，前端据 type=source 渲染角标/抽屉）
-                if (RAG_TOOL_NAME.equals(toolCall.name())) {
-                    emitSourceIfAvailable(sink, sourcesAccum);
-                }
-
-                // 将工具结果作为消息加入列表
-                messages.add(ToolResponseMessage.builder()
-                        .responses(List.of(new ToolResponseMessage.ToolResponse(
-                                toolCall.id(), toolCall.name(), truncatedResult
-                        )))
-                        .build());
-            }
+    private static int estimateTokens(String text) {
+        if (text == null || text.isEmpty()) {
+            return 0;
         }
-        // 循环结束后（无论自然退出还是达到上限），确保流式阶段始终带有收敛指令，避免模型再以文本形式输出工具调用
-        if (!hasConvergedMessage(messages)) {
-            log.info("工具调用循环结束，注入收敛指令以保障流式阶段稳定收敛");
-            injectConvergenceMessage(messages);
-        }
-    }
-
-    /**
-     * 注入收敛指令：告知模型工具调用阶段已结束，基于已有信息直接作答，禁止再发起任何工具调用
-     *
-     * @param messages 对话消息列表
-     * @author H
-     */
-    private void injectConvergenceMessage(List<Message> messages) {
-        // 防止重复注入
-        if (hasConvergedMessage(messages)) {
-            return;
-        }
-        messages.add(new SystemMessage(CONVERGE_INSTRUCTION));
-    }
-
-    /**
-     * 判断消息列表中是否已包含收敛指令
-     *
-     * @param messages 消息列表
-     * @return 是否已包含收敛指令
-     * @author H
-     */
-    private boolean hasConvergedMessage(List<Message> messages) {
-        if (messages == null || messages.isEmpty()) {
-            return false;
-        }
-        for (Message msg : messages) {
-            if (msg instanceof SystemMessage sm) {
-                String text = sm.getText();
-                if (text != null && text.contains(CONVERGE_INSTRUCTION)) {
-                    return true;
-                }
-                // 兼容旧文案：也检查包含关键短语
-                if (text != null && text.contains("工具调用阶段已结束")) {
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
-
-    /**
-     * 归一化工具参数：转小写、去首尾空格、移除标点与空白字符
-     * 用于重复调用的相似度判定
-     *
-     * @param args 原始参数 JSON 字符串
-     * @return 归一化后的字符串
-     * @author H
-     */
-    private String normalizeArgs(String args) {
-        if (args == null) {
-            return "";
-        }
-        // 转小写并 trim
-        String normalized = args.toLowerCase().trim();
-        // 移除标点符号与空白（保留字母数字与中文）
-        // 使用正则移除所有非字母数字字符
-        normalized = normalized.replaceAll("[\\p{Punct}\\s]+", "");
-        return normalized;
-    }
-
-    /**
-     * 判断两次归一化参数是否相似（相似度>80%）
-     * 策略：contains 互包含 或 Levenshtein 距离 < 20% 长度
-     *
-     * @param lastArgs 上次归一化参数
-     * @param curArgs  当前归一化参数
-     * @return 是否相似
-     * @author H
-     */
-    private boolean isSimilarArgs(String lastArgs, String curArgs) {
-        if (lastArgs == null || curArgs == null) {
-            return false;
-        }
-        if (lastArgs.isEmpty() && curArgs.isEmpty()) {
-            return true;
-        }
-        if (lastArgs.isEmpty() || curArgs.isEmpty()) {
-            return false;
-        }
-        // 互包含判定：若一个包含另一个，视为高度相似
-        if (lastArgs.contains(curArgs) || curArgs.contains(lastArgs)) {
-            return true;
-        }
-        // Levenshtein 距离判定：距离小于较长字符串长度的20%则相似度>80%
-        int maxLen = Math.max(lastArgs.length(), curArgs.length());
-        if (maxLen == 0) {
-            return true;
-        }
-        int distance = levenshteinDistance(lastArgs, curArgs);
-        double similarity = 1.0 - ((double) distance / maxLen);
-        return similarity > 0.8;
-    }
-
-    /**
-     * 计算 Levenshtein 编辑距离
-     *
-     * @param a 字符串 a
-     * @param b 字符串 b
-     * @return 编辑距离
-     * @author H
-     */
-    private int levenshteinDistance(String a, String b) {
-        int n = a.length();
-        int m = b.length();
-        // 优化：交换使 m 更小以减少空间
-        if (n < m) {
-            String tmp = a;
-            a = b;
-            b = tmp;
-            n = a.length();
-            m = b.length();
-        }
-        int[] prev = new int[m + 1];
-        int[] curr = new int[m + 1];
-        for (int j = 0; j <= m; j++) {
-            prev[j] = j;
-        }
-        for (int i = 1; i <= n; i++) {
-            curr[0] = i;
-            char ca = a.charAt(i - 1);
-            for (int j = 1; j <= m; j++) {
-                int cost = (ca == b.charAt(j - 1)) ? 0 : 1;
-                curr[j] = Math.min(Math.min(curr[j - 1] + 1, prev[j] + 1), prev[j - 1] + cost);
-            }
-            int[] tmp = prev;
-            prev = curr;
-            curr = tmp;
-        }
-        return prev[m];
-    }
-
-    /**
-     * 剥离流式阶段被拆分到多个 token 的文本工具调用块
-     * 模型有时会在流式输出中以 XML 文本形式再次表达工具意图（如 <tool_call><function=...>...），
-     * 该块会被 tokenizer 拆分成多条增量逐片到达，单 token 正则无法整块命中，需要按状态机累积后整体剥离。
-     *
-     * @param chunk  当前 token 的文本增量
-     * @param inBlock 是否正处于 <tool_call> 块内（跨 token 状态）
-     * @param buf    块内累积缓冲（跨 token）
-     * @return 剥离工具调用块后的残留文本（正常正文原样保留）
-     */
-    private static String stripToolCallBlock(String chunk, boolean[] inBlock, StringBuilder buf) {
-        StringBuilder out = new StringBuilder();
-        int i = 0;
-        while (i < chunk.length()) {
-            if (inBlock[0]) {
-                // 正在工具调用块内：查找结束标记
-                int end = chunk.indexOf("</tool_call>", i);
-                if (end < 0) {
-                    // 本 token 未见结束标记，整体累积后等待下一个 token
-                    buf.append(chunk.substring(i));
-                    return out.toString();
-                }
-                // 缓冲累积完整块后清除，块内容全部丢弃
-                buf.append(chunk.substring(i, end));
-                buf.setLength(0);
-                inBlock[0] = false;
-                i = end + "</tool_call>".length();
+        int cjk = 0;
+        int other = 0;
+        for (int i = 0; i < text.length(); i++) {
+            if (Character.UnicodeScript.of(text.charAt(i)) == Character.UnicodeScript.HAN) {
+                cjk++;
             } else {
-                // 非块内：查找开始标记
-                int start = chunk.indexOf("<tool_call", i);
-                if (start < 0) {
-                    // 无开始标记，剩余均为正常正文
-                    out.append(chunk.substring(i));
-                    i = chunk.length();
-                } else {
-                    // 开始标记之前的正文保留，进入块内状态（含未闭合的 <tool_call 前缀，由下一轮累积）
-                    out.append(chunk.substring(i, start));
-                    inBlock[0] = true;
-                    buf.setLength(0);
-                    i = start;
-                }
+                other++;
             }
         }
-        return out.toString();
-    }
-
-    /**
-     * 解析文本形式的工具调用
-     * 格式：<tool_call>\n<function=name>\n<parameter=k>v</parameter>...\n</tool_call>
-     *
-     * @param text 模型输出的文本
-     * @return 合成的原生 ToolCall（ID前缀 call_text_），无法解析时返回 null
-     */
-    private AssistantMessage.ToolCall parseTextToolCall(String text) {
-        try {
-            Matcher func = TEXT_FUNCTION_PATTERN.matcher(text);
-            if (!func.find()) {
-                return null;
-            }
-            String name = func.group(1).trim();
-            Map<String, Object> args = new LinkedHashMap<>();
-            Matcher param = TEXT_PARAM_PATTERN.matcher(text);
-            while (param.find()) {
-                String key = param.group(1).trim();
-                String value = param.group(2).trim();
-                // topK 等数值参数转数字，避免 JSON Schema 校验失败
-                if (NUMERIC_PATTERN.matcher(value).matches() && key.toLowerCase().matches(".*(top_?k|limit|count|size|page).*")) {
-                    args.put(key, Long.parseLong(value));
-                } else {
-                    args.put(key, value);
-                }
-            }
-            return new AssistantMessage.ToolCall(
-                    "call_text_" + textToolCallSeq.incrementAndGet(), "function", name,
-                    objectMapper.writeValueAsString(args));
-        } catch (Exception e) {
-            log.warn("解析文本形式工具调用失败，放弃转换", e);
-            return null;
-        }
-    }
-
-    /**
-     * 截断工具结果，防止撑爆LLM上下文窗口
-     *
-     * @param result 原始工具结果
-     * @return 截断后的结果
-     */
-    private String truncateResult(String result) {
-        if (result == null) {
-            return "";
-        }
-        if (result.length() <= MAX_TOOL_RESULT_LENGTH) {
-            return result;
-        }
-        return result.substring(0, MAX_TOOL_RESULT_LENGTH) + "...(结果已截断)";
+        return Math.max(1, Math.round(cjk * 0.6f + other / 4.0f));
     }
 
     /**
@@ -1059,142 +560,6 @@ public class ChatServiceImpl implements ChatService {
     }
 
     /**
-     * 将思考/推理增量包装为结构化JSON字符串
-     * 前端据 type=thinking 字段区分并以折叠/流式方式展示思考过程
-     *
-     * @param thinkingChunk 思考内容增量（可能为完整块或delta）
-     * @return 结构化JSON字符串，格式：{"type":"thinking","content":"<思考增量>"}
-     */
-    private String wrapThinking(String thinkingChunk) {
-        // 兼容旧调用：推断阶段后带 stage 字段一并下发，便于前端动态切换标题
-        String stage = inferThinkingStage(thinkingChunk);
-        if (stage != null) {
-            return wrapThinking(thinkingChunk, stage);
-        }
-        try {
-            return "{\"type\":\"thinking\",\"content\":" + objectMapper.writeValueAsString(thinkingChunk) + "}";
-        } catch (JacksonException e) {
-            log.warn("JSON编码thinking失败，降级为空内容", e);
-            return "{\"type\":\"thinking\",\"content\":\"\"}";
-        }
-    }
-
-    /**
-     * 将思考增量与阶段提示一并包装（供前端动态标题切换）
-     *
-     * @param thinkingChunk 思考内容增量
-     * @param stage 阶段标题（8 阶段之一）
-     * @return 结构化JSON：{"type":"thinking","content":"...","stage":"..."}
-     */
-    private String wrapThinking(String thinkingChunk, String stage) {
-        try {
-            String contentJson = objectMapper.writeValueAsString(thinkingChunk);
-            String stageJson = objectMapper.writeValueAsString(stage);
-            return "{\"type\":\"thinking\",\"content\":" + contentJson + ",\"stage\":" + stageJson + "}";
-        } catch (JacksonException e) {
-            log.warn("JSON编码thinking+stage失败，降级为仅content", e);
-            try {
-                return "{\"type\":\"thinking\",\"content\":" + objectMapper.writeValueAsString(thinkingChunk) + "}";
-            } catch (JacksonException ex) {
-                return "{\"type\":\"thinking\",\"content\":\"\"}";
-            }
-        }
-    }
-
-    /**
-     * 根据思考文本推断阶段标题（关键词映射，前端可据 stage 字段切换标题）
-     * 若无明显关键词则返回 null，由调用方决定是否附带 stage
-     */
-    private String inferThinkingStage(String chunk) {
-        if (chunk == null || chunk.isBlank()) {
-            return null;
-        }
-        String lower = chunk.toLowerCase();
-        // 优先级从具体到宽泛，避免误判
-        if (lower.contains("sql") || chunk.contains("查询") || chunk.contains("SELECT") || chunk.contains("select")) {
-            return THINK_STAGE_SQL;
-        }
-        if (chunk.contains("检索") || chunk.contains("知识库") || lower.contains("rag") || lower.contains("searchknowledge")) {
-            return THINK_STAGE_RETRIEVE;
-        }
-        if (chunk.contains("策略") || chunk.contains("方案") || chunk.contains("计划") || lower.contains("strategy")) {
-            return THINK_STAGE_STRATEGY;
-        }
-        if (chunk.contains("结构") || chunk.contains("组织") || chunk.contains("构建输出") || lower.contains("structure")) {
-            return THINK_STAGE_STRUCTURE;
-        }
-        if (chunk.contains("润色") || chunk.contains("优化") || chunk.contains("完善") || lower.contains("polish")) {
-            return THINK_STAGE_POLISH;
-        }
-        if (chunk.contains("分析")) {
-            return THINK_STAGE_ANALYZE;
-        }
-        if (chunk.contains("理解")) {
-            return THINK_STAGE_UNDERSTAND;
-        }
-        return null;
-    }
-
-    /**
-     * 将阶段进度包装为结构化JSON字符串
-     * 前端据 type=stage 字段展示阶段进度（如“正在理解问题”）
-     * 通过 objectMapper 编码 content，确保中文与特殊字符安全传输
-     *
-     * @param content 阶段文案（如“正在理解问题”）
-     * @return 结构化JSON字符串，格式：{"type":"stage","content":"<阶段文案>"}
-     */
-    private String wrapStage(String content) {
-        try {
-            return "{\"type\":\"stage\",\"content\":" + objectMapper.writeValueAsString(content) + "}";
-        } catch (JacksonException e) {
-            log.warn("JSON编码stage失败，降级为空内容", e);
-            return "{\"type\":\"stage\",\"content\":\"\"}";
-        }
-    }
-
-    /**
-     * 根据工具名推送对应阶段标题（前端据此切换折叠块标题）
-     * searchKnowledge → 检索知识库，queryBusinessData → 生成查询 SQL，analyze_image → 构建输出结构
-     */
-    private void emitStageForTool(FluxSink<String> sink, String toolName) {
-        if (sink.isCancelled()) {
-            return;
-        }
-        try {
-            String stage = null;
-            if (RAG_TOOL_NAME.equals(toolName)) {
-                stage = THINK_STAGE_RETRIEVE;
-            } else if ("queryBusinessData".equals(toolName)) {
-                stage = THINK_STAGE_SQL;
-            } else if ("analyze_image".equals(toolName)) {
-                stage = THINK_STAGE_STRUCTURE;
-            }
-            if (stage != null) {
-                sink.next(wrapStage(stage));
-            }
-        } catch (Exception e) {
-            log.warn("推送工具对应阶段失败: {}", toolName, e);
-        }
-    }
-
-    /**
-     * 将RAG命中来源包装为结构化JSON字符串（类似 wrapThinking）
-     * 前端据 type=source 字段渲染行内角标与抽屉
-     *
-     * @param chunks 命中列表（每项含 file_id、chunk_id、score、file_name、snippet）
-     * @return 结构化JSON字符串，格式：{"type":"source","chunks":[...]}
-     * @author H
-     */
-    private String wrapSource(List<Map<String, Object>> chunks) {
-        try {
-            return "{\"type\":\"source\",\"chunks\":" + objectMapper.writeValueAsString(chunks) + "}";
-        } catch (JacksonException e) {
-            log.warn("JSON编码source失败，降级为空数组", e);
-            return "{\"type\":\"source\",\"chunks\":[]}";
-        }
-    }
-
-    /**
      * 构建 sources JSON 字符串（用于持久化）
      *
      * @param sourcesAccum 累积的来源列表
@@ -1211,208 +576,6 @@ public class ChatServiceImpl implements ChatService {
             log.warn("序列化sources失败，跳过持久化", e);
             return null;
         }
-    }
-
-    /**
-     * 若存在RAG命中则推送 source 事件并累积到 sourcesAccum
-     * 去重：按 file_id+chunk_id 排重，避免同一片段多次推送
-     *
-     * @param sink         SSE sink
-     * @param sourcesAccum 累积器
-     * @author H
-     */
-    private void emitSourceIfAvailable(FluxSink<String> sink, List<Map<String, Object>> sourcesAccum) {
-        try {
-            List<Map<String, Object>> hits = ragService.getLastHits();
-            if (hits == null || hits.isEmpty()) {
-                log.debug("RAG命中为空，跳过source推送");
-                return;
-            }
-            // 组装本次推送列表，去重后追加到累积器
-            List<Map<String, Object>> toPush = new ArrayList<>();
-            for (Map<String, Object> hit : hits) {
-                // 按 file_id+chunk_id 判重
-                boolean exists = sourcesAccum.stream().anyMatch(existing ->
-                        java.util.Objects.equals(existing.get("file_id"), hit.get("file_id"))
-                                && java.util.Objects.equals(existing.get("chunk_id"), hit.get("chunk_id")));
-                if (!exists) {
-                    sourcesAccum.add(hit);
-                    toPush.add(hit);
-                }
-            }
-            if (toPush.isEmpty()) {
-                log.debug("RAG命中均已推送，跳过重复");
-                return;
-            }
-            if (sink.isCancelled()) {
-                log.debug("SSE已取消，跳过source推送");
-                return;
-            }
-            sink.next(wrapSource(toPush));
-            log.info("已推送source事件: chunks={}, totalAccum={}", toPush.size(), sourcesAccum.size());
-        } catch (Exception e) {
-            log.warn("推送source事件失败", e);
-        } finally {
-            // 本次命中已消费，清理 ThreadLocal 避免下一轮误复用
-            try {
-                ragService.clearLastHits();
-            } catch (Exception e) {
-                log.warn("清理RAG命中缓存失败", e);
-            }
-        }
-    }
-
-    /**
-     * 从 ChatResponse 中提取思考/推理内容
-     * 兼容多种来源与键名：
-     * 1) AssistantMessage.getMetadata() 中的 "reasoning_content" / "reasoningContent" / "reasoning" / "thinking"
-     * 2) Generation.getMetadata() 中的同名键（部分模型将推理写入 generation metadata）
-     * 3) ChatResponse.getMetadata() 中的同名键（兜底，兼容不同 OpenAI 兼容网关实现）
-     * 流式场景下每次调用返回增量 delta，调用方需直接透传 SSE；非流式场景返回完整块
-     *
-     * @param response ChatModel 返回的响应对象
-     * @return 思考内容字符串，不存在时返回 null
-     */
-    @Nullable
-    private String extractThinking(ChatResponse response) {
-        if (response == null) {
-            return null;
-        }
-        // 1) 优先从 AssistantMessage.metadata 提取（最常见：OpenAI reasoning_content 映射于此）
-        if (response.getResult() != null && response.getResult().getOutput() != null) {
-            AssistantMessage output = response.getResult().getOutput();
-            Map<String, Object> meta = output.getMetadata();
-            if (meta != null && !meta.isEmpty()) {
-                String v = getThinkingFromMap(meta);
-                if (v != null && !v.isBlank()) {
-                    return v;
-                }
-            }
-            // 2) 从 Generation metadata 提取（部分版本/网关将 reasoning 写入 generation metadata）
-            var genMeta = response.getResult().getMetadata();
-            if (genMeta != null && !genMeta.isEmpty()) {
-                for (String key : List.of("reasoning_content", "reasoningContent", "reasoning", "thinking")) {
-                    if (genMeta.containsKey(key)) {
-                        Object obj = genMeta.get(key);
-                        if (obj instanceof String s && !s.isBlank()) {
-                            return s;
-                        }
-                    }
-                }
-            }
-        }
-        // 3) 兜底：从 ChatResponse 级别 metadata 提取（兼容不同网关/代理实现）
-        var respMeta = response.getMetadata();
-        if (respMeta != null && !respMeta.isEmpty()) {
-            for (String key : List.of("reasoning_content", "reasoningContent", "reasoning", "thinking")) {
-                if (respMeta.containsKey(key)) {
-                    Object obj = respMeta.get(key);
-                    if (obj instanceof String s && !s.isBlank()) {
-                        return s;
-                    }
-                }
-            }
-        }
-        return null;
-    }
-
-    /**
-     * 从 Map 中按优先级提取思考内容
-     *
-     * @param meta 元数据 Map
-     * @return 思考内容字符串，不存在时返回 null
-     */
-    @Nullable
-    private String getThinkingFromMap(Map<String, Object> meta) {
-        // 优先级：reasoning_content > reasoningContent > reasoning > thinking
-        for (String key : List.of("reasoning_content", "reasoningContent", "reasoning", "thinking")) {
-            Object v = meta.get(key);
-            if (v instanceof String s && !s.isBlank()) {
-                return s;
-            }
-        }
-        return null;
-    }
-
-    /**
-     * 将思考内容按固定大小切分为多段
-     * 用于大块 thinking 的模拟流式：切分后由 emitThinkingToSink 按 THINKING_DELAY 间隔实时发射
-     *
-     * @param thinking  完整思考内容
-     * @param chunkSize 切分大小
-     * @return 切分后的片段列表
-     * @author H
-     */
-    private List<String> splitThinking(String thinking, int chunkSize) {
-        List<String> pieces = new ArrayList<>();
-        for (int start = 0; start < thinking.length(); start += chunkSize) {
-            int end = Math.min(start + chunkSize, thinking.length());
-            pieces.add(thinking.substring(start, end));
-        }
-        return pieces;
-    }
-
-    /**
-     * 将思考增量实时写入 SSE sink
-     * 大块增量按 THINKING_CHUNK_SIZE 切分、分片间休眠 THINKING_DELAY，模拟逐字输出且保持与后续事件的先后顺序
-     *
-     * @param sink          SSE 事件sink
-     * @param thinkingChunk 本次思考增量
-     * @author H
-     */
-    private void emitThinkingToSink(FluxSink<String> sink, String thinkingChunk) {
-        if (thinkingChunk == null || thinkingChunk.isEmpty()) {
-            return;
-        }
-        if (thinkingChunk.length() <= 50) {
-            // 小增量直接发射，体现流式 delta 透传
-            sink.next(wrapThinking(thinkingChunk));
-            return;
-        }
-        for (String piece : splitThinking(thinkingChunk, THINKING_CHUNK_SIZE)) {
-            // 客户端断连后停止发射
-            if (sink.isCancelled()) {
-                return;
-            }
-            sink.next(wrapThinking(piece));
-            sleepQuietly(THINKING_DELAY.toMillis());
-        }
-    }
-
-    /**
-     * 休眠指定毫秒（思考分片发射间隔），被中断时恢复中断标记并立即返回
-     *
-     * @param millis 休眠毫秒数
-     * @author H
-     */
-    private void sleepQuietly(long millis) {
-        try {
-            Thread.sleep(millis);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
-    }
-
-    /**
-     * 执行单个工具调用
-     *
-     * @param callbacks 工具回调数组
-     * @param toolName  工具名称
-     * @param arguments 工具参数JSON
-     * @return 工具执行结果
-     */
-    private String executeTool(ToolCallback[] callbacks, String toolName, String arguments) {
-        for (ToolCallback callback : callbacks) {
-            if (callback.getToolDefinition().name().equals(toolName)) {
-                try {
-                    return callback.call(arguments);
-                } catch (Exception e) {
-                    log.error("工具执行失败: {}", toolName, e);
-                    return "工具执行失败: " + e.getMessage();
-                }
-            }
-        }
-        return "未知工具: " + toolName;
     }
 
     /**
@@ -1511,10 +674,10 @@ public class ChatServiceImpl implements ChatService {
     /**
      * 保存聊天消息（含思考内容持久化）
      *
-     * @param conversationId 会话ID
-     * @param role           消息角色
-     * @param content        消息内容
-     * @param toolName       工具名称（非工具消息为null）
+     * @param conversationId  会话ID
+     * @param role            消息角色
+     * @param content         消息内容
+     * @param toolName        工具名称（非工具消息为null）
      * @param thinkingContent 思考过程内容（仅助手消息可能携带，可为null）
      * @author H
      */
@@ -1525,12 +688,12 @@ public class ChatServiceImpl implements ChatService {
     /**
      * 保存聊天消息（含思考内容与来源持久化）
      *
-     * @param conversationId 会话ID
-     * @param role           消息角色
-     * @param content        消息内容
-     * @param toolName       工具名称（非工具消息为null）
+     * @param conversationId  会话ID
+     * @param role            消息角色
+     * @param content         消息内容
+     * @param toolName        工具名称（非工具消息为null）
      * @param thinkingContent 思考过程内容（仅助手消息可能携带，可为null）
-     * @param sourcesJson    来源引用JSON数组（RAG命中，可为null）
+     * @param sourcesJson     来源引用JSON数组（RAG命中，可为null）
      * @author H
      */
     private void saveMessage(Long conversationId, Integer role, String content, String toolName, String thinkingContent, String sourcesJson) {
@@ -1543,7 +706,6 @@ public class ChatServiceImpl implements ChatService {
         msg.setRole(role);
         msg.setContent(content);
         msg.setMessageType(MESSAGE_TYPE_TEXT);
-        // 工具消息补全工具名称，保证历史上下文可重建为 ToolResponseMessage
         msg.setToolName(toolName);
         // 思考过程内容持久化（历史回显用，空串按 null 处理）
         if (thinkingContent != null && !thinkingContent.isBlank()) {

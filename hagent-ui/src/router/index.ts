@@ -33,6 +33,13 @@ const routes: RouteRecordRaw[] = [
       { path: 'tools', name: 'AdminAiTools', component: () => import('@/views/admin/AiToolsView.vue'), meta: { title: 'AI 工具' } },
       { path: 'tools/execute/:key', name: 'AdminAiToolExecute', component: () => import('@/views/admin/AiToolExecuteView.vue'), meta: { title: '工具执行' } },
       { path: 'knowledge', name: 'AdminKnowledge', component: () => import('@/views/admin/KnowledgeView.vue'), meta: { title: '知识库' } },
+      { path: 'sql-policy', name: 'AdminSqlPolicy', component: () => import('@/views/admin/SqlPolicyView.vue'), meta: { title: 'SQL 表策略' } },
+      {
+        path: 'logs',
+        name: 'SystemLog',
+        component: () => import('@/views/admin/SystemLogView.vue'),
+        meta: { requiresAuth: true, requiresAdmin: true, title: '操作日志' },
+      },
       { path: 'settings', name: 'AdminSettings', component: () => import('@/views/admin/SettingsView.vue'), meta: { title: '设置' } },
     ],
   },

@@ -8,6 +8,8 @@ import tools.jackson.databind.json.JsonMapper;
 import tools.jackson.databind.module.SimpleModule;
 import tools.jackson.databind.ser.std.ToStringSerializer;
 
+import java.time.OffsetDateTime;
+
 /**
  * Jackson 配置 - Long 类型统一序列化为字符串，避免 JavaScript 精度丢失
  * <p>
@@ -28,12 +30,15 @@ import tools.jackson.databind.ser.std.ToStringSerializer;
 public class JacksonConfig {
 
     /**
-     * Long → String 序列化模块（Long 包装类型 + 基本类型）
+     * Long → String + OffsetDateTime ISO 序列化模块
+     * <p>
+     * OffsetDateTime 使用 ToStringSerializer 输出 ISO-8601（PG TIMESTAMPTZ 原生）
      */
     private static SimpleModule longToStringModule() {
         SimpleModule module = new SimpleModule("long-to-string");
         module.addSerializer(Long.class, ToStringSerializer.instance);
         module.addSerializer(Long.TYPE, ToStringSerializer.instance);
+        module.addSerializer(OffsetDateTime.class, ToStringSerializer.instance);
         return module;
     }
 

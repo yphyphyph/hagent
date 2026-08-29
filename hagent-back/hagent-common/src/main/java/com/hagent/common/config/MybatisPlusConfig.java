@@ -29,7 +29,7 @@ public class MybatisPlusConfig {
         // 乐观锁插件：用于并发更新场景，实体需标注 @Version 字段
         interceptor.addInnerInterceptor(new OptimisticLockerInnerInterceptor());
         // 分页插件
-        PaginationInnerInterceptor paginationInterceptor = new PaginationInnerInterceptor(DbType.MYSQL);
+        PaginationInnerInterceptor paginationInterceptor = new PaginationInnerInterceptor(DbType.POSTGRE_SQL);
         // 设置最大分页限制，防止恶意大分页查询
         paginationInterceptor.setMaxLimit(500L);
         interceptor.addInnerInterceptor(paginationInterceptor);

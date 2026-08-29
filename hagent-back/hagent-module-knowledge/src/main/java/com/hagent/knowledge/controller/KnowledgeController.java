@@ -47,15 +47,33 @@ public class KnowledgeController {
     /**
      * 上传文档到知识库
      *
-     * @param file 要上传的文件
+     * @param file       要上传的文件
+     * @param visibility 可见性(0=私有 1=公有)，缺省公有
      * @return 上传的文件VO
      */
     @PostMapping("/upload")
-    @Operation(summary = "上传文档", description = "上传文档到知识库并异步触发向量化处理")
+    @Operation(summary = "上传文档", description = "上传文档到知识库并异步触发向量化处理，可指定公私可见性")
     @ApiResponse(responseCode = "200", description = "上传成功")
     @RateLimit(window = 60, limit = 5, message = "上传过于频繁，请 60 秒后重试")
-    public Result<KnowledgeFileVO> upload(@Parameter(description = "待上传的文档文件", required = true) @RequestParam("file") MultipartFile file) {
-        return Result.success(knowledgeService.uploadDocument(file));
+    public Result<KnowledgeFileVO> upload(@Parameter(description = "待上传的文档文件", required = true) @RequestParam("file") MultipartFile file,
+                                          @Parameter(description = "可见性：0=私有 1=公有，缺省公有") @RequestParam(value = "visibility", required = false, defaultValue = "1") Integer visibility) {
+        return Result.success(knowledgeService.uploadDocument(file, visibility));
+    }
+
+    /**
+     * 切换文件可见性（公有/私有）
+     * 公私属性变更后自动重新向量化，使向量元数据同步
+     *
+     * @param id         文件ID
+     * @param visibility 可见性(0=私有 1=公有)
+     * @return 更新后的文件VO
+     */
+    @PutMapping("/files/{id}/visibility")
+    @Operation(summary = "切换文件可见性", description = "公有/私有切换，变更后自动重新向量化以同步向量元数据")
+    @ApiResponse(responseCode = "200", description = "操作成功")
+    public Result<KnowledgeFileVO> updateVisibility(@Parameter(description = "文件ID", required = true) @PathVariable Long id,
+                                                    @Parameter(description = "可见性：0=私有 1=公有", required = true) @RequestParam("visibility") Integer visibility) {
+        return Result.success(knowledgeService.updateVisibility(id, visibility));
     }
 
     /**

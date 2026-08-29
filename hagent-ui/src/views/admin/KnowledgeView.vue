@@ -12,7 +12,13 @@
 
     <!-- 上传区 -->
     <n-card class="kb-upload-card" :bordered="true">
-      <div class="kb-upload__title">上传文档</div>
+      <div class="kb-upload__row">
+        <div class="kb-upload__title">上传文档</div>
+        <n-radio-group v-model:value="uploadVisibility" size="small">
+          <n-radio :value="1">公有（所有用户可检索）</n-radio>
+          <n-radio :value="0">私有（仅自己可检索）</n-radio>
+        </n-radio-group>
+      </div>
       <n-upload
         :custom-request="realUpload"
         accept=".md,.txt,.pdf,.doc,.docx"
@@ -61,7 +67,10 @@ import {
   NDataTable,
   NIcon,
   NProgress,
+  NRadio,
+  NRadioGroup,
   NStatistic,
+  NSwitch,
   NTag,
   NUpload,
   NUploadDragger,
@@ -112,6 +121,8 @@ interface KnowledgeDoc {
   type: string
   size: string
   status: string
+  /** 可见性：0=私有 1=公有 */
+  visibility: number
   uploadedAt: string
 }
 
@@ -135,6 +146,7 @@ function mapDoc(f: KnowledgeFile): KnowledgeDoc {
     type: ext || '—',
     size: f.fileSize != null ? formatSize(f.fileSize) : '—',
     status: f.vectorStatusDesc || (f.vectorStatus != null ? String(f.vectorStatus) : 'available'),
+    visibility: f.visibility ?? 1,
     uploadedAt: f.createdAt || '—',
   }
 }
@@ -218,6 +230,22 @@ const columns: DataTableColumns<KnowledgeDoc> = [
         { default: () => statusText(row.status) },
       ),
   },
+  {
+    title: '可见性',
+    key: 'visibility',
+    width: 100,
+    render: (row) =>
+      h(
+        NSwitch,
+        {
+          size: 'small',
+          value: row.visibility === 1,
+          loading: visibilityUpdatingId.value === row.id,
+          onUpdateValue: (v: boolean) => onToggleVisibility(row, v),
+        },
+        { checked: () => '公有', unchecked: () => '私有' },
+      ),
+  },
   { title: '上传时间', key: 'uploadedAt', width: 180, className: 'mono' },
   {
     title: '操作',
@@ -279,11 +307,36 @@ async function onDelete(row: KnowledgeDoc) {
   }
 }
 
+/* ---------- 可见性切换 ---------- */
+const visibilityUpdatingId = ref<number | null>(null)
+
+async function onToggleVisibility(row: KnowledgeDoc, visible: boolean) {
+  const target = visible ? 1 : 0
+  if (row.visibility === target) return
+  visibilityUpdatingId.value = row.id
+  try {
+    await knowledgeApi.updateVisibility(row.id, target)
+    row.visibility = target
+    message.success(
+      target === 1
+        ? `「${row.fileName}」已设为公有，即时生效`
+        : `「${row.fileName}」已设为私有，即时生效`,
+    )
+  } catch {
+    // 已 toast
+  } finally {
+    visibilityUpdatingId.value = null
+  }
+}
+
 /* ---------- 上传进度 ---------- */
 const activeUploads = ref(0)
 const uploadPercent = ref(0)
 const uploadingFileName = ref('')
 const isUploading = computed(() => activeUploads.value > 0)
+
+/* ---------- 上传可见性选择 ---------- */
+const uploadVisibility = ref<number>(1)
 
 /* ---------- 真实上传 ---------- */
 async function realUpload({ file, onFinish, onError }: UploadCustomRequestOptions) {
@@ -296,10 +349,14 @@ async function realUpload({ file, onFinish, onError }: UploadCustomRequestOption
   uploadPercent.value = 0
   uploadingFileName.value = file.name
   try {
-    await knowledgeApi.upload(raw, (percent) => {
-      uploadingFileName.value = file.name
-      uploadPercent.value = percent
-    })
+    await knowledgeApi.upload(
+      raw,
+      (percent) => {
+        uploadingFileName.value = file.name
+        uploadPercent.value = percent
+      },
+      uploadVisibility.value,
+    )
     onFinish()
     message.success(`「${file.name}」上传成功`)
     await Promise.all([loadDocs(), loadStats()])
@@ -364,6 +421,13 @@ async function realUpload({ file, onFinish, onError }: UploadCustomRequestOption
 .kb-upload-card {
   border-radius: var(--radius-lg);
   background: var(--bg-elevated);
+}
+.kb-upload__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
 }
 .kb-upload__title {
   font-weight: 600;

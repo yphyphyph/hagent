@@ -35,6 +35,12 @@ public class KnowledgeFile extends BaseEntity {
     /** 文件扩展名 */
     private String fileExt;
 
+    /** 可见性(0=私有 1=公有)：权限仅存 PostgreSQL 关系库，检索侧原生 filterExpression 过滤，切换即时生效无需重新向量化 */
+    private Integer visibility;
+
+    /** 上传用户ID（私有文件的归属依据） */
+    private Long userId;
+
     /** 向量状态：1=待处理，2=处理中，3=已完成，4=失败 */
     private Integer vectorStatus;
 

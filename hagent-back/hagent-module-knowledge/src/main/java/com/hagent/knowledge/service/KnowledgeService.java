@@ -26,6 +26,25 @@ public interface KnowledgeService extends IService<KnowledgeFile> {
     KnowledgeFileVO uploadDocument(MultipartFile file);
 
     /**
+     * 上传文档到知识库（指定可见性）
+     *
+     * @param file       上传的文件
+     * @param visibility 可见性(0=私有 1=公有)，null 按公有处理
+     * @return 文件VO
+     */
+    KnowledgeFileVO uploadDocument(MultipartFile file, Integer visibility);
+
+    /**
+     * 切换文件可见性
+     * 公私属性变更后自动重新向量化，使向量元数据与库表保持一致
+     *
+     * @param id         文件ID
+     * @param visibility 可见性(0=私有 1=公有)
+     * @return 更新后的文件VO
+     */
+    KnowledgeFileVO updateVisibility(Long id, Integer visibility);
+
+    /**
      * 分页查询知识库文件（带筛选）
      *
      * @param request 查询参数

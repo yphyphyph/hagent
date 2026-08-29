@@ -1,0 +1,23 @@
+# ============================================================
+# 生产环境差异化覆盖（--spring.profiles.active=prod 时生效）
+# 结构性配置（端口/数据源/Redis/OSS/认证等）统一在 application.yml，
+# 凭据经环境变量注入（清单见仓库 hagent-back/.env.example），此处仅保留生产差异项
+# ============================================================
+
+# 生产环境关闭 API 文档暴露，收口攻击面
+springdoc:
+  api-docs:
+    enabled: false
+  swagger-ui:
+    enabled: false
+
+# 生产环境关闭 SQL 控制台打印（覆盖 application.yml 的 StdOutImpl）
+mybatis-plus:
+  configuration:
+    log-impl: org.apache.ibatis.logging.nologging.NoLoggingImpl
+
+# 生产环境日志级别收敛
+logging:
+  level:
+    root: INFO
+    com.hagent: INFO

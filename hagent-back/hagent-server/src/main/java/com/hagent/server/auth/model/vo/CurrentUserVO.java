@@ -1,4 +1,4 @@
-package com.hagent.server.auth;
+package com.hagent.server.auth.model.vo;
 
 import lombok.Data;
 

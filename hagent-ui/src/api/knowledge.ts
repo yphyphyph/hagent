@@ -6,6 +6,10 @@ export interface KnowledgeFile {
   fileName?: string
   fileExt?: string
   fileSize?: number
+  /** 可见性：0=私有 1=公有 */
+  visibility?: number
+  /** 上传用户ID */
+  userId?: number
   vectorStatus?: number
   vectorStatusDesc?: string
   createdAt?: string
@@ -26,9 +30,10 @@ export const knowledgeApi = {
     )
     return data.list ?? []
   },
-  upload(file: File, onProgress?: (percent: number) => void): Promise<KnowledgeFile> {
+  upload(file: File, onProgress?: (percent: number) => void, visibility?: number): Promise<KnowledgeFile> {
     const form = new FormData()
     form.append('file', file)
+    if (visibility != null) form.append('visibility', String(visibility))
     return request.post('/admin/knowledge/upload', form, {
       headers: { 'Content-Type': 'multipart/form-data' },
       onUploadProgress: (e: AxiosProgressEvent) => {
@@ -37,6 +42,10 @@ export const knowledgeApi = {
         }
       },
     })
+  },
+  /** 切换文件可见性(0=私有 1=公有)，后端会自动重新向量化同步元数据 */
+  updateVisibility(id: number, visibility: number): Promise<KnowledgeFile> {
+    return request.put(`/admin/knowledge/files/${id}/visibility?visibility=${visibility}`)
   },
   remove(id: number): Promise<void> {
     return request.delete(`/admin/knowledge/files/${id}`)

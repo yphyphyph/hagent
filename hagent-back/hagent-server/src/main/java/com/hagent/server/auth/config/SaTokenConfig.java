@@ -1,7 +1,8 @@
-package com.hagent.server.auth;
+package com.hagent.server.auth.config;
 
 import cn.dev33.satoken.interceptor.SaInterceptor;
 import cn.dev33.satoken.stp.StpUtil;
+import com.hagent.server.auth.interceptor.UserContextInterceptor;
 import jakarta.servlet.DispatcherType;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Configuration;

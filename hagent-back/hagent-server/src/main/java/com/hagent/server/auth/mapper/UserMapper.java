@@ -1,7 +1,7 @@
 package com.hagent.server.auth.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
-import com.hagent.server.auth.UserDO;
+import com.hagent.server.auth.model.entity.UserDO;
 import org.apache.ibatis.annotations.Mapper;
 
 /**

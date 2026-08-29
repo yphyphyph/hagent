@@ -1,10 +1,15 @@
-package com.hagent.server.auth;
+package com.hagent.server.auth.service.impl;
 
 import cn.dev33.satoken.stp.StpUtil;
 import cn.hutool.crypto.digest.BCrypt;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.hagent.common.exception.BusinessException;
 import com.hagent.server.auth.mapper.UserMapper;
+import com.hagent.server.auth.model.dto.LoginRequest;
+import com.hagent.server.auth.model.entity.UserDO;
+import com.hagent.server.auth.model.vo.CurrentUserVO;
+import com.hagent.server.auth.model.vo.LoginVO;
+import com.hagent.server.auth.service.AuthService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;

@@ -2,6 +2,7 @@ package com.hagent.ai.core;
 
 import com.hagent.knowledge.entity.KnowledgeFile;
 import com.hagent.knowledge.mapper.KnowledgeFileMapper;
+import com.hagent.common.context.UserContext;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.document.Document;
@@ -134,6 +135,61 @@ public class RagService {
             LAST_HITS.remove();
             return List.of();
         }
+    }
+
+    /**
+     * 按用户可见性搜索相似文档（PostgreSQL 向量库原生过滤）
+     * <p>
+     * 权限已写入向量元数据（visibility/user_id/file_id 与 VectorStoreServiceImpl 一致）：
+     * 向量库原生 filterExpression 第一档过滤，仅召回 visibility == 1（公有）或 user_id == 当前用户的命中，
+     * 无用户身份时仅公有可见。公私切换由 vector_store 同库 jsonb_set 同步即时生效，无需重嵌入。
+     * PG 场景下 chunk_id 可能为 uuid，retainHitMetadata 已做 file_id/chunk_id 兜底。
+     *
+     * @param query     搜索查询文本
+     * @param topK      最终返回的 Top 结果数量
+     * @param threshold 相似度阈值
+     * @return 当前用户可见的匹配文档列表
+     * @author H
+     */
+    public List<Document> searchAccessible(String query, int topK, double threshold) {
+        try {
+            VectorStore vectorStore = aiModelProvider.getVectorStore();
+            if (vectorStore == null) {
+                log.warn("VectorStore不可用，RAG搜索已跳过");
+                return List.of();
+            }
+            Long userId = resolveCurrentUserId();
+            String filter = userId != null ? "visibility == 1 || user_id == " + userId : "visibility == 1";
+            SearchRequest request = SearchRequest.builder()
+                    .query(query)
+                    .topK(topK)
+                    .similarityThreshold(threshold)
+                    .filterExpression(filter)
+                    .build();
+            log.info("RAG可见性搜索（PG原生过滤）: query={}, topK={}, threshold={}, filter={}", query, topK, threshold, filter);
+            List<Document> results = vectorStore.similaritySearch(request);
+            // 保留命中元数据（PG 场景下 chunk_id 可能为 uuid，retainHitMetadata 已做 file_id/chunk_id 兜底）
+            retainHitMetadata(results);
+            incrementSearchCount();
+            log.info("RAG可见性搜索完成（PG原生过滤）: query={}, accessible={}", query, results.size());
+            return results;
+        } catch (Exception e) {
+            log.error("RAG可见性搜索失败: query={}", query, e);
+            // 异常时清空历史命中，避免脏数据被误用
+            LAST_HITS.remove();
+            return List.of();
+        }
+    }
+
+    /**
+     * 解析当前用户ID：聊天链路（UserContextHolder）优先，HTTP 请求链路（UserContext）兜底
+     */
+    private Long resolveCurrentUserId() {
+        Long userId = UserContextHolder.getUserId();
+        if (userId == null) {
+            userId = UserContext.getUserId();
+        }
+        return userId;
     }
 
     /**

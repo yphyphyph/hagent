@@ -46,6 +46,14 @@ public class KnowledgeFileVO implements Serializable {
     @Schema(description = "文件扩展名", example = "pdf")
     private String fileExt;
 
+    /** 可见性(0=私有 1=公有) */
+    @Schema(description = "可见性：0=私有 1=公有", example = "1")
+    private Integer visibility;
+
+    /** 上传用户ID */
+    @Schema(description = "上传用户ID", example = "1")
+    private Long userId;
+
     /** 向量状态：1=待处理，2=处理中，3=已完成，4=失败 */
     @Schema(description = "向量状态：1=待处理 2=处理中 3=已完成 4=失败", example = "3")
     private Integer vectorStatus;

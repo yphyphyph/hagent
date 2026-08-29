@@ -1,6 +1,7 @@
 package com.hagent.ai.service.impl;
 
 import com.hagent.ai.core.RagService;
+import org.springframework.jdbc.core.JdbcTemplate;
 import com.hagent.common.service.VectorStoreService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -9,6 +10,7 @@ import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 
 /**
@@ -24,25 +26,39 @@ import java.util.*;
 public class VectorStoreServiceImpl implements VectorStoreService {
 
     private final RagService ragService;
+    private final JdbcTemplate jdbcTemplate;
 
     @Override
     public void addDocuments(String fileId, String fileName, List<String> chunks) {
-        // 统一元数据键：file_id、file_name、chunk_index（与 RagService.retainHitMetadata 保持一致）
+        // 旧签名兜底：按公有处理
+        addDocuments(fileId, fileName, 1, null, chunks);
+    }
+
+    @Override
+    public void addDocuments(String fileId, String fileName, Integer visibility, Long userId, List<String> chunks) {
+        // 权限入向量库（第一档）：visibility/user_id 写入 metadata JSONB，检索侧原生 filterExpression
         if (fileName == null || fileName.isBlank()) {
             log.warn("向量化时 fileName 为空: fileId={}, 已保留 file_id 兜底查询路径", fileId);
         }
         List<Document> documents = new ArrayList<>();
         for (int i = 0; i < chunks.size(); i++) {
             Map<String, Object> metadata = new HashMap<>();
-            // 关键键：保持与检索端一致，避免 Unknown file
             metadata.put("file_id", fileId);
             metadata.put("file_name", fileName);
             metadata.put("chunk_index", i);
-            // 保留 source 仅作来源标识，不用于 file_name 解析主路径
+            // 权限字段入向量库（PG 第一档：原生过滤、同库 jsonb_set 同步）
+            metadata.put("visibility", visibility == null ? 1 : visibility);
+            if (userId != null) {
+                metadata.put("user_id", userId);
+            }
             metadata.put("source", "knowledge");
 
+            // PG vector_store.id 为 uuid 类型，旧字符串 id 会触发 PgVectorStore.convertIdToPgType 报 Invalid UUID
+            // 使用确定性 UUID（同 file 同 chunk 生成同 id），便于幂等覆盖与 deleteByFileId 后的可重现性
+            String rawId = "file-" + fileId + "-chunk-" + i;
+            String docId = UUID.nameUUIDFromBytes(rawId.getBytes(StandardCharsets.UTF_8)).toString();
             Document doc = new Document(
-                    "file-" + fileId + "-chunk-" + i,
+                    docId,
                     chunks.get(i),
                     metadata
             );
@@ -50,8 +66,8 @@ public class VectorStoreServiceImpl implements VectorStoreService {
         }
 
         ragService.addDocuments(documents);
-        log.info("已添加文档到向量存储: fileId={}, fileName={}, chunks={}, metadataKeys=[file_id, file_name, chunk_index]",
-                fileId, fileName, chunks.size());
+        log.info("已添加文档到向量存储: fileId={}, fileName={}, chunks={}, visibility={}, userId={}",
+                fileId, fileName, chunks.size(), visibility, userId);
     }
 
     @Override
@@ -75,5 +91,34 @@ public class VectorStoreServiceImpl implements VectorStoreService {
     public void deleteByFileId(String fileId) {
         ragService.deleteByFileId(fileId);
         log.info("已从向量存储删除文件: fileId={}", fileId);
+    }
+
+    @Override
+    public void updateMetadataByFileId(String fileId, Map<String, Object> patch) {
+        if (fileId == null || fileId.isEmpty() || patch == null || patch.isEmpty()) {
+            return;
+        }
+        try {
+            // 同库 jsonb_set 同步（切换公私即时生效，无需重嵌入）
+            for (Map.Entry<String, Object> entry : patch.entrySet()) {
+                String key = entry.getKey();
+                Object val = entry.getValue();
+                if (!"visibility".equals(key) && !"user_id".equals(key)) {
+                    continue;
+                }
+                int updated;
+                if ("visibility".equals(key)) {
+                    String sql = "UPDATE vector_store SET metadata = jsonb_set(metadata, '{visibility}', to_jsonb(?::int)::jsonb) WHERE metadata->>'file_id' = ?";
+                    updated = jdbcTemplate.update(sql, String.valueOf(val), fileId);
+                } else {
+                    String sql = "UPDATE vector_store SET metadata = jsonb_set(metadata, '{user_id}', to_jsonb(?::bigint)::jsonb) WHERE metadata->>'file_id' = ?";
+                    updated = jdbcTemplate.update(sql, String.valueOf(val), fileId);
+                }
+                log.info("vector_store 元数据已同步: fileId={}, key={}, value={}, updatedRows={}", fileId, key, val, updated);
+            }
+        } catch (Exception e) {
+            log.error("vector_store 元数据同步失败: fileId={}, patch={}", fileId, patch, e);
+            throw e;
+        }
     }
 }

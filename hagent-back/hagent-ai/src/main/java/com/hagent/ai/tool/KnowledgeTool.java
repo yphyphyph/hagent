@@ -48,7 +48,8 @@ public class KnowledgeTool {
             topK = MAX_TOP_K;
         }
         log.info("AI工具 - searchKnowledge: query={}, topK={}", query, topK);
-        List<Document> docs = ragService.search(query, topK, 0.25);
+        // 可见性过滤：公有文件全员可检索，私有文件仅上传人可检索
+        List<Document> docs = ragService.searchAccessible(query, topK, 0.25);
         return docs.stream()
                 .map(Document::getText)
                 .collect(Collectors.toList());

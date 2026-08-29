@@ -1,8 +1,13 @@
+server:
+  port: 8099
+
 spring:
   application:
     name: hagent-server
-  profiles:
-    active: dev
+  # 本地开发直接启动即可（默认无 profile）：本文件 + application-local.yml（不入 Git，覆盖真实凭据）
+  # 生产部署显式激活 prod：--spring.profiles.active=prod（关闭 swagger、SQL 日志）
+  config:
+    import: optional:classpath:application-local.yml
   servlet:
     multipart:
       # 单文件上传上限，与 KnowledgeServiceImpl.MAX_FILE_SIZE 对齐（避免默认 1MB 拦截）
@@ -10,20 +15,35 @@ spring:
       # 单次请求总大小上限（含其他表单字段）
       max-request-size: 25MB
   datasource:
-    # 数据源占位，实际值见 application-dev.yml / application-prod.yml
-    url: ${DB_URL:}
+    # PostgreSQL（凭据经环境变量注入；本地真实值可写 application-local.yml（不入 Git）覆盖）
+    # stringtype=unspecified：允许 Java 字符串直接写入 jsonb 列（tool_payload/sources）
+    url: ${DB_URL:jdbc:postgresql://${HAGENT_DB_HOST:127.0.0.1}:5432/hagent?stringtype=unspecified}
+    username: ${DB_USERNAME:postgres}
+    password: ${HAGENT_DB_PASSWORD:}
+    driver-class-name: org.postgresql.Driver
   data:
     redis:
-      # Redis 占位，实际值见 application-dev.yml；AI 向量库与 Token 黑名单使用 Jedis 客户端
+      # Redis 地址经环境变量注入（本地真实值见 application-local.yml，不入 Git）
+      # AI 向量库与 Token 黑名单使用 Jedis 客户端
       client-type: jedis
-      host: ${REDIS_HOST:}
-      port: ${REDIS_PORT:6379}
+      host: ${HAGENT_REDIS_HOST:127.0.0.1}
+      port: ${HAGENT_REDIS_PORT:6379}
+      password: ${HAGENT_REDIS_PASSWORD:}
   ai:
     # 仅为满足 spring-ai-openai 自动配置的启动校验；实际 ChatModel/EmbeddingModel 由 AI 模块
     # AiModelProvider 依据数据库 ai.* 配置自建，这里不参与真实调用
     openai:
       api-key: ${OPENAI_API_KEY:sk-placeholder-for-autoconfig}
       base-url: ${OPENAI_BASE_URL:https://api.xiaomimimo.com/v1}
+
+# 阿里云 OSS（知识库文件上传）
+aliyun:
+  oss:
+    endpoint: oss-cn-shenzhen.aliyuncs.com
+    # 凭据经环境变量注入（本地真实值见 application-local.yml，不入 Git）
+    access-key-id: ${HAGENT_OSS_ACCESS_KEY_ID:}
+    access-key-secret: ${HAGENT_OSS_ACCESS_KEY_SECRET:}
+    bucket-name: yphbucket
 
 # JWT 占位配置（HAgent 主鉴权使用 Sa-Token；此处仅为满足 common 模块 JwtProperties 启动校验）
 hui:
@@ -46,13 +66,15 @@ sa-token:
 mybatis-plus:
   configuration:
     map-underscore-to-camel-case: true
+    # 本地开发打印 SQL 便于排查；prod profile 已覆盖为 NoLoggingImpl
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
   global-config:
     db-config:
       logic-delete-field: deleted
       logic-delete-value: 1
       logic-not-delete-value: 0
 
-# SpringDoc 开关
+# SpringDoc 开关（生产环境由 application-prod.yml 关闭）
 springdoc:
   api-docs:
     enabled: true

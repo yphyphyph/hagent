@@ -48,8 +48,7 @@ public class AiConfig {
         embedding.setModel(getConfigValue("ai.embedding.model", "text-embedding-v4"));
 
         // VectorStore config
-        vectorStore.setIndexName(getConfigValue("ai.vector-index", "hagent_rag"));
-        vectorStore.setPrefix("hui:rag:");
+        vectorStore.setDimension(Integer.parseInt(getConfigValue("ai.vector-dimension", "1024")));
 
         // Memory config
         memory.setMemoriesRootDirectory("/data/hagent/memories");
@@ -89,10 +88,8 @@ public class AiConfig {
 
     @Data
     public static class VectorStore {
-        /** 索引名称 */
-        private String indexName = "hagent_rag";
-        /** Redis Key前缀 */
-        private String prefix = "hui:rag:";
+        /** 向量维度（需与 embedding 模型输出一致；text-embedding-v3/v4 默认 1024） */
+        private int dimension = 1024;
     }
 
     @Data

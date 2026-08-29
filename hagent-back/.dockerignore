@@ -1,46 +1,9 @@
-# ============================================================
-# HAgent Backend - Docker Ignore
-# ============================================================
+# 本地密钥文件严禁进入镜像
+**/application-local.yml
 
-# IDE
+# 构建产物与本地环境
+**/target/
 .idea/
-.vscode/
 *.iml
-*.iws
-*.ipr
-
-# Git
-.git/
-.gitignore
-
-# Build outputs
-target/
-*.class
-*.jar
-*.war
-
-# Logs
-*.log
-logs/
-
-# OS files
-.DS_Store
-Thumbs.db
-
-# Docker
-Dockerfile
-.dockerignore
-docker-compose*.yml
-
-# Documentation
-docs/
-*.md
-LICENSE
-
-# Test
-**/src/test/
-
-# Maven wrapper (if exists)
-.mvn/
-mvnw
-mvnw.cmd
+.env
+.env.local

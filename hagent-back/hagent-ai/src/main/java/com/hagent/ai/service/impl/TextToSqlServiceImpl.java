@@ -63,19 +63,19 @@ public class TextToSqlServiceImpl implements TextToSqlService {
     private static final Duration THINKING_DELAY = Duration.ofMillis(30);
 
     /**
-     * 系统提示词模板：允许 SELECT/INSERT/UPDATE/DELETE，受控生成单条语句
+     * 系统提示词模板：允许 SELECT/INSERT/UPDATE/DELETE，受控生成单条语句（PostgreSQL 方言）
      * 提示词中的 LIMIT 100 对应 {@link #MAX_RESULT_ROWS}，与校验器 {@code SqlSecurityValidator#DEFAULT_MAX_ROWS} 保持一致
      */
     private static final String SYSTEM_PROMPT_TEMPLATE = """
-            你是一个 SQL 专家。根据用户的自然语言问题，生成对应的 MySQL 语句.
+            你是一个 PostgreSQL 专家。根据用户的自然语言问题，生成对应的 PostgreSQL 语句.
 
             %s
 
             规则：
             1. 只允许生成单条 SELECT / INSERT / UPDATE / DELETE 语句，禁止生成 DDL/DCL（DROP/TRUNCATE/ALTER/CREATE等）、多语句或注释
             2. SELECT 查询必须添加 WHERE deleted = 0 条件，且必须包含 LIMIT 子句（最多100行）；若用户未指定数量则默认 LIMIT 100
-            3. UPDATE / DELETE 必须包含 WHERE 条件，禁止全表操作，且必须包含 LIMIT 100
-            4. 使用标准 MySQL 语法，字段名使用下划线命名法（如 order_no、created_at），日期函数使用 MySQL 标准函数（NOW()、DATE()、YEAR()、MONTH()）
+            3. UPDATE / DELETE 必须包含 WHERE 条件，禁止全表操作
+            4. 使用标准 PostgreSQL 语法，字段名使用下划线命名法（如 order_no、created_at）；日期时间使用 NOW()/CURRENT_DATE/DATE_TRUNC('day', col)/EXTRACT(YEAR FROM col)/EXTRACT(MONTH FROM col)，模糊匹配用 ILIKE，字符串拼接用 ||，空值处理用 COALESCE（禁用 MySQL 的 DATE()/YEAR()/MONTH()/DATE_FORMAT/IFNULL）
             5. 涉及金额的字段使用 DECIMAL 类型，保留2位小数；统计查询使用合适的聚合函数（SUM、COUNT、AVG、MAX、MIN），排序默认 DESC 降序
             6. 只返回 SQL 语句本身，不要包含任何解释、注释或 markdown 标记
             7. 如果问题无法用 SQL 回答，返回 "ERROR: 无法回答此问题"

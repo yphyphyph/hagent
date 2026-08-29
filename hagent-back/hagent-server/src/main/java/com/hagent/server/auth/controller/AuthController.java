@@ -1,6 +1,11 @@
-package com.hagent.server.auth;
+package com.hagent.server.auth.controller;
 
 import com.hagent.common.Result;
+import com.hagent.common.annotation.OperationLog;
+import com.hagent.server.auth.model.dto.LoginRequest;
+import com.hagent.server.auth.model.vo.CurrentUserVO;
+import com.hagent.server.auth.model.vo.LoginVO;
+import com.hagent.server.auth.service.AuthService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -35,6 +40,7 @@ public class AuthController {
      */
     @PostMapping("/login")
     @Operation(summary = "登录", description = "使用用户名密码登录，成功返回 Sa-Token")
+    @OperationLog(module = "auth", operationType = "LOGIN", description = "用户登录", saveParams = true, saveResult = false)
     public Result<LoginVO> login(@Valid @RequestBody LoginRequest request) {
         return Result.success(authService.login(request));
     }

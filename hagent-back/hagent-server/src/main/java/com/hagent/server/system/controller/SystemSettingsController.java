@@ -1,4 +1,4 @@
-package com.hagent.server.controller;
+package com.hagent.server.system.controller;
 
 import com.hagent.ai.config.AiConfig;
 import com.hagent.ai.core.AiModelProvider;

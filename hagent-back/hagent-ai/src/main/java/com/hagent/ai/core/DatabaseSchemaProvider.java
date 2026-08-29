@@ -1,5 +1,6 @@
 package com.hagent.ai.core;
 
+import com.alibaba.druid.DbType;
 import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -13,8 +14,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 /**
- * 数据库表结构提供者
- * 读取数据库元数据，生成 Schema 描述供 AI 理解
+ * 数据库表结构提供者（PostgreSQL）
+ * 读取 pg_catalog 元数据，生成 Schema 描述供 AI 理解，方言为 {@link DbType#postgresql}
  *
  * @author H
  */
@@ -22,11 +23,15 @@ import java.util.stream.Collectors;
 @Component
 public class DatabaseSchemaProvider {
 
+    /** 方言标记：PostgreSQL（与 SqlSecurityValidator 保持一致） */
+    @SuppressWarnings("unused")
+    private static final DbType DB_TYPE = DbType.postgresql;
+
     private final JdbcTemplate jdbcTemplate;
 
-    /** 允许查询的表白名单（不含 user 表，防止读取密码哈希等敏感信息） */
+    /** 允许查询的表白名单（PostgreSQL，不含 visit_stat 与 user 表，防止读取敏感信息） */
     private static final List<String> ALLOWED_TABLES = List.of(
-            "chat_conversation", "chat_message", "knowledge_file", "ai_prompt", "visit_stat"
+            "chat_conversation", "chat_message", "knowledge_file", "ai_prompt"
     );
 
     /** 表结构缓存（兼容旧字段，实际以内存缓存为准） */
@@ -97,13 +102,13 @@ public class DatabaseSchemaProvider {
 
         // 缓存未命中或已过期
         if (cached == null) {
-            log.info("Schema 缓存未命中（首次加载或已被清除），准备查询 information_schema");
+            log.info("Schema 缓存未命中（首次加载或已被清除），准备查询 pg_catalog");
         } else {
             log.info("Schema 缓存已过期（距上次更新 {}ms，TTL={}ms），重新加载", now - lastUpdateTimestamp, CACHE_TTL_MILLIS);
         }
-        log.debug("Schema cache miss, querying information_schema");
+        log.debug("Schema cache miss, querying pg_catalog");
 
-        // 同步刷新，避免并发下多次查询 information_schema
+        // 同步刷新，避免并发下多次查询 pg_catalog
         synchronized (this) {
             // 双重检查：进入同步块后再次判断，避免并发重复刷新
             long nowInner = System.currentTimeMillis();
@@ -167,32 +172,44 @@ public class DatabaseSchemaProvider {
     }
 
     /**
-     * 获取表注释
+     * 获取表注释（PostgreSQL：obj_description）
      */
     private String getTableComment(String tableName) {
         try {
-            String sql = """
-                    SELECT TABLE_COMMENT
-                    FROM INFORMATION_SCHEMA.TABLES
-                    WHERE TABLE_SCHEMA = DATABASE()
-                    AND TABLE_NAME = ?
-                    """;
-            return jdbcTemplate.queryForObject(sql, String.class, tableName);
+            // PostgreSQL 表注释：obj_description('表名'::regclass)，需用 regclass 解析当前 search_path 下的表
+            String sql = "SELECT obj_description(?::regclass)";
+            String comment = jdbcTemplate.queryForObject(sql, String.class, tableName);
+            return comment != null ? comment : tableName;
         } catch (Exception e) {
             return tableName;
         }
     }
 
     /**
-     * 获取列信息
+     * 获取列信息（PostgreSQL：pg_catalog + col_description + pg_index 主键判定）
+     * 类型取 data_type/udt_name 语义（此处用 format_type 展开含长度精度），注释用 col_description
      */
     private List<ColumnInfo> getColumnInfo(String tableName) {
+        // PostgreSQL 列信息：pg_attribute + pg_class + col_description + pg_index 主键判定，类型用 format_type（等价 data_type/udt_name 展开）
         String sql = """
-                SELECT COLUMN_NAME, COLUMN_TYPE, COLUMN_COMMENT, IS_NULLABLE, COLUMN_KEY
-                FROM INFORMATION_SCHEMA.COLUMNS
-                WHERE TABLE_SCHEMA = DATABASE()
-                AND TABLE_NAME = ?
-                ORDER BY ORDINAL_POSITION
+                SELECT
+                    a.attname AS "COLUMN_NAME",
+                    format_type(a.atttypid, a.atttypmod) AS "COLUMN_TYPE",
+                    col_description(c.oid, a.attnum) AS "COLUMN_COMMENT",
+                    CASE WHEN a.attnotnull THEN 'NO' ELSE 'YES' END AS "IS_NULLABLE",
+                    CASE WHEN EXISTS (
+                        SELECT 1 FROM pg_index i
+                        WHERE i.indrelid = c.oid
+                          AND i.indisprimary
+                          AND a.attnum = ANY(i.indkey)
+                    ) THEN 'PRI' ELSE '' END AS "COLUMN_KEY"
+                FROM pg_class c
+                JOIN pg_attribute a ON a.attrelid = c.oid
+                WHERE c.relname = ?
+                  AND c.relkind IN ('r','p')
+                  AND a.attnum > 0
+                  AND NOT a.attisdropped
+                ORDER BY a.attnum
                 """;
 
         List<Map<String, Object>> rows = jdbcTemplate.queryForList(sql, tableName);
@@ -237,13 +254,14 @@ public class DatabaseSchemaProvider {
             sb.append("\n");
         }
 
-        // 添加常用查询示例
-        sb.append("常用查询示例：\n");
+        // 添加常用查询示例（PostgreSQL 语法）
+        sb.append("常用查询示例（PostgreSQL）：\n");
         sb.append("- 统计AI会话数: SELECT COUNT(*) FROM chat_conversation WHERE deleted = 0\n");
-        sb.append("- 按日期统计会话: SELECT DATE(created_at) as date, COUNT(*) as count FROM chat_conversation WHERE deleted = 0 GROUP BY DATE(created_at)\n");
-        sb.append("- 查询知识库文件: SELECT * FROM knowledge_file WHERE deleted = 0 ORDER BY created_at DESC LIMIT N\n");
+        sb.append("- 按日期统计会话: SELECT DATE_TRUNC('day', created_at) as date, COUNT(*) as count FROM chat_conversation WHERE deleted = 0 GROUP BY DATE_TRUNC('day', created_at)\n");
+        sb.append("- 今日会话: SELECT COUNT(*) FROM chat_conversation WHERE created_at >= CURRENT_DATE AND deleted = 0\n");
+        sb.append("- 查询知识库文件: SELECT * FROM knowledge_file WHERE deleted = 0 ORDER BY created_at DESC LIMIT 100\n");
         sb.append("- 按状态统计知识库文件: SELECT status, COUNT(*) as count FROM knowledge_file WHERE deleted = 0 GROUP BY status\n");
-        sb.append("- 查询提示词: SELECT * FROM ai_prompt WHERE deleted = 0 AND status = 1\n");
+        sb.append("- 查询提示词: SELECT * FROM ai_prompt WHERE deleted = 0 AND status = 1 LIMIT 100\n");
 
         return sb.toString();
     }

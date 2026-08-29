@@ -28,6 +28,19 @@ public interface VectorStoreService {
     List<Map<String, Object>> search(String query, int topK);
 
     /**
+     * 添加文档到向量存储（带可见性，权限入向量库第一档）
+     */
+    void addDocuments(String fileId, String fileName, Integer visibility, Long userId, List<String> chunks);
+
+    /**
+     * 同库同步向量元数据（切公私即时生效，jsonb_set 单条 UPDATE）
+     *
+     * @param fileId 文件ID
+     * @param patch  要覆盖的元数据键值（支持 visibility/user_id）
+     */
+    void updateMetadataByFileId(String fileId, Map<String, Object> patch);
+
+    /**
      * 按文件ID删除向量
      *
      * @param fileId 文件ID

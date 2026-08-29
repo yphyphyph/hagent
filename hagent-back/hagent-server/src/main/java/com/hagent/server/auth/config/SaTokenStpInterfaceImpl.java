@@ -1,8 +1,8 @@
-package com.hagent.server.auth;
+package com.hagent.server.auth.config;
 
-import cn.dev33.satoken.interceptor.SaInterceptor;
 import cn.dev33.satoken.stp.StpInterface;
 import com.hagent.server.auth.mapper.UserMapper;
+import com.hagent.server.auth.model.entity.UserDO;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
