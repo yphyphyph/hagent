@@ -35,7 +35,7 @@ services:
 
   frontend:
     build:
-      context: ./hagent-ui
+      context: ./hagent-front
       dockerfile: Dockerfile
     container_name: hagent-frontend
     ports:
