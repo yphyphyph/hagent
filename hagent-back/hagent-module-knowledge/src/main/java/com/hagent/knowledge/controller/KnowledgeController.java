@@ -167,4 +167,30 @@ public class KnowledgeController {
     public Result<Map<String, Object>> health() {
         return Result.success(knowledgeService.health());
     }
+
+    /**
+     * 过期向量统计（快照精确过期）
+     *
+     * @return 含 outdatedCount 的统计
+     */
+    @GetMapping("/outdated-stats")
+    @Operation(summary = "过期向量统计", description = "按 embedding_model/embedding_dimension 快照判定过期数量")
+    @ApiResponse(responseCode = "200", description = "查询成功")
+    public Result<Map<String, Object>> outdatedStats() {
+        return Result.success(knowledgeService.outdatedStats());
+    }
+
+    /**
+     * 一键重向量化过期文件（纯服务端重算，不重传）
+     *
+     * @param ids 可选，传空即全部过期
+     * @return 含 total/queued 的结果
+     */
+    @PostMapping("/revectorize-outdated")
+    @Operation(summary = "一键重向量化过期文件", description = "按快照判定过期文件，仅服务端重算向量，不重新上传")
+    @ApiResponse(responseCode = "200", description = "操作成功")
+    public Result<Map<String, Object>> revectorizeOutdated(@RequestBody(required = false) Map<String, List<Long>> body) {
+        List<Long> ids = body != null ? body.get("ids") : null;
+        return Result.success(knowledgeService.revectorizeOutdated(ids));
+    }
 }

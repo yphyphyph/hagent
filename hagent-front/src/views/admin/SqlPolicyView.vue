@@ -255,6 +255,9 @@ const columns: DataTableColumns<PolicyRow> = [
   flex-direction: column;
   gap: 16px;
 }
+.policy-card {
+  width: 100%;
+}
 .policy-card :deep(.n-card-header) {
   align-items: flex-start;
 }

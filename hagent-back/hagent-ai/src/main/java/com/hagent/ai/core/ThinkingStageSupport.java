@@ -205,24 +205,54 @@ public class ThinkingStageSupport {
      *
      * @param sink          SSE 事件sink
      * @param thinkingChunk 本次思考增量
+     * @return 实际写入的增量片段（用于调用方去重累积，已切分时为拼接后的 chunk）
      */
-    public void emitThinkingToSink(FluxSink<String> sink, String thinkingChunk) {
+    public String emitThinkingToSink(FluxSink<String> sink, String thinkingChunk) {
         if (thinkingChunk == null || thinkingChunk.isEmpty()) {
-            return;
+            return null;
         }
         if (thinkingChunk.length() <= 50) {
             // 小增量直接发射，体现流式 delta 透传
             sink.next(wrapThinking(thinkingChunk));
-            return;
+            return thinkingChunk;
         }
         for (String piece : splitThinking(thinkingChunk, THINKING_CHUNK_SIZE)) {
             // 客户端断连后停止发射
             if (sink.isCancelled()) {
-                return;
+                return null;
             }
             sink.next(wrapThinking(piece));
             sleepQuietly(THINKING_DELAY.toMillis());
         }
+        return thinkingChunk;
+    }
+
+    /**
+     * 计算思考增量的去重后新增部分
+     * 兼容两种网关行为：delta（仅新增）与全量重放（每次返回已见的完整 thinking）。
+     * 若新帧以旧累积为前缀，则仅返回新增后缀；否则视为新 delta 原样返回
+     *
+     * @param prevAccum 已累积的 thinking
+     * @param newChunk  本次提取的 thinking 帧
+     * @return 去重后的新增部分，重复/空时返回 null
+     * @author H
+     */
+    public static String dedupThinkingDelta(String prevAccum, String newChunk) {
+        if (newChunk == null || newChunk.isEmpty()) {
+            return null;
+        }
+        if (prevAccum == null || prevAccum.isEmpty()) {
+            return newChunk;
+        }
+        if (newChunk.equals(prevAccum)) {
+            return null;
+        }
+        if (newChunk.startsWith(prevAccum)) {
+            String delta = newChunk.substring(prevAccum.length());
+            return delta.isEmpty() ? null : delta;
+        }
+        // 非前缀的新内容：可能是不同阶段的独立 thinking，视为新 delta
+        return newChunk;
     }
 
     /**

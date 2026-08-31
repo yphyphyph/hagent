@@ -80,3 +80,16 @@ springdoc:
     enabled: true
   swagger-ui:
     enabled: true
+
+# 混合检索（PG tsvector 双路 + RRF k=20，等权融合，一键退化为纯向量）
+hagent:
+  hybrid:
+    enabled: true
+    rrf-k: 20
+    timeout-ms: 3000
+    weights:
+      vector: 1.0
+      keyword: 1.0
+    keyword:
+      top-k: 20
+      min-keyword-length: 2

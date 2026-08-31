@@ -78,6 +78,14 @@ public class KnowledgeFileVO implements Serializable {
     @Schema(description = "处理失败错误信息")
     private String errorMessage;
 
+    /** 向量化快照：embedding 模型 */
+    @Schema(description = "向量化快照：embedding 模型", example = "text-embedding-v4")
+    private String embeddingModel;
+
+    /** 向量化快照：向量维度 */
+    @Schema(description = "向量化快照：向量维度", example = "1024")
+    private Integer embeddingDimension;
+
     /** 创建时间戳 */
     @Schema(description = "创建时间")
     private LocalDateTime createdAt;

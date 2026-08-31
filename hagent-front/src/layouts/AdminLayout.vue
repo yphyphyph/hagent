@@ -37,7 +37,7 @@
             <n-button size="small" quaternary @click="onLogout">退出</n-button>
           </div>
         </n-layout-header>
-        <n-layout-content class="admin-content" content-style="padding: 24px;">
+        <n-layout-content class="admin-content" content-style="padding: 24px 32px;">
           <router-view />
         </n-layout-content>
       </n-layout>
@@ -148,5 +148,15 @@ async function onLogout() {
 }
 .admin-content {
   background: var(--bg);
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+.admin-content :deep(.n-layout-scroll-container) {
+  width: 100%;
+  /* 原 max-width: 1280px 会在 >1500px 宽屏上把内容居中限宽，左右各留 200px+ 空白，
+     与「铺满」诉求冲突，去掉上限 */
+  margin: 0 auto;
+  box-sizing: border-box;
 }
 </style>

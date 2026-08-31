@@ -65,7 +65,7 @@
             <version>0.10.0</version>
         </dependency>
 
-        <!-- JSON Schema Module for Jackson (must match Spring AI 2.0.0 GA's dependency) -->
+        <!-- JSON Schema Module for Jackson (must match Spring AI 2.0.1 GA's dependency) -->
         <dependency>
             <groupId>com.github.victools</groupId>
             <artifactId>jsonschema-module-jackson</artifactId>

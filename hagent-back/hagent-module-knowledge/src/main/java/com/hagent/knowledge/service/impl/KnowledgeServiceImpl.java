@@ -15,6 +15,8 @@ import com.hagent.knowledge.enums.VectorStatusEnum;
 import com.hagent.knowledge.mapper.KnowledgeFileMapper;
 import com.hagent.knowledge.service.KnowledgeService;
 import com.hagent.knowledge.service.KnowledgeVectorizeRunner;
+import com.hagent.common.mapper.SystemConfigMapper;
+import com.hagent.common.entity.SystemConfig;
 import com.hagent.knowledge.util.AliOssUtil;
 import com.hagent.knowledge.util.DocumentTextExtractor;
 import com.hagent.knowledge.util.SemanticChunker;
@@ -82,6 +84,7 @@ public class KnowledgeServiceImpl extends ServiceImpl<KnowledgeFileMapper, Knowl
     private final SemanticChunker semanticChunker;
     private final KnowledgeVectorizeRunner vectorizeRunner;
     private final StringRedisTemplate stringRedisTemplate;
+    private final SystemConfigMapper systemConfigMapper;
 
     public KnowledgeServiceImpl(OssConfig ossConfig,
                                 @Lazy @Autowired(required = false) AliOssUtil aliOssUtil,
@@ -89,7 +92,8 @@ public class KnowledgeServiceImpl extends ServiceImpl<KnowledgeFileMapper, Knowl
                                 @Autowired(required = false) StringRedisTemplate stringRedisTemplate,
                                 DocumentTextExtractor documentTextExtractor,
                                 SemanticChunker semanticChunker,
-                                KnowledgeVectorizeRunner vectorizeRunner) {
+                                KnowledgeVectorizeRunner vectorizeRunner,
+                                @Lazy @Autowired(required = false) SystemConfigMapper systemConfigMapper) {
         this.ossConfig = ossConfig;
         this.aliOssUtil = aliOssUtil;
         this.vectorStoreService = vectorStoreService;
@@ -97,6 +101,7 @@ public class KnowledgeServiceImpl extends ServiceImpl<KnowledgeFileMapper, Knowl
         this.documentTextExtractor = documentTextExtractor;
         this.semanticChunker = semanticChunker;
         this.vectorizeRunner = vectorizeRunner;
+        this.systemConfigMapper = systemConfigMapper;
     }
 
     @Override
@@ -338,15 +343,30 @@ public class KnowledgeServiceImpl extends ServiceImpl<KnowledgeFileMapper, Knowl
                 log.warn("VectorStoreService不可用，跳过向量存储");
             }
 
-            // 7. 更新状态为已完成，向量版本号自增（单次 DB 写操作，无需事务保护）
+            // 7. 更新状态为已完成，向量版本号自增，快照当前 embedding 模型与维度（纯服务端重算，无需重传）
             knowledgeFile.setVectorStatus(VectorStatusEnum.COMPLETED.getCode());
             knowledgeFile.setChunkCount(chunks.size());
             knowledgeFile.setTokenCount(content.length() / 4); // 粗略估计
             knowledgeFile.setVectorVersion(
                     (knowledgeFile.getVectorVersion() == null ? 0 : knowledgeFile.getVectorVersion()) + 1);
+            knowledgeFile.setEmbeddingModel(getCurrentEmbeddingModel());
+            knowledgeFile.setEmbeddingDimension(getCurrentEmbeddingDimension());
+            knowledgeFile.setErrorMessage(null);
             knowledgeFile.setUpdatedAt(LocalDateTime.now());
             knowledgeFile.setUpdatedBy(UserContext.getUsername());
-            super.updateById(knowledgeFile);
+            // updateById 默认忽略 null 字段（NOT_NULL 策略），error_message 无法置空，
+            // 成功后需用 UpdateWrapper 显式 SET NULL 清除历史失败信息（如旧版 UUID 错误）
+            super.update(new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<KnowledgeFile>()
+                    .eq(KnowledgeFile::getId, id)
+                    .set(KnowledgeFile::getVectorStatus, VectorStatusEnum.COMPLETED.getCode())
+                    .set(KnowledgeFile::getChunkCount, chunks.size())
+                    .set(KnowledgeFile::getTokenCount, knowledgeFile.getTokenCount())
+                    .set(KnowledgeFile::getVectorVersion, knowledgeFile.getVectorVersion())
+                    .set(KnowledgeFile::getEmbeddingModel, knowledgeFile.getEmbeddingModel())
+                    .set(KnowledgeFile::getEmbeddingDimension, knowledgeFile.getEmbeddingDimension())
+                    .set(KnowledgeFile::getErrorMessage, null)
+                    .set(KnowledgeFile::getUpdatedAt, LocalDateTime.now())
+                    .set(KnowledgeFile::getUpdatedBy, UserContext.getUsername()));
 
             log.info("向量化完成: id={}, chunks={}, tokens={}, version={}",
                     id, chunks.size(), knowledgeFile.getTokenCount(), knowledgeFile.getVectorVersion());
@@ -550,6 +570,88 @@ public class KnowledgeServiceImpl extends ServiceImpl<KnowledgeFileMapper, Knowl
         return health;
     }
 
+    @Override
+    public Map<String, Object> outdatedStats() {
+        String curModel = getCurrentEmbeddingModel();
+        Integer curDim = getCurrentEmbeddingDimension();
+        LambdaQueryWrapper<KnowledgeFile> w = new LambdaQueryWrapper<>();
+        w.eq(KnowledgeFile::getDeleted, 0);
+        w.eq(KnowledgeFile::getVectorStatus, VectorStatusEnum.COMPLETED.getCode());
+        w.and(q -> {
+            q.isNull(KnowledgeFile::getEmbeddingModel)
+             .or().ne(curModel != null, KnowledgeFile::getEmbeddingModel, curModel)
+             .or().isNull(KnowledgeFile::getEmbeddingDimension)
+             .or().ne(curDim != null, KnowledgeFile::getEmbeddingDimension, curDim);
+        });
+        long outdatedCount = super.count(w);
+        Map<String, Object> result = new HashMap<>();
+        result.put("outdatedCount", outdatedCount);
+        result.put("currentModel", curModel);
+        result.put("currentDimension", curDim);
+        return result;
+    }
+
+    @Override
+    public Map<String, Object> revectorizeOutdated(List<Long> ids) {
+        String curModel = getCurrentEmbeddingModel();
+        Integer curDim = getCurrentEmbeddingDimension();
+        LambdaQueryWrapper<KnowledgeFile> w = new LambdaQueryWrapper<>();
+        w.eq(KnowledgeFile::getDeleted, 0);
+        w.eq(KnowledgeFile::getVectorStatus, VectorStatusEnum.COMPLETED.getCode());
+        w.and(q -> {
+            q.isNull(KnowledgeFile::getEmbeddingModel)
+             .or().ne(curModel != null, KnowledgeFile::getEmbeddingModel, curModel)
+             .or().isNull(KnowledgeFile::getEmbeddingDimension)
+             .or().ne(curDim != null, KnowledgeFile::getEmbeddingDimension, curDim);
+        });
+        w.ne(KnowledgeFile::getVectorStatus, VectorStatusEnum.PROCESSING.getCode());
+        if (ids != null && !ids.isEmpty()) {
+            w.in(KnowledgeFile::getId, ids);
+        }
+        List<KnowledgeFile> outdated = super.list(w);
+        int total = outdated.size();
+        int queued = 0;
+        String actor = UserContext.getUsername();
+        for (KnowledgeFile f : outdated) {
+            if (VectorStatusEnum.PROCESSING.getCode().equals(f.getVectorStatus())) {
+                continue;
+            }
+            try {
+                vectorizeRunner.runAsync(f.getId(), actor);
+                queued++;
+            } catch (Exception e) {
+                log.warn("加入重向量化队列失败: id={}, error={}", f.getId(), e.getMessage());
+            }
+        }
+        log.info("一键重向量化已入队: total={}, queued={}, currentModel={}, currentDim={}", total, queued, curModel, curDim);
+        Map<String, Object> result = new HashMap<>();
+        result.put("total", total);
+        result.put("queued", queued);
+        return result;
+    }
+
+    private String getCurrentEmbeddingModel() {
+        try {
+            SystemConfig sc = systemConfigMapper.selectOne(new LambdaQueryWrapper<SystemConfig>()
+                    .eq(SystemConfig::getConfigKey, "ai.embedding.model")
+                    .eq(SystemConfig::getDeleted, 0));
+            return sc != null ? sc.getConfigValue() : null;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private Integer getCurrentEmbeddingDimension() {
+        try {
+            SystemConfig sc = systemConfigMapper.selectOne(new LambdaQueryWrapper<SystemConfig>()
+                    .eq(SystemConfig::getConfigKey, "ai.vector-dimension")
+                    .eq(SystemConfig::getDeleted, 0));
+            return sc != null && sc.getConfigValue() != null ? Integer.parseInt(sc.getConfigValue().trim()) : null;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     /**
      * 按向量状态统计数量
      */
@@ -579,6 +681,8 @@ public class KnowledgeServiceImpl extends ServiceImpl<KnowledgeFileMapper, Knowl
         vo.setChunkCount(entity.getChunkCount());
         vo.setTokenCount(entity.getTokenCount());
         vo.setErrorMessage(entity.getErrorMessage());
+        vo.setEmbeddingModel(entity.getEmbeddingModel());
+        vo.setEmbeddingDimension(entity.getEmbeddingDimension());
         vo.setCreatedAt(entity.getCreatedAt());
         vo.setCreatedBy(entity.getCreatedBy());
         return vo;

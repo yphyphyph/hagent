@@ -17,6 +17,7 @@ import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -178,30 +179,35 @@ public class TextToSqlServiceImpl implements TextToSqlService {
         messages.add(new SystemMessage(systemPrompt));
         messages.add(new UserMessage(question));
 
-        try {
-            ChatModel chatModel = aiModelProvider.getChatModel();
-            // 尝试真流式获取 thinking：优先使用 chatModel.stream() 增量获取 thinking delta 并立即发射
-            // 若 streaming API 可用，thinking 将在流式回调中通过 extractThinking 提取并以 THINKING_DELAY 分散发射
-            // 此处 generateSql 为同步工具调用，保持 call() 返回 SQL，同时记录 thinking 供后续流式包装使用
-            ChatResponse response = chatModel.call(new Prompt(messages));
-            // 提取思考内容（兼容 reasoning_content / thinking 等键），若存在则可通过 thinkingFluxWithDelay 延迟分散发射
-            String thinking = extractThinking(response);
-            if (thinking != null && !thinking.isEmpty()) {
-                // thinking 采用 30 字符分片 + 30ms 间隔的模拟流式，确保前端时间分散；真流式场景由 streamGenerateSql 透传 delta
-                log.debug("TextToSql 捕获思考内容: length={}, 将通过延迟分片模拟流式 (chunk={}, delay={})", thinking.length(), THINKING_CHUNK_SIZE, THINKING_DELAY);
-                // 注意：同步的 generateSql 不直接发射 SSE，若上层需要流式展示，可调用 streamGenerateSqlThinking(question) 获取 Flux<thinking>
-            }
-            AssistantMessage assistantMessage = response.getResult().getOutput();
-            String sql = assistantMessage.getText().trim();
-
-            // 清理 SQL（去除可能的 markdown 代码块标记）
-            sql = cleanSql(sql);
-
-            return sql;
-        } catch (Exception e) {
-            log.error("AI生成SQL失败", e);
-            return "ERROR: AI服务异常，请稍后重试";
+        // 多级降级：按 order 0..N 逐级重试，每级仅一次，总重试 N 次，不循环，全部失败抛最后异常
+        List<ChatModel> ordered = aiModelProvider.getChatModels();
+        if (ordered == null || ordered.isEmpty()) {
+            ordered = List.of(aiModelProvider.getChatModel());
         }
+        Exception lastEx = null;
+        for (int i = 0; i < ordered.size(); i++) {
+            ChatModel chatModel = ordered.get(i);
+            try {
+                ChatResponse response = chatModel.call(new Prompt(messages));
+                String thinking = extractThinking(response);
+                if (thinking != null && !thinking.isEmpty()) {
+                    log.debug("TextToSql 捕获思考内容: length={}, 将通过延迟分片模拟流式 (chunk={}, delay={})", thinking.length(), THINKING_CHUNK_SIZE, THINKING_DELAY);
+                }
+                AssistantMessage assistantMessage = response.getResult().getOutput();
+                String sql = assistantMessage.getText().trim();
+                sql = cleanSql(sql);
+                return sql;
+            } catch (Exception e) {
+                lastEx = e;
+                if (i < ordered.size() - 1) {
+                    ChatModel next = ordered.get(i + 1);
+                    String nextName = next instanceof OpenAiChatModel m ? m.getOptions().getModel() : next.getClass().getSimpleName();
+                    log.warn("fallback to level {}/{} {}", i, i + 1, nextName, e);
+                }
+            }
+        }
+        log.error("AI生成SQL失败，已尝试所有模型", lastEx);
+        return "ERROR: AI服务异常，请稍后重试";
     }
 
     /**
@@ -222,10 +228,15 @@ public class TextToSqlServiceImpl implements TextToSqlService {
         List<Message> messages = new ArrayList<>();
         messages.add(new SystemMessage(systemPrompt));
         messages.add(new UserMessage(question));
-        ChatModel chatModel = aiModelProvider.getChatModel();
+        // 多级降级：按 order 0..N 选择首个可用流式模型，失败逐级 fallback
+        List<ChatModel> ordered = aiModelProvider.getChatModels();
+        if (ordered == null || ordered.isEmpty()) {
+            ordered = List.of(aiModelProvider.getChatModel());
+        }
+        ChatModel chatModel = ordered.get(0);
         // 优先尝试真流式：订阅 chatModel.stream() 的每个 ChatResponse 增量，提取 thinking delta 立即发射
         try {
-            Flux<ChatResponse> stream = chatModel.stream(new Prompt(messages));
+            Flux<ChatResponse> stream = createStreamWithFallback(ordered, messages, 0);
             // 使用 Sinks.Many 承接增量 thinking，确保每个 delta 立即经 wrapThinking 发射
             Sinks.Many<String> sink = Sinks.many().unicast().onBackpressureBuffer();
             stream.subscribe(
@@ -478,5 +489,32 @@ public class TextToSqlServiceImpl implements TextToSqlService {
         return Flux.fromIterable(pieces)
                 .delayElements(THINKING_DELAY)
                 .map(this::wrapThinking);
+    }
+
+    /**
+     * 多级降级流式创建（无 Ollama，仅备用 API 模型）
+     * 按 order 0..N 逐级 onErrorResume，日志 WARN fallback to level
+     *
+     * @param ordered 有序模型
+     * @param messages 消息
+     * @param index 当前下标
+     * @return 流式 Flux
+     * @author H
+     */
+    private Flux<ChatResponse> createStreamWithFallback(List<ChatModel> ordered, List<Message> messages, int index) {
+        if (index >= ordered.size()) {
+            return Flux.error(new RuntimeException("all chat models failed"));
+        }
+        ChatModel current = ordered.get(index);
+        Flux<ChatResponse> stream = current.stream(new Prompt(messages));
+        return stream.onErrorResume(e -> {
+            if (index >= ordered.size() - 1) {
+                return Flux.error(e);
+            }
+            ChatModel next = ordered.get(index + 1);
+            String nextName = next instanceof OpenAiChatModel m ? m.getOptions().getModel() : next.getClass().getSimpleName();
+            log.warn("fallback to level {}/{} {}", index, index + 1, nextName, e);
+            return createStreamWithFallback(ordered, messages, index + 1);
+        });
     }
 }

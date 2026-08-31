@@ -6,6 +6,7 @@ import com.hagent.ai.core.AgentToolLoopService;
 import com.hagent.ai.core.AiModelProvider;
 import com.hagent.ai.core.ChatPromptHolder;
 import com.hagent.ai.core.ConversationTitleService;
+import com.hagent.ai.core.ModelRouter;
 import com.hagent.ai.core.RagService;
 import com.hagent.ai.core.ThinkingStageSupport;
 import com.hagent.ai.core.UserContextHolder;
@@ -82,6 +83,8 @@ public class ChatServiceImpl implements ChatService {
     private final ChatPromptHolder promptHolder;
     /** 会话标题异步生成服务 */
     private final ConversationTitleService titleService;
+    /** 多级降级路由（无 Ollama，仅备用 API 模型） */
+    private final ModelRouter modelRouter;
 
     /** 统一工具回调（管理端与门户端共用同一注册集：知识库检索 + Text to SQL + 图片识别） */
     private final ToolCallback[] unifiedToolCallbacks;
@@ -143,7 +146,8 @@ public class ChatServiceImpl implements ChatService {
                            AgentToolLoopService agentToolLoopService,
                            ThinkingStageSupport stageSupport,
                            ChatPromptHolder promptHolder,
-                           ConversationTitleService titleService) {
+                           ConversationTitleService titleService,
+                           ModelRouter modelRouter) {
         this.aiModelProvider = aiModelProvider;
         this.conversationService = conversationService;
         this.chatMessageMapper = chatMessageMapper;
@@ -154,8 +158,28 @@ public class ChatServiceImpl implements ChatService {
         this.stageSupport = stageSupport;
         this.promptHolder = promptHolder;
         this.titleService = titleService;
+        this.modelRouter = modelRouter;
         // 统一工具集：知识库检索 + Text to SQL + 图片识别（管理端与门户端共用）
         this.unifiedToolCallbacks = ToolCallbacks.from(knowledgeTool, textToSqlTool, analyzeImageTool);
+    }
+
+    /**
+     * 解析模型名称，用于降级日志
+     *
+     * @param chatModel 对话模型
+     * @return 模型名称
+     * @author H
+     */
+    private String resolveModelName(ChatModel chatModel) {
+        if (chatModel instanceof OpenAiChatModel openAiChatModel) {
+            try {
+                String name = openAiChatModel.getOptions().getModel();
+                return name != null ? name : chatModel.getClass().getSimpleName();
+            } catch (Exception e) {
+                return chatModel.getClass().getSimpleName();
+            }
+        }
+        return chatModel.getClass().getSimpleName();
     }
 
     /**
@@ -328,8 +352,13 @@ public class ChatServiceImpl implements ChatService {
                 }
             }
 
-            // 7. 构建带工具回调的Options（仅用于阶段1工具调用）
-            ChatModel chatModel = aiModelProvider.getChatModel();
+            // 7. 构建带工具回调的Options（仅用于阶段1工具调用）— 多级降级：基于有序模型列表（主 order0 + 备用 1..N）
+            List<ChatModel> orderedChatModels = modelRouter.getOrderedModels();
+            if (orderedChatModels == null || orderedChatModels.isEmpty()) {
+                log.error("有序对话模型列表为空");
+                return Flux.just(wrapError("AI服务配置异常，请稍后重试"));
+            }
+            ChatModel chatModel = orderedChatModels.get(0);
             // 安全获取 OpenAiChatOptions，避免 ChatModel 实现变更时的 ClassCastException
             if (!(chatModel instanceof OpenAiChatModel openAiChatModel)) {
                 log.error("当前 ChatModel 非 OpenAiChatModel 实现: {}",
@@ -349,7 +378,7 @@ public class ChatServiceImpl implements ChatService {
             // 累积RAG命中来源（用于SSE推送与持久化）
             final List<Map<String, Object>> sourcesAccum = new ArrayList<>();
 
-            // 9. 阶段2：构建不带工具回调的流式Options，避免流式阶段触发工具调用导致空文本
+            // 9. 阶段2：构建不带工具回调的流式Options，避免流式阶段触发工具调用导致空文本（降级时按模型重建）
             OpenAiChatOptions streamOptions = OpenAiChatOptions.builder()
                     .apiKey(baseOptions.getApiKey())
                     .baseUrl(baseOptions.getBaseUrl())
@@ -375,7 +404,9 @@ public class ChatServiceImpl implements ChatService {
                     sink.next(stageSupport.wrapStage(ThinkingStageSupport.THINK_STAGE_ANALYZE));
                     sink.next(stageSupport.wrapStage(ThinkingStageSupport.THINK_STAGE_STRATEGY));
 
-                    // 阶段1：同步工具循环（阻塞执行，但事件实时发射到前端，命中来源一并推送）
+                    // 阶段1：同步工具循环（阻塞执行，但事件实时发射到前端，命中来源一并推送）— 多级降级
+                    // AgentToolLoopService 内部已按 order 0..N 逐级重试（每级仅一次，总重试 N 次），此处外层仅透传；
+                    // 若需整阶段重试，可按 orderedChatModels 再次兜底（全部失败抛最后异常）
                     agentToolLoopService.callWithTools(messages, toolOptions, chatModel,
                             unifiedToolCallbacks, sink, thinkingAccum, sourcesAccum);
 
@@ -403,6 +434,8 @@ public class ChatServiceImpl implements ChatService {
                 log.info("开始流式输出: conversationId={}", finalConversationId);
 
                 StringBuilder fullText = new StringBuilder();
+                // 流式阶段 thinking 去重状态：网关可能在每个增量响应中重放已见的完整 thinking，本流内用累积去重，仅发送新增 delta
+                final StringBuilder streamedThinkingSeen = new StringBuilder();
                 // 文本工具调用块剥离状态（流式阶段）：模型可能在工具循环结束后仍以 <tool_call> 文本方式表达工具意图，
                 // 该块会被拆分到多个 token 逐片到达，单 token 正则无法命中，需按状态机累积完整块后整体剥离
                 final boolean[] inToolCallBlock = {false};
@@ -410,15 +443,20 @@ public class ChatServiceImpl implements ChatService {
                 // 阶段2：真正的增量流，逐个响应提取 thinking 与 token 并交织发射
                 // 每个token统一包装为结构化JSON：{"type":"token","content":"<token内容>"}
                 // 通过JSON字符串编码，换行符等特殊字符被转义为单行传输，避免SSE帧被破坏
-                Flux<ChatResponse> rawStream = chatModel.stream(new Prompt(messages, streamOptions));
+                // 多级降级流式：按 order 0..N 逐级重试，每级仅一次，总重试 N 次，不循环
+                Flux<ChatResponse> rawStream = streamWithFallback(orderedChatModels, messages, streamOptions);
                 Disposable rawDisposable = rawStream.subscribe(
                         response -> {
                             // 1) 优先发射 thinking 增量（若模型提供了 reasoning_content / thinking）
-                            // 真流式：直接透传每个增量的 thinking delta；大块增量切分后同步按间隔发射，保证与 token 的先后顺序
-                            String thinkingChunk = stageSupport.extractThinking(response);
+                            // 网关可能在每个增量中重放已见的完整 thinking，用 dedupThinkingDelta 仅发送新增后缀，避免 thinking-token 交织重复
+                            String rawThinking = stageSupport.extractThinking(response);
+                            String thinkingChunk = ThinkingStageSupport.dedupThinkingDelta(
+                                    streamedThinkingSeen.length() > 0 ? streamedThinkingSeen.toString() : null,
+                                    rawThinking);
                             if (thinkingChunk != null && !thinkingChunk.isEmpty()) {
-                                // 累积思考内容用于入库持久化
+                                // 累积思考内容用于入库持久化（仅新增 delta，避免落库翻倍）
                                 thinkingAccum.append(thinkingChunk);
+                                streamedThinkingSeen.append(thinkingChunk);
                                 stageSupport.emitThinkingToSink(sink, thinkingChunk);
                             }
                             // 2) 再发射 token 增量
@@ -502,6 +540,58 @@ public class ChatServiceImpl implements ChatService {
         } finally {
             UserContextHolder.clear();
         }
+    }
+
+    /**
+     * 多级降级流式（无 Ollama，仅备用 API 模型）
+     * 按 order 0..N 逐级重试，每级仅一次，总重试 N 次，日志 WARN fallback to level
+     *
+     * @param ordered 有序模型列表
+     * @param messages 消息历史
+     * @param baseStreamOptions 基准流式 Options（用于非 OpenAi 兜底）
+     * @return 流式响应 Flux
+     * @author H
+     */
+    private Flux<ChatResponse> streamWithFallback(List<ChatModel> ordered, List<Message> messages, OpenAiChatOptions baseStreamOptions) {
+        return streamWithFallbackInternal(ordered, messages, baseStreamOptions, 0);
+    }
+
+    /**
+     * 流式降级递归
+     *
+     * @param ordered 有序模型
+     * @param messages 消息
+     * @param baseStreamOptions 基准 Options
+     * @param index 当前下标
+     * @return Flux
+     * @author H
+     */
+    private Flux<ChatResponse> streamWithFallbackInternal(List<ChatModel> ordered, List<Message> messages, OpenAiChatOptions baseStreamOptions, int index) {
+        if (index >= ordered.size()) {
+            return Flux.error(new RuntimeException("all chat models failed"));
+        }
+        ChatModel current = ordered.get(index);
+        OpenAiChatOptions curOptions;
+        if (current instanceof OpenAiChatModel openAiChatModel) {
+            OpenAiChatOptions base = openAiChatModel.getOptions();
+            curOptions = OpenAiChatOptions.builder()
+                    .apiKey(base.getApiKey())
+                    .baseUrl(base.getBaseUrl())
+                    .model(base.getModel())
+                    .build();
+        } else {
+            curOptions = baseStreamOptions;
+        }
+        Prompt prompt = new Prompt(messages, curOptions);
+        return current.stream(prompt)
+                .onErrorResume(e -> {
+                    if (index >= ordered.size() - 1) {
+                        return Flux.error(e);
+                    }
+                    ChatModel next = ordered.get(index + 1);
+                    log.warn("fallback to level {}/{} {}", index, index + 1, resolveModelName(next), e);
+                    return streamWithFallbackInternal(ordered, messages, baseStreamOptions, index + 1);
+                });
     }
 
     /**

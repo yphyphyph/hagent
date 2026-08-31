@@ -106,4 +106,21 @@ public interface KnowledgeService extends IService<KnowledgeFile> {
      * @return 健康信息 Map
      */
     Map<String, Object> health();
+
+    /**
+     * 过期向量统计（快照精确过期）
+     * 过期定义：已完成且 embedding_model/embedding_dimension 与当前配置不一致（含 NULL）
+     *
+     * @return 含 outdatedCount 的 Map
+     */
+    Map<String, Object> outdatedStats();
+
+    /**
+     * 一键重向量化过期文件（纯服务端重算，不重传）
+     * 过期判定同 outdatedStats；已在处理中的文件跳过
+     *
+     * @param ids 可选，传空即全部过期
+     * @return 含 total/queued 的 Map
+     */
+    Map<String, Object> revectorizeOutdated(List<Long> ids);
 }

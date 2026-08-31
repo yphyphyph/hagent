@@ -13,6 +13,8 @@ import java.util.Map;
 
 /**
  * 系统配置服务 - 从system_config表读取配置
+ * 白名单已追加 ai.fallback.chat.enabled 与 ai.fallback.chat.models（T3）
+ * AiConfig.refresh() 后由调用方触发 AiModelProvider.rebuild() 热刷新（Controller 已处理，如已有监听则保持）
  *
  * @author H
  */
@@ -20,6 +22,13 @@ import java.util.Map;
 @Service
 @RequiredArgsConstructor
 public class SystemConfigService {
+
+    /** 允许写入的配置键前缀白名单（已追加 ai.fallback.chat.*，兼容 ai.chat.* / ai.embedding.*） */
+    private static final String[] ALLOWED_PREFIXES = {"ai.", "site."};
+
+    /** 备用模型白名单键（显式列出，便于校验与审计） */
+    private static final java.util.Set<String> FALLBACK_WHITE_LIST = java.util.Set.of(
+            "ai.fallback.chat.enabled", "ai.fallback.chat.models");
 
     private final SystemConfigMapper systemConfigMapper;
 
@@ -101,6 +110,48 @@ public class SystemConfigService {
             systemConfigMapper.insert(newConfig);
             log.debug("新增配置: {} = {}", key, maskSensitive(key, value));
         }
+    }
+
+    /**
+     * 批量保存（白名单校验，已追加 ai.fallback.chat.enabled / ai.fallback.chat.models）
+     *
+     * @param kv 配置映射
+     * @author H
+     */
+    public void batchSave(Map<String, String> kv) {
+        if (kv == null || kv.isEmpty()) {
+            return;
+        }
+        for (Map.Entry<String, String> e : kv.entrySet()) {
+            String k = e.getKey();
+            if (!isAllowed(k)) {
+                log.warn("忽略不允许的配置键: {}", k);
+                continue;
+            }
+            saveValue(k, e.getValue());
+        }
+    }
+
+    /**
+     * 白名单校验（兼容 ai.chat.* / ai.embedding.*，已追加 ai.fallback.chat.*）
+     *
+     * @param key 配置键
+     * @return 是否允许写入
+     * @author H
+     */
+    public boolean isAllowed(String key) {
+        if (key == null || key.isBlank()) {
+            return false;
+        }
+        if (FALLBACK_WHITE_LIST.contains(key)) {
+            return true;
+        }
+        for (String prefix : ALLOWED_PREFIXES) {
+            if (key.startsWith(prefix)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

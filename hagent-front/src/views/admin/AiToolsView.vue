@@ -222,6 +222,7 @@ function confirmCreate() {
 }
 
 .tools-table-card {
+  width: 100%;
   border-radius: var(--radius-lg);
   background: var(--bg-elevated);
 }

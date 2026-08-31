@@ -12,7 +12,7 @@
  Target Server Version : 180006 (180006)
  File Encoding         : 65001
 
- Date: 29/08/2026 09:29:40
+ Date: 31/08/2026 00:00:00
 */
 
 
@@ -335,6 +335,8 @@ COMMENT ON COLUMN "public"."knowledge_file"."created_by" IS '创建人';
 COMMENT ON COLUMN "public"."knowledge_file"."updated_at" IS '更新时间';
 COMMENT ON COLUMN "public"."knowledge_file"."updated_by" IS '更新人';
 COMMENT ON COLUMN "public"."knowledge_file"."deleted" IS '逻辑删除(0=未删除 1=已删除)';
+COMMENT ON COLUMN "public"."knowledge_file"."embedding_model" IS '向量化快照：embedding 模型';
+COMMENT ON COLUMN "public"."knowledge_file"."embedding_dimension" IS '向量化快照：向量维度';
 COMMENT ON TABLE "public"."knowledge_file" IS '知识库文件表';
 
 -- ----------------------------
@@ -435,13 +437,15 @@ CREATE TABLE "public"."vector_store" (
   "id" uuid NOT NULL DEFAULT gen_random_uuid(),
   "content" text COLLATE "pg_catalog"."default",
   "metadata" jsonb,
-  "embedding" "public"."vector"
+  "embedding" "public"."vector",
+  "search_vector" tsvector GENERATED ALWAYS AS (to_tsvector('simple'::regconfig, COALESCE(content, ''::text))) STORED
 )
 ;
 COMMENT ON COLUMN "public"."vector_store"."id" IS '主键ID(UUID)';
 COMMENT ON COLUMN "public"."vector_store"."content" IS '文档内容';
 COMMENT ON COLUMN "public"."vector_store"."metadata" IS '元数据(JSONB,含file_id/visibility/user_id等)';
 COMMENT ON COLUMN "public"."vector_store"."embedding" IS '向量嵌入(1024维, cosine)';
+COMMENT ON COLUMN "public"."vector_store"."search_vector" IS '混合检索关键词向量(simple 配置，GENERATED ALWAYS)';
 COMMENT ON TABLE "public"."vector_store" IS 'RAG 向量表（官方 PgVectorStore 结构）';
 
 -- ----------------------------
@@ -610,6 +614,9 @@ CREATE INDEX "vector_store_embedding_hnsw_idx" ON "public"."vector_store" (
 );
 CREATE INDEX "vector_store_metadata_gin_idx" ON "public"."vector_store" USING gin (
   "metadata" "pg_catalog"."jsonb_ops"
+);
+CREATE INDEX "vector_store_search_vector_gin_idx" ON "public"."vector_store" USING gin (
+  "search_vector"
 );
 
 -- ----------------------------

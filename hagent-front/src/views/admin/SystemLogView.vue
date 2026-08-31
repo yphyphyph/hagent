@@ -406,6 +406,7 @@ async function onClean() {
 }
 
 .log-filter-card {
+  width: 100%;
   border-radius: var(--radius-lg);
   background: var(--bg-elevated);
 }
@@ -415,6 +416,7 @@ async function onClean() {
 }
 
 .log-table-card {
+  width: 100%;
   border-radius: var(--radius-lg);
   background: var(--bg-elevated);
 }

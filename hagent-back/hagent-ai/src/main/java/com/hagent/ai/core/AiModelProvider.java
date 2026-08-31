@@ -12,8 +12,13 @@ import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.ai.vectorstore.pgvector.PgVectorStore;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
+import org.springframework.util.StringUtils;
 
 import org.springframework.context.annotation.Lazy;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 
 /**
  * AI模型提供者
@@ -36,6 +41,9 @@ public class AiModelProvider {
     private volatile EmbeddingModel embeddingModel;
     private volatile VectorStore vectorStore;
 
+    /** 有序对话模型列表（主 + 多级备用按 order 排序，缓存于 volatile 列表） */
+    private volatile List<ChatModel> chatModels = new ArrayList<>();
+
     /** 上次配置哈希值 */
     private volatile int configHash = 0;
 
@@ -56,7 +64,7 @@ public class AiModelProvider {
      */
     @jakarta.annotation.PostConstruct
     public void init() {
-        // 强制刷新 AiConfig 配置，确保从数据库读取最新值
+        // 强制刷新 AiConfig 配置，确保从数据库读取最新值（AiConfig@PostConstruct 可能晚于本类，需显式刷新）
         aiConfig.refresh();
         log.info("AiConfig配置: vectorTable={}, dimension={}",
                 "vector_store", aiConfig.getVectorStore().getDimension());
@@ -72,6 +80,38 @@ public class AiModelProvider {
     public ChatModel getChatModel() {
         synchronized (this) { if (chatModel == null || isConfigChanged()) rebuild(); }
         return chatModel;
+    }
+
+    /**
+     * 获取主对话模型（与 getChatModel 等价，保留供降级语义清晰调用）
+     *
+     * @return 主 ChatModel
+     * @author H
+     */
+    public ChatModel getPrimaryChatModel() {
+        return getChatModel();
+    }
+
+    /**
+     * 获取有序对话模型列表（主 + 多级备用按 order 排序）
+     * 空回退时仅含主模型
+     *
+     * @return 不可变有序列表
+     * @author H
+     */
+    public List<ChatModel> getChatModels() {
+        synchronized (this) { if (chatModels == null || chatModels.isEmpty() || isConfigChanged()) rebuild(); }
+        return chatModels;
+    }
+
+    /**
+     * 获取有序对话模型列表（别名，供 ModelRouter 调用）
+     *
+     * @return 不可变有序列表
+     * @author H
+     */
+    public List<ChatModel> getOrderedModels() {
+        return getChatModels();
     }
 
     /**
@@ -99,16 +139,26 @@ public class AiModelProvider {
 
     /**
      * 基于影响模型构建的关键字段计算配置指纹，避免依赖 toString() 格式不稳定
-     * 仅包含影响 ChatModel/EmbeddingModel/VectorStore 重建的字段
+     * 仅包含影响 ChatModel/EmbeddingModel/VectorStore 重建的字段，含备用模型配置
      */
     private int computeConfigHash() {
         AiConfig.Chat chat = aiConfig.getChat();
         AiConfig.Embedding emb = aiConfig.getEmbedding();
         AiConfig.VectorStore vec = aiConfig.getVectorStore();
+        AiConfig.FallbackChat fallback = aiConfig.getFallbackChat();
+        int fallbackHash = 0;
+        if (fallback != null) {
+            fallbackHash = java.util.Objects.hash(fallback.isEnabled(), fallback.getModels().size());
+            for (AiConfig.FallbackModel m : fallback.getModels()) {
+                fallbackHash = 31 * fallbackHash + java.util.Objects.hash(
+                        m.getName(), m.getBaseUrl(), m.getApiKey(), m.getOrder());
+            }
+        }
         return java.util.Objects.hash(
                 chat.getApiKey(), chat.getBaseUrl(), chat.getModel(),
                 emb.getApiKey(), emb.getBaseUrl(), emb.getModel(),
-                vec.getDimension()
+                vec.getDimension(),
+                fallbackHash
         );
     }
 
@@ -131,15 +181,40 @@ public class AiModelProvider {
             AiConfig.Embedding embCfg = aiConfig.getEmbedding();
             AiConfig.VectorStore vecCfg = aiConfig.getVectorStore();
 
-            // 构建ChatModel - 通过Options设置apiKey和baseUrl
+            // 构建主 ChatModel - 通过Options设置apiKey和baseUrl
             OpenAiChatOptions chatOptions = OpenAiChatOptions.builder()
                     .apiKey(chatCfg.getApiKey())
                     .baseUrl(chatCfg.getBaseUrl())
                     .model(chatCfg.getModel())
                     .build();
-            this.chatModel = OpenAiChatModel.builder()
+            ChatModel primaryChatModel = OpenAiChatModel.builder()
                     .options(chatOptions)
                     .build();
+            this.chatModel = primaryChatModel;
+
+            // 构建有序对话模型列表（主 + 多级备用按 order 排序，仅用备用 API 模型，不引入 Ollama）
+            List<ChatModel> ordered = new ArrayList<>();
+            ordered.add(primaryChatModel);
+            AiConfig.FallbackChat fallbackChat = aiConfig.getFallbackChat();
+            if (fallbackChat != null && fallbackChat.isEnabled()
+                    && fallbackChat.getModels() != null && !fallbackChat.getModels().isEmpty()) {
+                for (AiConfig.FallbackModel fm : fallbackChat.getModels()) {
+                    String modelName = StringUtils.hasText(fm.getName()) ? fm.getName() : chatCfg.getModel();
+                    String baseUrl = StringUtils.hasText(fm.getBaseUrl()) ? fm.getBaseUrl() : chatCfg.getBaseUrl();
+                    String apiKey = StringUtils.hasText(fm.getApiKey()) ? fm.getApiKey() : chatCfg.getApiKey();
+                    OpenAiChatOptions fallbackOptions = OpenAiChatOptions.builder()
+                            .apiKey(apiKey)
+                            .baseUrl(baseUrl)
+                            .model(modelName)
+                            .build();
+                    ChatModel fallbackModel = OpenAiChatModel.builder()
+                            .options(fallbackOptions)
+                            .build();
+                    ordered.add(fallbackModel);
+                }
+                log.info("已构建备用对话模型: 主模型={}, 备用数量={}, 总数={}", chatCfg.getModel(), fallbackChat.getModels().size(), ordered.size());
+            }
+            this.chatModels = Collections.unmodifiableList(ordered);
 
             // 构建EmbeddingModel - 通过Options设置apiKey和baseUrl
             OpenAiEmbeddingOptions embeddingOptions = OpenAiEmbeddingOptions.builder()
@@ -152,7 +227,11 @@ public class AiModelProvider {
                     .build();
 
             int dimension = vecCfg.getDimension();
-            log.info("构建PgVectorStore: table=vector_store, dimension={}", dimension);
+            if (dimension <= 0) {
+                log.warn("vector dimension 非法 ({}), 强制回退为 1024", dimension);
+                dimension = 1024;
+            }
+            log.info("PgVectorStore dimension from ai.vector-dimension={}, table=vector_store", dimension);
 
             try {
                 VectorStore pgStore = PgVectorStore.builder(jdbcTemplate, embeddingModel)

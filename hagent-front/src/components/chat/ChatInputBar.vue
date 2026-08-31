@@ -22,7 +22,8 @@
           v-if="streaming"
           type="button"
           class="send-btn send-btn--stop"
-          title="停止生成"
+          title="AI 正在生成，点击停止"
+          aria-label="AI 正在生成，点击停止"
           @click="$emit('stop')"
         >
           <span class="stop-square"></span>
@@ -156,9 +157,11 @@ defineExpose({ focus: () => textareaRef.value?.focus() })
 .send-btn:not(:disabled):hover {
   transform: translateY(-1px);
 }
-/* 停止态：红底方块 */
+/* 停止态：淡粉圆底 + 红色方块 + streaming 脉冲（仅 transform/opacity/box-shadow，无布局抖动） */
 .send-btn--stop {
-  background: #fee2e2;
+  background: rgba(254, 205, 211, 0.9);
+  box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.3);
+  animation: streaming-ring 1.8s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
 [data-theme='dark'] .send-btn--stop {
   color: #ef4444 !important;
@@ -172,5 +175,42 @@ defineExpose({ focus: () => textareaRef.value?.focus() })
   height: 12px;
   border-radius: 2px;
   background: #ef4444;
+  animation: streaming-pulse 1.4s ease-in-out infinite;
+  will-change: transform, opacity;
+}
+
+@keyframes streaming-pulse {
+  0% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.08);
+    opacity: 0.92;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+@keyframes streaming-ring {
+  0% {
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.3);
+  }
+  70% {
+    box-shadow: 0 0 0 10px rgba(239, 68, 68, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0);
+  }
+}
+
+/* 尊重减少动效偏好：降级为静态 */
+@media (prefers-reduced-motion: reduce) {
+  .send-btn--stop,
+  .stop-square {
+    animation: none;
+  }
 }
 </style>

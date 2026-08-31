@@ -62,4 +62,10 @@ export const knowledgeApi = {
   search(query: string, limit?: number): Promise<Array<Record<string, unknown>>> {
     return request.post('/admin/knowledge/search', { query, limit })
   },
+  outdatedStats(): Promise<{ outdatedCount: number; currentModel?: string; currentDimension?: number }> {
+    return request.get('/admin/knowledge/outdated-stats')
+  },
+  revectorizeOutdated(ids?: number[]): Promise<{ total: number; queued: number }> {
+    return request.post('/admin/knowledge/revectorize-outdated', ids ? { ids } : {})
+  },
 }

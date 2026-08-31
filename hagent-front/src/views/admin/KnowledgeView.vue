@@ -45,9 +45,26 @@
       </div>
     </n-card>
 
+
     <!-- 文档列表 -->
-    <n-card class="kb-table-card" :bordered="true" title="文档列表">
+    <n-card class="kb-table-card" :bordered="true">
+      <template #header>
+        <div class="kb-table-head">
+          <span class="kb-table-title">文档列表</span>
+          <n-button
+            size="small"
+            :type="checkedRowKeys.length > 0 ? 'primary' : 'warning'"
+            :loading="bulkRevectorizing"
+            :disabled="bulkRevectorizing"
+            @click="onBulkRevectorize"
+          >
+            {{ checkedRowKeys.length > 0 ? `重新向量化已选 (${checkedRowKeys.length})` : `一键重新向量化全部${outdatedCount > 0 ? ` (${outdatedCount} 过期)` : ""}` }}
+          </n-button>
+        </div>
+      </template>
+
       <n-data-table
+        v-model:checked-row-keys="checkedRowKeys"
         :columns="columns"
         :data="documents"
         :loading="docsLoading"
@@ -126,6 +143,7 @@ interface KnowledgeDoc {
   uploadedAt: string
 }
 
+const checkedRowKeys = ref<Array<string | number>>([])
 const documents = ref<KnowledgeDoc[]>([])
 const docsLoading = ref(false)
 const vectorizingId = ref<number | null>(null)
@@ -167,9 +185,45 @@ async function loadDocs() {
 onMounted(() => {
   loadDocs()
   loadStats()
+  loadOutdated()
 })
 
 const pagination = { pageSize: 10 }
+
+/* 过期向量（模型/维度变更）一键重算 */
+const outdatedCount = ref(0)
+const bulkRevectorizing = ref(false)
+
+async function loadOutdated() {
+  try {
+    const r = await knowledgeApi.outdatedStats()
+    outdatedCount.value = Number(r.outdatedCount ?? 0)
+  } catch {
+    outdatedCount.value = 0
+  }
+}
+
+async function onBulkRevectorize() {
+  bulkRevectorizing.value = true
+  try {
+    const hasChecked = checkedRowKeys.value.length > 0
+    const ids = hasChecked ? checkedRowKeys.value.map((v) => Number(v)) : undefined
+    const r = await knowledgeApi.revectorizeOutdated(ids)
+    const queued = r.queued ?? 0
+    const total = r.total ?? 0
+    if (hasChecked) {
+      message.success(`已选 ${ids!.length} 个，已加入队列：${queued} / ${total} 个`)
+    } else {
+      message.success(`已加入队列：${queued} / ${total} 个文件（全部过期）`)
+    }
+    await Promise.all([loadOutdated(), loadStats(), loadDocs()])
+    if (queued > 0) checkedRowKeys.value = []
+  } catch {
+    // 已 toast
+  } finally {
+    bulkRevectorizing.value = false
+  }
+}
 
 /* 状态字段容错映射：向量化成功 / 处理中 / 失败等 */
 const VECTORIZED_STATUSES = ['vectorized', 'available', 'done', '已向量化', '已就绪', '已完成']
@@ -204,6 +258,7 @@ function statusTagType(status: string): 'success' | 'warning' | 'error' {
 }
 
 const columns: DataTableColumns<KnowledgeDoc> = [
+  { type: "selection" },
   {
     title: '文件名',
     key: 'fileName',
@@ -419,6 +474,7 @@ async function realUpload({ file, onFinish, onError }: UploadCustomRequestOption
 
 /* ---------- 上传 ---------- */
 .kb-upload-card {
+  width: 100%;
   border-radius: var(--radius-lg);
   background: var(--bg-elevated);
 }
@@ -462,7 +518,24 @@ async function realUpload({ file, onFinish, onError }: UploadCustomRequestOption
 }
 
 /* ---------- 表格 ---------- */
+.kb-table-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.kb-table-title {
+  font-weight: 600;
+}
+.kb-outdated-alert__body {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
 .kb-table-card {
+  width: 100%;
   border-radius: var(--radius-lg);
   background: var(--bg-elevated);
 }

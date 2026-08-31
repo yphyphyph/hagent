@@ -41,6 +41,7 @@ public class RagService {
 
     private final AiModelProvider aiModelProvider;
     private final StringRedisTemplate stringRedisTemplate;
+    private final com.hagent.ai.retrieval.HybridSearchService hybridSearchService;
 
     /** 知识库文件 Mapper（可选注入，用于 file_name 兜底查询） */
     @Autowired(required = false)
@@ -153,29 +154,30 @@ public class RagService {
      */
     public List<Document> searchAccessible(String query, int topK, double threshold) {
         try {
-            VectorStore vectorStore = aiModelProvider.getVectorStore();
-            if (vectorStore == null) {
-                log.warn("VectorStore不可用，RAG搜索已跳过");
-                return List.of();
-            }
             Long userId = resolveCurrentUserId();
-            String filter = userId != null ? "visibility == 1 || user_id == " + userId : "visibility == 1";
-            SearchRequest request = SearchRequest.builder()
-                    .query(query)
-                    .topK(topK)
-                    .similarityThreshold(threshold)
-                    .filterExpression(filter)
-                    .build();
-            log.info("RAG可见性搜索（PG原生过滤）: query={}, topK={}, threshold={}, filter={}", query, topK, threshold, filter);
-            List<Document> results = vectorStore.similaritySearch(request);
-            // 保留命中元数据（PG 场景下 chunk_id 可能为 uuid，retainHitMetadata 已做 file_id/chunk_id 兜底）
+            List<Document> results = hybridSearchService.hybridSearch(query, topK, threshold, userId, null);
+            if (results == null || results.isEmpty()) {
+                // 降级：混合检索未返回时回退到原单向量路径（兼容检索层异常）
+                log.warn("混合检索未返回结果，尝试单向量回退: query={}", query);
+                VectorStore vectorStore = aiModelProvider.getVectorStore();
+                if (vectorStore == null) {
+                    return List.of();
+                }
+                String filter = userId != null ? "visibility == 1 || user_id == " + userId : "visibility == 1";
+                SearchRequest request = SearchRequest.builder()
+                        .query(query)
+                        .topK(topK)
+                        .similarityThreshold(threshold)
+                        .filterExpression(filter)
+                        .build();
+                results = vectorStore.similaritySearch(request);
+            }
             retainHitMetadata(results);
             incrementSearchCount();
-            log.info("RAG可见性搜索完成（PG原生过滤）: query={}, accessible={}", query, results.size());
+            log.info("RAG可见性搜索完成（混合 RRF）: query={}, topK={}, accessible={}", query, topK, results.size());
             return results;
         } catch (Exception e) {
             log.error("RAG可见性搜索失败: query={}", query, e);
-            // 异常时清空历史命中，避免脏数据被误用
             LAST_HITS.remove();
             return List.of();
         }

@@ -55,4 +55,10 @@ public class KnowledgeFile extends BaseEntity {
 
     /** 处理失败错误信息 */
     private String errorMessage;
+
+    /** 向量化快照：embedding 模型 */
+    private String embeddingModel;
+
+    /** 向量化快照：向量维度 */
+    private Integer embeddingDimension;
 }

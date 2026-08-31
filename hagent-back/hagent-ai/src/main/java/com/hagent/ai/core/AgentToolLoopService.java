@@ -7,9 +7,12 @@ import org.springframework.ai.chat.messages.ToolResponseMessage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.tool.ToolCallback;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.FluxSink;
 import tools.jackson.core.JacksonException;
@@ -26,7 +29,7 @@ import java.util.regex.Pattern;
 /**
  * Agent 工具调用循环服务
  * <p>
- * 执行契约：本服务是工具调用的唯一执行方。Spring AI 2.0.0 的 OpenAiChatModel.internalCall
+ * 执行契约：本服务是工具调用的唯一执行方。Spring AI 2.0.1 的 OpenAiChatModel.internalCall
  * 已彻底移除模型内部工具执行分支（反编译核实：internalCall 无 executeToolCalls 调用），
  * chatModel.call 返回的原始 tool_calls 由本服务手动执行；若未来升级后行为变化，
  * 需在升级回归中确认工具不被框架重复执行。
@@ -82,16 +85,61 @@ public class AgentToolLoopService {
     private final ObjectMapper objectMapper;
     private final ThinkingStageSupport stageSupport;
     private final RagService ragService;
+    /** 有序模型提供者（用于多级降级，无 Ollama，仅备用 API 模型） */
+    private final AiModelProvider aiModelProvider;
 
     /** 文本形式工具调用的合成ID序列 */
     private final AtomicInteger textToolCallSeq = new AtomicInteger();
 
     public AgentToolLoopService(ObjectMapper objectMapper,
                                 ThinkingStageSupport stageSupport,
-                                RagService ragService) {
+                                RagService ragService,
+                                @Lazy AiModelProvider aiModelProvider) {
         this.objectMapper = objectMapper;
         this.stageSupport = stageSupport;
         this.ragService = ragService;
+        this.aiModelProvider = aiModelProvider;
+    }
+
+    /**
+     * 解析模型名称，用于降级日志
+     *
+     * @param chatModel 对话模型
+     * @return 模型名称
+     * @author H
+     */
+    private String getModelName(ChatModel chatModel) {
+        if (chatModel instanceof OpenAiChatModel openAiChatModel) {
+            try {
+                String name = openAiChatModel.getOptions().getModel();
+                return name != null ? name : chatModel.getClass().getSimpleName();
+            } catch (Exception e) {
+                return chatModel.getClass().getSimpleName();
+            }
+        }
+        return chatModel.getClass().getSimpleName();
+    }
+
+    /**
+     * 为指定模型构建带工具回调的 Options（复用备用模型的 apiKey/baseUrl/model）
+     *
+     * @param chatModel     目标模型
+     * @param toolCallbacks 工具回调
+     * @param fallbackOptions 兜底 Options（非 OpenAi 时使用）
+     * @return 对应模型的 Options
+     * @author H
+     */
+    private OpenAiChatOptions buildToolOptionsForModel(ChatModel chatModel, ToolCallback[] toolCallbacks, OpenAiChatOptions fallbackOptions) {
+        if (chatModel instanceof OpenAiChatModel openAiChatModel) {
+            OpenAiChatOptions base = openAiChatModel.getOptions();
+            return OpenAiChatOptions.builder()
+                    .apiKey(base.getApiKey())
+                    .baseUrl(base.getBaseUrl())
+                    .model(base.getModel())
+                    .toolCallbacks(toolCallbacks)
+                    .build();
+        }
+        return fallbackOptions;
     }
 
     /**
@@ -128,12 +176,43 @@ public class AgentToolLoopService {
                 log.info("已注入收敛指令，结束工具调用循环");
                 return;
             }
-            ChatResponse response = chatModel.call(new Prompt(messages, options));
+            // 多级降级：按 order 0..N 顺序 for 循环重试，每级仅一次，总重试 N 次，不循环，全部失败抛最后异常
+            ChatResponse response = null;
+            Exception lastChatException = null;
+            List<ChatModel> orderedModels = aiModelProvider.getChatModels();
+            // 若有序列表为空或仅主模型，直接使用传入模型兼容
+            if (orderedModels == null || orderedModels.isEmpty()) {
+                orderedModels = List.of(chatModel);
+            }
+            for (int m = 0; m < orderedModels.size(); m++) {
+                ChatModel curModel = orderedModels.get(m);
+                OpenAiChatOptions curOptions = buildToolOptionsForModel(curModel, toolCallbacks, options);
+                try {
+                    response = curModel.call(new Prompt(messages, curOptions));
+                    break;
+                } catch (Exception e) {
+                    lastChatException = e;
+                    if (m == orderedModels.size() - 1) {
+                        break;
+                    }
+                    ChatModel next = orderedModels.get(m + 1);
+                    log.warn("fallback to level {}/{} {}", m, m + 1, getModelName(next), e);
+                }
+            }
+            if (response == null) {
+                if (lastChatException instanceof RuntimeException re) {
+                    throw re;
+                }
+                throw new RuntimeException(lastChatException);
+            }
             AssistantMessage assistantMsg = response.getResult().getOutput();
 
             // 提取推理过程：兼容 reasoning_content / reasoningContent / thinking / reasoning 等键
-            // 工具阶段使用 chatModel.call() 同步获取，thinking 到达后实时切分发射到前端（边执行边展示）
-            String thinkingChunk = stageSupport.extractThinking(response);
+            // 网关可能在每次 call 响应中重放已见的完整 thinking，用 dedupThinkingDelta 仅取新增后缀，避免落库与推送翻倍
+            String rawThinking = stageSupport.extractThinking(response);
+            String thinkingChunk = ThinkingStageSupport.dedupThinkingDelta(
+                    thinkingAccum != null && thinkingAccum.length() > 0 ? thinkingAccum.toString() : null,
+                    rawThinking);
             if (thinkingChunk != null && !thinkingChunk.isEmpty()) {
                 if (thinkingAccum != null) {
                     thinkingAccum.append(thinkingChunk);
