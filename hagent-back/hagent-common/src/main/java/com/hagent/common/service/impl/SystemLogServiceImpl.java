@@ -59,8 +59,16 @@ public class SystemLogServiceImpl implements SystemLogService {
      */
     @Override
     public PageResult<SystemLog> page(int page, int pageSize, String module, String operationType,
-                                      String username, Integer success,
-                                      OffsetDateTime startTime, OffsetDateTime endTime) {
+                                       String username, Integer success,
+                                       OffsetDateTime startTime, OffsetDateTime endTime) {
+        return page(page, pageSize, module, operationType, username, success, startTime, endTime, null);
+    }
+
+    @Override
+    public PageResult<SystemLog> page(int page, int pageSize, String module, String operationType,
+                                       String username, Integer success,
+                                       OffsetDateTime startTime, OffsetDateTime endTime,
+                                       String traceId) {
         LambdaQueryWrapper<SystemLog> wrapper = new LambdaQueryWrapper<>();
         if (StringUtils.hasText(module)) {
             wrapper.eq(SystemLog::getModule, module);
@@ -79,6 +87,9 @@ public class SystemLogServiceImpl implements SystemLogService {
         }
         if (endTime != null) {
             wrapper.le(SystemLog::getCreatedAt, endTime);
+        }
+        if (StringUtils.hasText(traceId)) {
+            wrapper.eq(SystemLog::getTraceId, traceId.trim());
         }
         wrapper.orderByDesc(SystemLog::getCreatedAt);
 

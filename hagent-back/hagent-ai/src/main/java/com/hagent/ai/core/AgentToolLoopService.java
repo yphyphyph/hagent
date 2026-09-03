@@ -46,9 +46,16 @@ import java.util.regex.Pattern;
 @Service
 public class AgentToolLoopService {
 
-    /** 工具调用最大迭代次数（配置化，默认 8） */
-    @Value("${hagent.agent.max-tool-iterations:8}")
+    /** 工具调用最大迭代次数（配置化，默认 8，可经 system_config ai.tools.max-iterations 配置） */
+    @Value("${ai.tools.max-iterations:8}")
     private int maxToolIterations;
+
+    /** 兼容旧键 hagent.agent.max-tool-iterations，避免存量部署直接失效 */
+    @Value("${hagent.agent.max-tool-iterations:#{null}}")
+    private Integer legacyMaxToolIterations;
+
+    @Autowired
+    private com.hagent.ai.config.AiConfig aiConfig;
 
     /** 连续重复工具调用检测阈值：同一工具连续相似调用达到该次数视为发散循环，强制收敛 */
     private static final int REPEAT_TOOL_LIMIT = 4;
@@ -157,15 +164,49 @@ public class AgentToolLoopService {
      * @param thinkingAccum  思考内容累积器（用于入库持久化）
      * @param sourcesAccum   RAG来源累积器（用于SSE推送与最终持久化）
      */
+    /**
+     * 解析生效的最大迭代次数
+     * 优先级：AiConfig.tools.maxIterations（system_config ai.tools.max-iterations）> legacy hagent.agent.max-tool-iterations > @Value ai.tools.max-iterations
+     *
+     * @return 生效值，范围 1..20 兜底 8
+     * @author H
+     */
+    private int effectiveMaxIterations() {
+        // 1. AiConfig（system_config 热刷新，优先）
+        try {
+            if (aiConfig != null && aiConfig.getTools() != null) {
+                int v = aiConfig.getTools().getMaxIterations();
+                if (v >= 1 && v <= 20) {
+                    return v;
+                }
+                if (v != 0) {
+                    log.warn("AiConfig.tools.maxIterations 越界 {}，回退 @Value", v);
+                }
+            }
+        } catch (Exception e) {
+            log.debug("读取 AiConfig.tools.maxIterations 失败，回退 @Value: {}", e.getMessage());
+        }
+        // 2. 兼容旧键
+        if (legacyMaxToolIterations != null && legacyMaxToolIterations >= 1 && legacyMaxToolIterations <= 20) {
+            return legacyMaxToolIterations;
+        }
+        // 3. 新键 @Value
+        if (maxToolIterations >= 1 && maxToolIterations <= 20) {
+            return maxToolIterations;
+        }
+        return 8;
+    }
+
     public void callWithTools(List<Message> messages, OpenAiChatOptions options, ChatModel chatModel,
-                              ToolCallback[] toolCallbacks, FluxSink<String> sink,
-                              StringBuilder thinkingAccum,
-                              List<Map<String, Object>> sourcesAccum) {
+                               ToolCallback[] toolCallbacks, FluxSink<String> sink,
+                               StringBuilder thinkingAccum,
+                               List<Map<String, Object>> sourcesAccum) {
         // 连续重复工具调用追踪：判定模型陷入发散循环（同一工具反复调用但无实质收敛）时强制结束
         String lastToolName = null;
         String lastToolArgsNormalized = null;
         int repeatCount = 0;
-        for (int i = 0; i < maxToolIterations; i++) {
+        int effectiveMax = effectiveMaxIterations();
+        for (int i = 0; i < effectiveMax; i++) {
             // 客户端断连后终止工具循环，避免继续消耗模型token
             if (sink.isCancelled()) {
                 log.info("SSE已取消，终止工具调用循环");
@@ -231,7 +272,7 @@ public class AgentToolLoopService {
                 // 兜底：部分模型会以 <tool_call> 文本格式输出工具调用（而非原生 tool_calls），
                 // 若不处理，这段XML会泄漏为最终回答。此处解析并按原生协议执行
                 String text = assistantMsg.getText() == null ? "" : assistantMsg.getText();
-                if (text.contains(TEXT_TOOL_CALL_MARKER) && i < maxToolIterations - 1) {
+                if (text.contains(TEXT_TOOL_CALL_MARKER) && i < effectiveMax - 1) {
                     AssistantMessage.ToolCall synthetic = parseTextToolCall(text);
                     if (synthetic != null) {
                         // 归一化当前参数并判定与上次是否相似（相似度>80%视为重复）

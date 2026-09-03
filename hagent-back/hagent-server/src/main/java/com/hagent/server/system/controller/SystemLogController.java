@@ -51,7 +51,7 @@ public class SystemLogController {
      * @return 分页结果
      */
     @GetMapping("/page")
-    @Operation(summary = "分页查询操作日志", description = "按模块/操作类型/用户名/成功标识/时间范围分页查询，倒序排列")
+    @Operation(summary = "分页查询操作日志", description = "按模块/操作类型/用户名/成功标识/时间范围/链路ID分页查询，倒序排列；traceId 精确匹配用于轻量 Trace 看板聚合")
     public Result<PageResult<SystemLog>> page(
             @Parameter(description = "页码") @RequestParam(defaultValue = "1") int page,
             @Parameter(description = "每页大小") @RequestParam(defaultValue = "10") int pageSize,
@@ -60,10 +60,11 @@ public class SystemLogController {
             @Parameter(description = "用户名") @RequestParam(required = false) String username,
             @Parameter(description = "成功标识 0失败 1成功") @RequestParam(required = false) Integer success,
             @Parameter(description = "开始时间 yyyy-MM-dd HH:mm:ss 或 ISO_OFFSET_DATE_TIME") @RequestParam(required = false) String startTime,
-            @Parameter(description = "结束时间 yyyy-MM-dd HH:mm:ss 或 ISO_OFFSET_DATE_TIME") @RequestParam(required = false) String endTime) {
+            @Parameter(description = "结束时间 yyyy-MM-dd HH:mm:ss 或 ISO_OFFSET_DATE_TIME") @RequestParam(required = false) String endTime,
+            @Parameter(description = "链路追踪ID 精确匹配，轻量 Trace 看板聚合用") @RequestParam(required = false) String traceId) {
         OffsetDateTime start = parseDateTime(startTime);
         OffsetDateTime end = parseDateTime(endTime);
-        PageResult<SystemLog> result = systemLogService.page(page, pageSize, module, operationType, username, success, start, end);
+        PageResult<SystemLog> result = systemLogService.page(page, pageSize, module, operationType, username, success, start, end, traceId);
         return Result.success(result);
     }
 

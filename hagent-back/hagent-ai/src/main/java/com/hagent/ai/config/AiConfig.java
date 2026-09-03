@@ -38,6 +38,8 @@ public class AiConfig {
     private Memory memory = new Memory();
     /** 备用对话模型配置（主 + 多级备用 N 级） */
     private FallbackChat fallbackChat = new FallbackChat();
+    /** 工具调用配置（轻量 Trace 看板关联，MAX_TOOL_ITERATIONS 配置化） */
+    private Tools tools = new Tools();
 
     @PostConstruct
     public void init() {
@@ -74,6 +76,9 @@ public class AiConfig {
 
         // FallbackChat config：主 + 多级备用 N 级，空数组回退仅主模型
         refreshFallbackChat();
+
+        // Tools config：ai.tools.max-iterations 配置化（system_config 可配置，默认 8）
+        refreshTools();
     }
 
     /**
@@ -123,6 +128,33 @@ public class AiConfig {
         } catch (Exception e) {
             log.warn("解析 ai.fallback.chat.models 失败，JSON 非法，回退空列表: {}", e.getMessage());
             return new ArrayList<>();
+        }
+    }
+
+    /**
+     * 刷新工具调用配置
+     * 从 system_config 读取 ai.tools.max-iterations，非法值回退 8
+     *
+     * @author H
+     */
+    private void refreshTools() {
+        try {
+            String raw = getConfigValue("ai.tools.max-iterations", "8");
+            int v = Integer.parseInt(raw.trim());
+            // 边界收敛：1..20，超出截断
+            if (v < 1) {
+                v = 1;
+            } else if (v > 20) {
+                v = 20;
+            }
+            tools.setMaxIterations(v);
+            log.info("Tools refreshed: maxIterations={}", v);
+        } catch (NumberFormatException e) {
+            log.warn("ai.tools.max-iterations 非法，回退 8: {}", e.getMessage());
+            tools.setMaxIterations(8);
+        } catch (Exception e) {
+            log.warn("刷新工具配置失败，回退 8: {}", e.getMessage());
+            tools.setMaxIterations(8);
         }
     }
 
@@ -185,6 +217,19 @@ public class AiConfig {
         private boolean enabled = false;
         /** 备用模型列表，按 order 升序排序，主模型 order=0，备用 1..N */
         private List<FallbackModel> models = new ArrayList<>();
+    }
+
+    /**
+     * 工具调用配置
+     * 对应 system_config 键：ai.tools.max-iterations
+     * 同时暴露为配置属性 ai.tools.max-iterations 供 @Value 注入兼容
+     *
+     * @author H
+     */
+    @Data
+    public static class Tools {
+        /** 工具调用最大迭代次数（默认 8，范围 1..20） */
+        private int maxIterations = 8;
     }
 
     /**

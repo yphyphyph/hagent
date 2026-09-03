@@ -32,9 +32,21 @@ public interface SystemLogService {
      * @param endTime       结束时间
      * @return 分页结果
      */
+     PageResult<SystemLog> page(int page, int pageSize, String module, String operationType,
+                                String username, Integer success,
+                                OffsetDateTime startTime, OffsetDateTime endTime);
+
+    /**
+     * 分页查询操作日志（支持 traceId 精确过滤）
+     *
+     * @param traceId   链路追踪ID 精确匹配
+     * @return 分页结果
+     * @author H
+     */
     PageResult<SystemLog> page(int page, int pageSize, String module, String operationType,
-                               String username, Integer success,
-                               OffsetDateTime startTime, OffsetDateTime endTime);
+                                String username, Integer success,
+                                OffsetDateTime startTime, OffsetDateTime endTime,
+                                String traceId);
 
     /**
      * 按ID查询详情

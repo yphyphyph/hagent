@@ -140,6 +140,17 @@
         <!-- 备用模型：独占一屏，避免与 AI 主配置挤在一起 -->
         <n-tab-pane name="fallback" tab="备用模型">
           <div class="settings-pane">
+            <!-- 工具调用上限：轻量 Trace 关联的 MAX_TOOL_ITERATIONS 配置化（ai.tools.max-iterations，1..20） -->
+            <section class="block">
+              <h3 class="block__title">工具调用上限</h3>
+              <p class="block__desc" style="margin-bottom: 12px">Agent 工具循环最大迭代次数，对应后端 AgentToolLoopService MAX_TOOL_ITERATIONS，已抽为 system_config ai.tools.max-iterations 可配置（1..20，默认 8）。</p>
+              <n-form label-placement="left" label-width="110" size="large">
+                <n-form-item label="maxIterations" class="span-1">
+                  <n-input-number v-model:value="aiForm.maxToolIterations" :min="1" :max="20" :step="1" class="num-full" />
+                </n-form-item>
+              </n-form>
+            </section>
+
             <div class="block__head">
               <div>
                 <h3 class="block__title">多级降级链</h3>
@@ -351,6 +362,7 @@ async function loadSettings() {
     aiForm.visModel = pick(['ai.vision.model'], 'mimo-v2.5')
     aiForm.visBaseUrl = pick(['ai.vision.base-url'], '')
     aiForm.visApiKey = pick(['ai.vision.api-key'], '')
+    aiForm.maxToolIterations = pickNumber(['ai.tools.max-iterations', 'ai.tools.maxIterations'], 8)
     aiForm.fallbackModels = parseFallbackModels()
   } catch {
     // 错误已由 request 拦截器统一 toast
@@ -423,6 +435,7 @@ interface AiForm {
   visModel: string
   visBaseUrl: string
   visApiKey: string
+  maxToolIterations: number
   fallbackModels: FallbackModel[]
 }
 
@@ -442,6 +455,7 @@ const aiForm = reactive<AiForm>({
   visModel: 'mimo-v2.5',
   visBaseUrl: '',
   visApiKey: '',
+  maxToolIterations: 8,
   fallbackModels: [],
 })
 
@@ -529,6 +543,7 @@ async function saveAi() {
       'ai.vision.model': aiForm.visModel,
       'ai.vision.base-url': aiForm.visBaseUrl,
       'ai.vision.api-key': aiForm.visApiKey,
+      'ai.tools.max-iterations': String(Math.min(20, Math.max(1, aiForm.maxToolIterations || 8))),
       'ai.fallback.chat.enabled': filtered.length > 0 ? 'true' : 'false',
       'ai.fallback.chat.models': JSON.stringify(filtered),
     })

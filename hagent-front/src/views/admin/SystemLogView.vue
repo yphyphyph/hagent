@@ -1,5 +1,45 @@
 <template>
   <div class="system-log-page">
+    <!-- Trace 看板：轻量聚合（不建重型 Run/Node 双表）— 按 trace_id 分组展示 latency / channel / 条数，前端对 system_log.trace_id 分组；点击 traceId 可经 GET /admin/system-log/page?traceId=... 下钻 -->
+    <n-card class="trace-board-card" :bordered="true" size="small">
+      <template #header>
+        <span class="trace-board-title">Trace 看板</span>
+        <span class="trace-board-desc">轻量聚合 · 按 trace_id 分组 · latency 来自 system_log.cost_time_ms · channel/topScore 来自 RagTraceAspect 日志（traceId/channel/latency/topScore）按 traceId 关联</span>
+      </template>
+      <template #header-extra>
+        <n-space :size="8" align="center">
+          <span class="trace-board-count">当前页 {{ traceBoardGroups.length }} 个 Trace</span>
+          <n-button v-if="filters.traceId" size="tiny" quaternary @click="clearTraceFilter">清除 Trace 筛选</n-button>
+        </n-space>
+      </template>
+      <div v-if="traceBoardGroups.length === 0" class="trace-board-empty">
+        <n-empty description="暂无 Trace 聚合（当前页无 trace_id 或未检索）" size="small" style="padding: 12px 0" />
+      </div>
+      <div v-else class="trace-board-grid">
+        <div
+          v-for="g in traceBoardGroups"
+          :key="g.traceId"
+          class="trace-card"
+          :class="{ 'is-active': filters.traceId === g.traceId }"
+          @click="filterByTrace(g.traceId)"
+        >
+          <div class="trace-card__head">
+            <span class="trace-card__id mono" :title="g.traceId">{{ g.shortId }}</span>
+            <n-tag size="tiny" :bordered="false" :type="g.successRate === 1 ? 'success' : g.successRate === 0 ? 'error' : 'default'">{{ g.count }} 条</n-tag>
+          </div>
+          <div class="trace-card__meta">
+            <span>latency: <b>{{ g.maxLatency }}ms</b> / avg {{ g.avgLatency }}ms</span>
+            <span>channel: <b>{{ g.channel || '—' }}</b></span>
+          </div>
+          <div class="trace-card__meta">
+            <span>topScore: <b>{{ g.topScoreText }}</b></span>
+            <span class="trace-card__time">{{ g.timeRange }}</span>
+          </div>
+        </div>
+      </div>
+      <div v-if="traceBoardGroups.length > 0" class="trace-board-hint">点击卡片按 traceId 下钻（GET /admin/system-log/page?traceId=...），RagTraceAspect 的 channel/latency/topScore 日志按 traceId 关联观测</div>
+    </n-card>
+
     <!-- 筛选区 -->
     <n-card class="log-filter-card" :bordered="true">
       <n-form :model="filters" inline label-placement="left" :show-feedback="false" class="log-filter-form">
@@ -37,6 +77,15 @@
             clearable
             :options="successOptions"
             style="width: 120px"
+          />
+        </n-form-item>
+        <n-form-item label="traceId">
+          <n-input
+            v-model:value="filters.traceId"
+            placeholder="traceId 精确"
+            clearable
+            style="width: 200px"
+            @keydown.enter="onSearch"
           />
         </n-form-item>
         <n-form-item label="时间范围">
@@ -194,12 +243,14 @@ const filters = ref<{
   operationType: string | null
   username: string
   success: number | null
+  traceId: string
   dateRange: [number, number] | null
 }>({
   module: '',
   operationType: null,
   username: '',
   success: null,
+  traceId: '',
   dateRange: null,
 })
 
@@ -245,6 +296,7 @@ async function loadData() {
     if (filters.value.operationType) params.operationType = filters.value.operationType
     if (filters.value.username?.trim()) params.username = filters.value.username.trim()
     if (filters.value.success !== null && filters.value.success !== undefined) params.success = filters.value.success
+    if (filters.value.traceId?.trim()) params.traceId = filters.value.traceId.trim()
     if (filters.value.dateRange && filters.value.dateRange[0] && filters.value.dateRange[1]) {
       // n-date-picker daterange 返回当天 00:00 时间戳，结束时间补到当天 23:59:59
       const start = filters.value.dateRange[0]
@@ -282,8 +334,92 @@ function onReset() {
     operationType: null,
     username: '',
     success: null,
+    traceId: '',
     dateRange: null,
   }
+  pagination.value.page = 1
+  loadData()
+}
+
+/* ---------- Trace 看板：轻量聚合（前端对 system_log.trace_id 分组，无重型 Run/Node 双表） ---------- */
+interface TraceGroup {
+  traceId: string
+  shortId: string
+  count: number
+  maxLatency: number
+  avgLatency: number
+  channel: string
+  topScoreText: string
+  timeRange: string
+  successRate: number
+}
+
+const traceBoardGroups = computed<TraceGroup[]>(() => {
+  const map = new Map<string, SystemLog[]>()
+  for (const row of tableData.value) {
+    const tid = row.traceId?.trim() || '—'
+    if (!map.has(tid)) map.set(tid, [])
+    map.get(tid)!.push(row)
+  }
+  const groups: TraceGroup[] = []
+  for (const [tid, rows] of map.entries()) {
+    const count = rows.length
+    const latencies = rows.map((r) => r.costTimeMs ?? 0)
+    const maxLatency = Math.max(...latencies)
+    const avgLatency = Math.round(latencies.reduce((a, b) => a + b, 0) / count)
+    // channel：取出现最多的 module 作为通道代理（RagTraceAspect 的 channel 按 traceId 关联日志）
+    const moduleCount = new Map<string, number>()
+    for (const r of rows) {
+      const m = r.module || '—'
+      moduleCount.set(m, (moduleCount.get(m) || 0) + 1)
+    }
+    let channel = ''
+    let maxC = 0
+    for (const [m, c] of moduleCount.entries()) {
+      if (c > maxC) { maxC = c; channel = m }
+    }
+    // topScore：system_log 无向量分数，尝试从 responseResult 解析，否则显示 —（RagTraceAspect 日志的 topScore 按 traceId 关联）
+    let topScoreText = '—'
+    for (const r of rows) {
+      const txt = r.responseResult
+      if (typeof txt === 'string' && txt.includes('topScore')) {
+        try {
+          const obj = JSON.parse(txt)
+          const v = (obj as Record<string, unknown>)?.topScore ?? (obj as Record<string, unknown>)?.score
+          if (typeof v === 'number') { topScoreText = v.toFixed(3); break }
+          if (typeof v === 'string' && v) { topScoreText = v; break }
+        } catch { /* ignore */ }
+      }
+    }
+    const times = rows.map((r) => r.createdAt || '').filter(Boolean).sort()
+    const timeRange = times.length ? `${String(times[0]).slice(11, 19)} → ${String(times[times.length - 1]).slice(11, 19)}` : '—'
+    const successCount = rows.filter((r) => r.success === 1).length
+    const successRate = successCount === count ? 1 : successCount === 0 ? 0 : 0.5
+    const shortId = tid === '—' ? '—' : tid.length > 12 ? `${tid.slice(0, 8)}…${tid.slice(-4)}` : tid
+    groups.push({ traceId: tid, shortId, count, maxLatency, avgLatency, channel, topScoreText, timeRange, successRate })
+  }
+  // 按条数/最大延迟综合排序，无 traceId 的排最后
+  groups.sort((a, b) => {
+    if (a.traceId === '—') return 1
+    if (b.traceId === '—') return -1
+    return b.maxLatency - a.maxLatency || b.count - a.count
+  })
+  return groups.slice(0, 12)
+})
+
+function filterByTrace(traceId: string) {
+  if (traceId === '—') return
+  if (filters.value.traceId === traceId) {
+    filters.value.traceId = ''
+  } else {
+    filters.value.traceId = traceId
+  }
+  pagination.value.page = 1
+  loadData()
+}
+
+function clearTraceFilter() {
+  filters.value.traceId = ''
   pagination.value.page = 1
   loadData()
 }
@@ -403,6 +539,81 @@ async function onClean() {
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+
+/* Trace 看板：轻量聚合，无重型双表 */
+.trace-board-card {
+  border-radius: var(--radius-lg);
+  background: var(--bg-elevated);
+}
+.trace-board-title {
+  font-weight: 700;
+  font-size: 14px;
+}
+.trace-board-desc {
+  margin-left: 8px;
+  font-size: 11px;
+  color: var(--text-3, #999);
+  font-weight: 400;
+}
+.trace-board-count {
+  font-size: 12px;
+  color: var(--text-3);
+}
+.trace-board-empty {
+  padding: 4px 0;
+}
+.trace-board-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 10px;
+}
+.trace-card {
+  border: 1px solid var(--border, #eee);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--bg-soft, #fafafa);
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.trace-card:hover {
+  border-color: var(--primary, #18a058);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+}
+.trace-card.is-active {
+  border-color: var(--primary, #18a058);
+  background: var(--primary-soft, #e8f5e9);
+}
+.trace-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.trace-card__id {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+.trace-card__meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-2, #666);
+  line-height: 1.5;
+}
+.trace-card__time {
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--text-3);
+}
+.trace-board-hint {
+  margin-top: 10px;
+  font-size: 11px;
+  color: var(--text-3, #999);
 }
 
 .log-filter-card {

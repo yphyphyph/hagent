@@ -26,6 +26,7 @@ public class HybridSearchService {
     private final KeywordSearchChannel keywordChannel;
     private final RrfFusionProcessor fusionProcessor;
     private final HybridSearchProperties properties;
+    private final RerankingService rerankingService;
 
     /**
      * 混合检索（业务入口，返回 Document 列表以复用现有溯源链路）
@@ -37,14 +38,23 @@ public class HybridSearchService {
     public List<Document> hybridSearch(SearchContext context, int topK) {
         long start = System.currentTimeMillis();
 
-        // 短路：关键词禁用且向量通道始终启用，直接单通道
+        // 短路：关键词禁用且向量通道始终启用，直接单通道（仍走精排闸门以保持一致性）
         boolean keywordEnabled = keywordChannel.isEnabled(context);
         if (!properties.isEnabled() || !keywordEnabled) {
             SearchChannelResult vectorResult = vectorChannel.search(context);
             List<RetrievedChunk> chunks = vectorResult.getChunks();
             log.info("混合检索单通道（向量）: query={}, topK={}, chunks={}, latencyMs={}",
                     context.getQuery(), topK, chunks.size(), vectorResult.getLatencyMs());
-            return toDocuments(chunks, topK);
+            List<Document> docs = toDocuments(chunks, topK);
+            List<Document> reranked = rerankingService.rerank(context.getQuery(), docs);
+            if (EvidenceGate.shouldDiscard(reranked)) {
+                log.info("证据闸门丢弃（单通道）: query={}, reranked={}", context.getQuery(), reranked.size());
+                return List.of();
+            }
+            if (reranked.size() > topK) {
+                return reranked.subList(0, topK);
+            }
+            return reranked;
         }
 
         // 双路并行
@@ -83,9 +93,22 @@ public class HybridSearchService {
         // 去重 + RRF 融合
         List<RetrievedChunk> fused = fusionProcessor.fuse(results, topK);
         long latency = System.currentTimeMillis() - start;
-        log.info("混合检索完成: query={}, topK={}, fused={}, latencyMs={}",
+        log.info("混合检索完成（融合后）: query={}, topK={}, fused={}, latencyMs={}",
                 context.getQuery(), topK, fused.size(), latency);
-        return toDocuments(fused, topK);
+        // RRF 后精排 + 证据闸门：精排按 query 重排，最高分 <0.2 整批丢弃，保留 RagService.retainHitMetadata 所需 Document 形态
+        List<Document> docs = toDocuments(fused, topK);
+        List<Document> reranked = rerankingService.rerank(context.getQuery(), docs);
+        if (EvidenceGate.shouldDiscard(reranked)) {
+            log.info("证据闸门丢弃（双路）: query={}, topK={}, reranked={}, latencyMs={}",
+                    context.getQuery(), topK, reranked.size(), System.currentTimeMillis() - start);
+            return List.of();
+        }
+        if (reranked.size() > topK) {
+            reranked = reranked.subList(0, topK);
+        }
+        log.info("混合检索精排闸门后: query={}, topK={}, reranked={}, latencyMs={}",
+                context.getQuery(), topK, reranked.size(), System.currentTimeMillis() - start);
+        return reranked;
     }
 
     /**

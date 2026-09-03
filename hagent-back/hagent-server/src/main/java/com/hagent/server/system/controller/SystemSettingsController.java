@@ -36,8 +36,8 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class SystemSettingsController {
 
-    /** 允许通过接口写入的配置键前缀（白名单，避免任意写库，已追加 ai.fallback.chat.*） */
-    private static final String[] ALLOWED_PREFIXES = {"ai.", "site."};
+     /** 允许通过接口写入的配置键前缀（白名单，避免任意写库，已追加 ai.fallback.chat.* / hagent.hybrid.* 用于检索调参） */
+    private static final String[] ALLOWED_PREFIXES = {"ai.", "site.", "hagent.hybrid."};
 
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
@@ -53,12 +53,13 @@ public class SystemSettingsController {
      * @author H
      */
     @GetMapping("/settings")
-    @Operation(summary = "获取系统设置", description = "返回全部 system_config 配置的 key→value，含 ai.fallback.chat.enabled/models")
+    @Operation(summary = "获取系统设置", description = "返回全部 system_config 配置的 key→value，含 ai.fallback.chat.enabled/models 及 ai.tools.max-iterations")
     public Result<Map<String, String>> settings() {
         Map<String, String> all = systemConfigService.getAll();
         // 聚合返回含 fallback 配置，库中缺失时补默认值，保证前端回显一致
         all.putIfAbsent("ai.fallback.chat.enabled", "false");
         all.putIfAbsent("ai.fallback.chat.models", "[]");
+        all.putIfAbsent("ai.tools.max-iterations", String.valueOf(aiConfig.getTools().getMaxIterations()));
         return Result.success(all);
     }
 
@@ -97,6 +98,18 @@ public class SystemSettingsController {
                     throw new BusinessException(400, "ai.fallback.chat.enabled 仅允许 true/false");
                 }
                 value = v;
+            }
+            if ("ai.tools.max-iterations".equals(key)) {
+                // 边界校验：1..20
+                try {
+                    int v = Integer.parseInt(value.trim());
+                    if (v < 1 || v > 20) {
+                        throw new BusinessException(400, "ai.tools.max-iterations 仅允许 1..20");
+                    }
+                    value = String.valueOf(v);
+                } catch (NumberFormatException e) {
+                    throw new BusinessException(400, "ai.tools.max-iterations 必须为整数 1..20");
+                }
             }
 
             systemConfigService.saveValue(key, value);
@@ -165,8 +178,12 @@ public class SystemSettingsController {
         if (!StringUtils.hasText(key)) {
             return false;
         }
-        // 显式放行备用模型键，即使前缀收紧也能通过
-        if ("ai.fallback.chat.enabled".equals(key) || "ai.fallback.chat.models".equals(key)) {
+        // 显式放行备用模型、工具配置与混合检索键，即使前缀收紧也能通过
+        if ("ai.fallback.chat.enabled".equals(key) || "ai.fallback.chat.models".equals(key)
+                || "ai.tools.max-iterations".equals(key)) {
+            return true;
+        }
+        if (key.startsWith("hagent.hybrid.")) {
             return true;
         }
         for (String prefix : ALLOWED_PREFIXES) {

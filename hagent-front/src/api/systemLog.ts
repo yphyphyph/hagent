@@ -36,6 +36,7 @@ export interface SystemLogPageParams {
   success?: number
   startTime?: string
   endTime?: string
+  traceId?: string
 }
 
 /** 分页响应，兼容后端 PageResult 形如 { list/total } 或 { records/total } */

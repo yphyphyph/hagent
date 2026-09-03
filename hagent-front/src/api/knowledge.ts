@@ -22,6 +22,18 @@ export interface KnowledgeStats {
   searchCount?: number
 }
 
+export interface KnowledgeChunk {
+  chunk_index?: number
+  chunkIndex?: number
+  id?: string | number
+  content?: string
+  text?: string
+  metadata?: Record<string, unknown>
+  score?: number
+  file_id?: string | number
+  fileId?: string | number
+}
+
 export const knowledgeApi = {
   /** 文件列表（后端返回分页结构 {list, total}，取 list） */
   async list(): Promise<KnowledgeFile[]> {
@@ -67,5 +79,45 @@ export const knowledgeApi = {
   },
   revectorizeOutdated(ids?: number[]): Promise<{ total: number; queued: number }> {
     return request.post('/admin/knowledge/revectorize-outdated', ids ? { ids } : {})
+  },
+  /** 分块列表：优先 GET /admin/knowledge/{id}/chunks，无则前端兜底走 GET /admin/ai/vector/search?fileId=... */
+  async chunks(fileId: number | string): Promise<KnowledgeChunk[]> {
+    try {
+      const data = await request.get<unknown, unknown>(`/admin/knowledge/${fileId}/chunks`)
+      if (Array.isArray(data)) return data as KnowledgeChunk[]
+      if (data && typeof data === 'object') {
+        const obj = data as Record<string, unknown>
+        if (Array.isArray(obj.list)) return obj.list as KnowledgeChunk[]
+        if (Array.isArray(obj.data)) return obj.data as KnowledgeChunk[]
+        if (Array.isArray(obj.chunks)) return obj.chunks as KnowledgeChunk[]
+      }
+      return []
+    } catch (e: unknown) {
+      // 404 兜底：尝试向量检索接口按 fileId 过滤
+      const msg = e instanceof Error ? e.message : ''
+      void msg
+      try {
+        const fallback = await request.get<unknown, unknown>(`/admin/ai/vector/search`, {
+          params: { fileId },
+        })
+        if (Array.isArray(fallback)) return fallback as KnowledgeChunk[]
+        if (fallback && typeof fallback === 'object') {
+          const obj = fallback as Record<string, unknown>
+          if (Array.isArray(obj.list)) return obj.list as KnowledgeChunk[]
+          if (Array.isArray(obj.data)) return obj.data as KnowledgeChunk[]
+          if (Array.isArray(obj.chunks)) return obj.chunks as KnowledgeChunk[]
+        }
+        return []
+      } catch {
+        throw e
+      }
+    }
+  },
+  /** 按 fileId 的向量检索兜底（显式 GET /admin/ai/vector/search?fileId=...） */
+  vectorSearchByFile(fileId: number | string, query?: string, limit?: number): Promise<KnowledgeChunk[]> {
+    const params: Record<string, unknown> = { fileId }
+    if (query) params.query = query
+    if (limit) params.limit = limit
+    return request.get('/admin/ai/vector/search', { params }) as Promise<KnowledgeChunk[]>
   },
 }

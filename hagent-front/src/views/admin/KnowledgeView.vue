@@ -73,19 +73,131 @@
         :bordered="false"
       />
     </n-card>
+
+    <!-- 分块预览抽屉 -->
+    <n-drawer v-model:show="chunkDrawerVisible" :width="720" placement="right" :trap-focus="false">
+      <n-drawer-content :title="chunkDrawerTitle" closable :native-scrollbar="false">
+        <div class="chunk-drawer">
+          <!-- 检索测试区：验证切分质量与双路贡献 -->
+          <div class="chunk-search">
+            <div class="chunk-search__label">检索测试</div>
+            <div class="chunk-search__row">
+              <n-input
+                v-model:value="chunkQuery"
+                placeholder="输入查询词，测试该文件在双路召回中的表现"
+                clearable
+                size="small"
+                @keyup.enter="onChunkSearch"
+              />
+              <n-button size="small" type="primary" :loading="chunkSearchLoading" @click="onChunkSearch">
+                检索测试
+              </n-button>
+              <n-button size="small" quaternary @click="resetChunkSearch">重置</n-button>
+            </div>
+            <div v-if="chunkSearchResult.length > 0" class="chunk-search__result">
+              <div class="chunk-search__meta">
+                <n-tag size="small" :bordered="false" type="info">命中 {{ chunkSearchResult.length }} 条</n-tag>
+                <span class="chunk-search__hint">绿色为向量召回，蓝色为关键词召回，紫色为融合后</span>
+              </div>
+              <div class="chunk-search-list">
+                <div v-for="(r, idx) in chunkSearchResult" :key="idx" class="chunk-card chunk-card--search">
+                  <div class="chunk-card__head">
+                    <span class="chunk-card__idx">#{{ (r as any).chunk_index ?? (r as any).chunkIndex ?? idx }}</span>
+                    <n-tag v-if="(r as any).score != null" size="tiny" type="success" :bordered="false">{{ Number((r as any).score).toFixed(4) }}</n-tag>
+                  </div>
+                  <div class="chunk-card__content">{{ (r as any).content ?? (r as any).text ?? '' }}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <n-divider style="margin: var(--space-4) 0" />
+
+          <!-- 分块列表 -->
+          <div class="chunk-list-head">
+            <span class="chunk-list-title">分块列表</span>
+            <n-tag size="small" :bordered="false" type="info">{{ chunks.length }} 块</n-tag>
+            <n-button size="tiny" quaternary :loading="chunksLoading" @click="loadChunks">刷新</n-button>
+          </div>
+
+          <n-spin :show="chunksLoading">
+            <div v-if="!chunksLoading && chunks.length === 0" class="chunk-empty">
+              <n-empty description="暂无分块数据（未向量化或后端未返回）" />
+              <n-alert type="info" :show-icon="false" class="chunk-empty__tip">
+                已尝试 GET /admin/knowledge/{{ chunkDrawerFile?.id }}/chunks，无则兜底 GET /admin/ai/vector/search?fileId=...
+              </n-alert>
+            </div>
+            <div v-else class="chunk-list">
+              <div v-for="(c, idx) in chunks" :key="idx" class="chunk-card">
+                <div class="chunk-card__head">
+                  <span class="chunk-card__idx">#{{ displayChunkIndex(c, idx) }}</span>
+                  <span v-if="displayChunkMeta(c)" class="chunk-card__meta">{{ displayChunkMeta(c) }}</span>
+                  <n-tag v-if="(c as any).score != null" size="tiny" :bordered="false" type="success">{{ Number((c as any).score).toFixed(3) }}</n-tag>
+                </div>
+                <div class="chunk-card__content">{{ displayChunkContent(c) }}</div>
+                <div v-if="displayMetadata(c)" class="chunk-card__metadata">
+                  <span class="chunk-card__metadata-label">metadata</span>
+                  <pre class="chunk-card__metadata-pre">{{ displayMetadata(c) }}</pre>
+                </div>
+              </div>
+            </div>
+          </n-spin>
+
+          <n-divider style="margin: var(--space-5) 0" />
+
+          <!-- 检索配置：HybridSearchProperties topK 与权重 -->
+          <div class="chunk-config">
+            <div class="chunk-config__title">检索参数</div>
+            <div class="chunk-config__desc">对应后端 HybridSearchProperties，可即时保存至 system_config（hagent.hybrid.*）</div>
+            <div class="chunk-config__grid">
+              <div class="chunk-config__item">
+                <span class="chunk-config__label">关键词 topK</span>
+                <n-input-number v-model:value="hybridForm.topK" :min="1" :max="100" :step="1" size="small" class="chunk-config__input" />
+              </div>
+              <div class="chunk-config__item">
+                <span class="chunk-config__label">向量权重</span>
+                <n-input-number v-model:value="hybridForm.weightVector" :min="0" :max="5" :step="0.1" size="small" class="chunk-config__input" />
+              </div>
+              <div class="chunk-config__item">
+                <span class="chunk-config__label">关键词权重</span>
+                <n-input-number v-model:value="hybridForm.weightKeyword" :min="0" :max="5" :step="0.1" size="small" class="chunk-config__input" />
+              </div>
+              <div class="chunk-config__item">
+                <span class="chunk-config__label">RRF K</span>
+                <n-input-number v-model:value="hybridForm.rrfK" :min="1" :max="100" :step="1" size="small" class="chunk-config__input" />
+              </div>
+            </div>
+            <div class="chunk-config__actions">
+              <n-button size="small" :loading="hybridLoading" quaternary @click="loadHybridSettings">刷新配置</n-button>
+              <n-button size="small" type="primary" :loading="hybridSaving" @click="saveHybridSettings">保存配置</n-button>
+            </div>
+            <n-alert v-if="hybridHint" type="info" :show-icon="false" class="chunk-config__hint">{{ hybridHint }}</n-alert>
+          </div>
+        </div>
+      </n-drawer-content>
+    </n-drawer>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, h, onMounted, ref, type Component } from 'vue'
+import { computed, h, onMounted, reactive, ref, type Component } from 'vue'
 import {
+  NAlert,
   NButton,
   NCard,
   NDataTable,
+  NDivider,
+  NDrawer,
+  NDrawerContent,
+  NEmpty,
   NIcon,
+  NInput,
+  NInputNumber,
   NProgress,
   NRadio,
   NRadioGroup,
+  NSpace,
+  NSpin,
   NStatistic,
   NSwitch,
   NTag,
@@ -101,8 +213,10 @@ import {
   SearchOutlined,
   CloudUploadOutlined,
   DeleteOutlined,
+  EyeOutlined,
 } from '@vicons/antd'
-import { knowledgeApi, type KnowledgeFile } from '@/api/knowledge'
+import { knowledgeApi, type KnowledgeChunk, type KnowledgeFile } from '@/api/knowledge'
+import { systemApi } from '@/api/system'
 
 const message = useMessage()
 
@@ -126,7 +240,6 @@ async function loadStats() {
       { label: '检索次数', value: num(s.searchCount), icon: SearchOutlined, tone: 'purple' },
     ]
   } catch {
-    // 错误已由 request 拦截器统一 toast
     kbStats.value = []
   }
 }
@@ -138,7 +251,6 @@ interface KnowledgeDoc {
   type: string
   size: string
   status: string
-  /** 可见性：0=私有 1=公有 */
   visibility: number
   uploadedAt: string
 }
@@ -175,7 +287,6 @@ async function loadDocs() {
     const list = await knowledgeApi.list()
     documents.value = list.map(mapDoc)
   } catch {
-    // 已 toast
     documents.value = []
   } finally {
     docsLoading.value = false
@@ -190,7 +301,7 @@ onMounted(() => {
 
 const pagination = { pageSize: 10 }
 
-/* 过期向量（模型/维度变更）一键重算 */
+/* 过期向量一键重算 */
 const outdatedCount = ref(0)
 const bulkRevectorizing = ref(false)
 
@@ -225,7 +336,7 @@ async function onBulkRevectorize() {
   }
 }
 
-/* 状态字段容错映射：向量化成功 / 处理中 / 失败等 */
+/* 状态字段容错映射 */
 const VECTORIZED_STATUSES = ['vectorized', 'available', 'done', '已向量化', '已就绪', '已完成']
 const FAILED_STATUSES = ['failed', 'error', '失败', '异常']
 
@@ -258,7 +369,7 @@ function statusTagType(status: string): 'success' | 'warning' | 'error' {
 }
 
 const columns: DataTableColumns<KnowledgeDoc> = [
-  { type: "selection" },
+  { type: 'selection' },
   {
     title: '文件名',
     key: 'fileName',
@@ -272,7 +383,7 @@ const columns: DataTableColumns<KnowledgeDoc> = [
         row.fileName,
       ]),
   },
-  { title: '类型', key: 'type', width: 110 },
+  { title: '类型', key: 'type', width: 90 },
   { title: '大小', key: 'size', width: 110, className: 'mono' },
   {
     title: '状态',
@@ -301,11 +412,11 @@ const columns: DataTableColumns<KnowledgeDoc> = [
         { checked: () => '公有', unchecked: () => '私有' },
       ),
   },
-  { title: '上传时间', key: 'uploadedAt', width: 180, className: 'mono' },
+  { title: '上传时间', key: 'uploadedAt', width: 170, className: 'mono' },
   {
     title: '操作',
     key: 'actions',
-    width: 170,
+    width: 260,
     render: (row) => {
       const vectorizeBtn = isVectorized(row.status)
         ? null
@@ -320,6 +431,15 @@ const columns: DataTableColumns<KnowledgeDoc> = [
             },
             { icon: () => h(NIcon, null, { default: () => h(ThunderboltOutlined) }), default: () => '向量化' },
           )
+      const chunkBtn = h(
+        NButton,
+        {
+          size: 'small',
+          secondary: true,
+          onClick: () => openChunkDrawer(row),
+        },
+        { icon: () => h(NIcon, null, { default: () => h(EyeOutlined) }), default: () => '查看分块' },
+      )
       const deleteBtn = h(
         NButton,
         {
@@ -331,7 +451,7 @@ const columns: DataTableColumns<KnowledgeDoc> = [
         },
         { icon: () => h(NIcon, null, { default: () => h(DeleteOutlined) }), default: () => '删除' },
       )
-      return h('span', { style: 'display: flex; gap: 4px;' }, [vectorizeBtn, deleteBtn])
+      return h('span', { style: 'display:flex;gap:4px;flex-wrap:wrap;' }, [vectorizeBtn, chunkBtn, deleteBtn])
     },
   },
 ]
@@ -389,11 +509,8 @@ const activeUploads = ref(0)
 const uploadPercent = ref(0)
 const uploadingFileName = ref('')
 const isUploading = computed(() => activeUploads.value > 0)
-
-/* ---------- 上传可见性选择 ---------- */
 const uploadVisibility = ref<number>(1)
 
-/* ---------- 真实上传 ---------- */
 async function realUpload({ file, onFinish, onError }: UploadCustomRequestOptions) {
   const raw = file.file
   if (!raw) {
@@ -420,7 +537,6 @@ async function realUpload({ file, onFinish, onError }: UploadCustomRequestOption
   } finally {
     activeUploads.value--
     if (activeUploads.value === 0) {
-      // 全部上传结束后延迟重置，避免进度条瞬间消失
       setTimeout(() => {
         if (activeUploads.value === 0) {
           uploadPercent.value = 0
@@ -428,6 +544,182 @@ async function realUpload({ file, onFinish, onError }: UploadCustomRequestOption
         }
       }, 600)
     }
+  }
+}
+
+/* ---------- 分块预览抽屉 ---------- */
+const chunkDrawerVisible = ref(false)
+const chunkDrawerFile = ref<KnowledgeDoc | null>(null)
+const chunks = ref<KnowledgeChunk[]>([])
+const chunksLoading = ref(false)
+const chunkQuery = ref('')
+const chunkSearchResult = ref<KnowledgeChunk[]>([])
+const chunkSearchLoading = ref(false)
+
+const chunkDrawerTitle = computed(() => {
+  if (!chunkDrawerFile.value) return '查看分块'
+  return `查看分块 · ${chunkDrawerFile.value.fileName}`
+})
+
+function displayChunkIndex(c: KnowledgeChunk, fallback: number): string {
+  const v = (c as any).chunk_index ?? (c as any).chunkIndex ?? (c as any).index
+  if (v != null) return String(v)
+  return String(fallback)
+}
+
+function displayChunkContent(c: KnowledgeChunk): string {
+  const v = (c as any).content ?? (c as any).text ?? (c as any).snippet ?? ''
+  return String(v)
+}
+
+function displayChunkMeta(c: KnowledgeChunk): string {
+  const m = (c as any).metadata
+  if (m && typeof m === 'object') {
+    const keys = Object.keys(m as Record<string, unknown>)
+    if (keys.length === 0) return ''
+    // 展示简要：file_id / source 等
+    const brief = keys.slice(0, 3).join(' · ')
+    return brief
+  }
+  return ''
+}
+
+function displayMetadata(c: KnowledgeChunk): string {
+  const m = (c as any).metadata
+  if (!m) return ''
+  try {
+    if (typeof m === 'string') return m
+    return JSON.stringify(m, null, 2)
+  } catch {
+    return String(m)
+  }
+}
+
+function openChunkDrawer(row: KnowledgeDoc) {
+  chunkDrawerFile.value = row
+  chunkDrawerVisible.value = true
+  chunkQuery.value = ''
+  chunkSearchResult.value = []
+  hybridHint.value = ''
+  loadChunks()
+  loadHybridSettings()
+}
+
+async function loadChunks() {
+  if (!chunkDrawerFile.value) return
+  chunksLoading.value = true
+  try {
+    const list = await knowledgeApi.chunks(chunkDrawerFile.value.id)
+    chunks.value = Array.isArray(list) ? list : []
+    if (chunks.value.length === 0) {
+      // 显式提示后端返回空
+    }
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : '加载分块失败'
+    message.warning(msg)
+    chunks.value = []
+  } finally {
+    chunksLoading.value = false
+  }
+}
+
+async function onChunkSearch() {
+  const q = chunkQuery.value.trim()
+  if (!q) {
+    message.warning('请输入检索关键词')
+    return
+  }
+  if (!chunkDrawerFile.value) return
+  chunkSearchLoading.value = true
+  try {
+    // 优先用知识库搜索（后端为混合检索），透传 fileId 过滤以验证该文件贡献
+    // knowledgeApi.search 目前仅支持 query，若后端支持 fileId 则兜底用 vectorSearchByFile
+    let result: KnowledgeChunk[] = []
+    try {
+      const raw = await knowledgeApi.search(q, 8)
+      result = (raw as unknown as KnowledgeChunk[]) ?? []
+      // 若返回包含 file_id，按当前 fileId 过滤以突出本文件贡献
+      const fid = String(chunkDrawerFile.value.id)
+      const filtered = result.filter((it: any) => {
+        const f = it.file_id ?? it.fileId ?? it.fileIdStr ?? (it.metadata as any)?.file_id ?? (it.metadata as any)?.fileId
+        return f == null || String(f) === fid
+      })
+      // 若过滤后为空，保留原结果以便对比双路
+      chunkSearchResult.value = filtered.length > 0 ? filtered : result
+    } catch {
+      // 兜底：按 fileId 的向量检索
+      const fb = await knowledgeApi.vectorSearchByFile(chunkDrawerFile.value.id, q, 8)
+      chunkSearchResult.value = Array.isArray(fb) ? fb : []
+    }
+    if (chunkSearchResult.value.length === 0) {
+      message.info('该查询在当前文件中未命中，可尝试更短关键词以验证 tsvector 贡献')
+    }
+  } catch {
+    // 已 toast
+    chunkSearchResult.value = []
+  } finally {
+    chunkSearchLoading.value = false
+  }
+}
+
+function resetChunkSearch() {
+  chunkQuery.value = ''
+  chunkSearchResult.value = []
+}
+
+/* ---------- 检索配置 ---------- */
+const hybridForm = reactive({
+  topK: 20,
+  weightVector: 1,
+  weightKeyword: 1,
+  rrfK: 20,
+})
+const hybridLoading = ref(false)
+const hybridSaving = ref(false)
+const hybridHint = ref('')
+
+function pickHybridNumber(settings: Record<string, unknown>, keys: string[], fallback: number): number {
+  for (const k of keys) {
+    const v = settings[k]
+    const n = typeof v === 'number' ? v : Number(v)
+    if (v !== undefined && v !== null && v !== '' && !Number.isNaN(n)) return n
+  }
+  return fallback
+}
+
+async function loadHybridSettings() {
+  hybridLoading.value = true
+  try {
+    const s = await systemApi.getSettings()
+    const map = s as Record<string, unknown>
+    hybridForm.topK = pickHybridNumber(map, ['hagent.hybrid.keyword.top-k', 'hagent.hybrid.keyword.topK', 'hagent.hybrid.keyword.top_k'], 20)
+    hybridForm.weightVector = pickHybridNumber(map, ['hagent.hybrid.weights.vector', 'hagent.hybrid.weight.vector'], 1)
+    hybridForm.weightKeyword = pickHybridNumber(map, ['hagent.hybrid.weights.keyword', 'hagent.hybrid.weight.keyword'], 1)
+    hybridForm.rrfK = pickHybridNumber(map, ['hagent.hybrid.rrf-k', 'hagent.hybrid.rrfK', 'hagent.hybrid.rrf_k'], 20)
+  } catch {
+    // 保持默认值
+  } finally {
+    hybridLoading.value = false
+  }
+}
+
+async function saveHybridSettings() {
+  hybridSaving.value = true
+  try {
+    await systemApi.updateSettings({
+      'hagent.hybrid.keyword.top-k': String(hybridForm.topK),
+      'hagent.hybrid.weights.vector': String(hybridForm.weightVector),
+      'hagent.hybrid.weights.keyword': String(hybridForm.weightKeyword),
+      'hagent.hybrid.rrf-k': String(hybridForm.rrfK),
+    } as Record<string, unknown>)
+    hybridHint.value = `已保存：topK=${hybridForm.topK}，向量权重=${hybridForm.weightVector}，关键词权重=${hybridForm.weightKeyword}，RRF K=${hybridForm.rrfK}`
+    message.success('检索参数已保存')
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : '保存失败'
+    // 若后端白名单拦截 hagent.*，提示但不阻断
+    hybridHint.value = msg.includes('忽略') || msg.includes('不允许') ? '后端暂未放行 hagent.hybrid 前缀，已尝试保存' : msg
+  } finally {
+    hybridSaving.value = false
   }
 }
 </script>
@@ -527,21 +819,183 @@ async function realUpload({ file, onFinish, onError }: UploadCustomRequestOption
 .kb-table-title {
   font-weight: 600;
 }
-.kb-outdated-alert__body {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-  flex-wrap: wrap;
-}
 .kb-table-card {
   width: 100%;
   border-radius: var(--radius-lg);
   background: var(--bg-elevated);
 }
 
+/* ---------- 分块抽屉 ---------- */
+.chunk-drawer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.chunk-search__label {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-1);
+  margin-bottom: var(--space-2);
+}
+.chunk-search__row {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+.chunk-search__meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+  flex-wrap: wrap;
+}
+.chunk-search__hint {
+  font-size: var(--text-xs);
+  color: var(--text-3);
+}
+.chunk-search-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+.chunk-list-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.chunk-list-title {
+  font-weight: 600;
+  font-size: var(--text-sm);
+  color: var(--text-1);
+}
+.chunk-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.chunk-empty {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4) 0;
+}
+.chunk-empty__tip {
+  font-size: var(--text-xs);
+}
+.chunk-card {
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+}
+.chunk-card--search {
+  border-color: var(--accent-border);
+  background: var(--bg-hover);
+}
+.chunk-card__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+.chunk-card__idx {
+  font-size: var(--text-xs);
+  font-weight: 700;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-full);
+  padding: 2px 8px;
+}
+.chunk-card__meta {
+  font-size: var(--text-xs);
+  color: var(--text-3);
+  margin-left: auto;
+}
+.chunk-card__content {
+  font-size: var(--text-sm);
+  line-height: 1.7;
+  color: var(--text-1);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.chunk-card__metadata {
+  margin-top: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: 1px dashed var(--border);
+}
+.chunk-card__metadata-label {
+  font-size: var(--text-xs);
+  color: var(--text-3);
+}
+.chunk-card__metadata-pre {
+  margin: var(--space-1) 0 0;
+  padding: var(--space-2) var(--space-3);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-2);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 160px;
+  overflow: auto;
+}
+
+/* 检索配置 */
+.chunk-config {
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-hover);
+}
+.chunk-config__title {
+  font-weight: 700;
+  font-size: var(--text-sm);
+  color: var(--text-1);
+}
+.chunk-config__desc {
+  font-size: var(--text-xs);
+  color: var(--text-3);
+  margin-top: var(--space-1);
+  margin-bottom: var(--space-3);
+}
+.chunk-config__grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-3);
+}
+.chunk-config__item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.chunk-config__label {
+  font-size: var(--text-xs);
+  color: var(--text-2);
+}
+.chunk-config__input {
+  width: 100%;
+}
+.chunk-config__actions {
+  display: flex;
+  gap: var(--space-2);
+  justify-content: flex-end;
+  margin-top: var(--space-4);
+}
+.chunk-config__hint {
+  margin-top: var(--space-3);
+  font-size: var(--text-xs);
+}
+
 @media (max-width: 900px) {
   .kb-stats {
+    grid-template-columns: 1fr;
+  }
+  .chunk-config__grid {
     grid-template-columns: 1fr;
   }
 }
