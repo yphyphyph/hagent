@@ -89,6 +89,23 @@ public class HybridSearchService {
     }
 
     /**
+     * 便捷方法（任务清单签名：query/topK/threshold/userId 四参）
+     * <p>
+     * 内部并行双路：向量通道复用原生 filterExpression 权限过滤 + 关键词通道 JDBC tsvector 权限过滤，
+     * 结果转 Document，经 RrfFusionProcessor.rrf(k=20) 合并去重取 topK，保留 RagService.retainHitMetadata 透传
+     *
+     * @param query     查询
+     * @param topK      截回数
+     * @param threshold 向量阈值
+     * @param userId    当前用户
+     * @return Document 列表
+     * @author H
+     */
+    public List<Document> hybridSearch(String query, int topK, double threshold, Long userId) {
+        return hybridSearch(query, topK, threshold, userId, null);
+    }
+
+    /**
      * 便捷方法（与 RagService.searchAccessible 同签名风格）
      *
      * @param query     查询
@@ -97,6 +114,7 @@ public class HybridSearchService {
      * @param userId    当前用户
      * @param fileIds   限定文件
      * @return Document 列表
+     * @author H
      */
     public List<Document> hybridSearch(String query, int topK, double threshold, Long userId, List<String> fileIds) {
         SearchContext context = SearchContext.builder()

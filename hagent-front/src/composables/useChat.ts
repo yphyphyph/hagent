@@ -1,4 +1,4 @@
-import { ref, type Ref, triggerRef, nextTick } from 'vue'
+import { ref, type Ref } from 'vue'
 import {
   streamChat,
   conversationApi,
@@ -6,6 +6,7 @@ import {
   type ChatSource,
   type Conversation,
 } from '@/api/chat'
+
 
 /** 前端统一消息模型（视图层渲染用） */
 export interface UiChatMessage {
@@ -212,6 +213,7 @@ export function useChat(options: UseChatOptions) {
     }
     activeAiMsg = null
     controller = null
+    // 流结束后收尾（追问已下线）
   }
 
   /** 加载历史会话消息（管理端，含 thinkingContent 历史思考回显与溯源） */
@@ -233,6 +235,7 @@ export function useChat(options: UseChatOptions) {
         // 溯源引用历史回显（后端 sources 字段，可能是 JSON 字符串）
         sources: parseSources((m as unknown as Record<string, unknown>).sources),
       }))
+      // 切换会话后保持消息列表干净
     } catch {
       // 错误已由 request 拦截器统一 toast
     }

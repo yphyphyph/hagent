@@ -50,6 +50,11 @@ public class ChatMessage implements Serializable {
     @Schema(description = "来源引用(JSON数组)")
     private String sources;
 
+    /** 链路追踪ID（复用 system_log.trace_id 的 MDC 生成，轻量 Trace 预留，不强制建库） */
+    @TableField("trace_id")
+    @Schema(description = "链路追踪ID")
+    private String traceId;
+
     /** 消息Token数量 */
     private Integer tokenCount;
 

@@ -214,11 +214,16 @@ public class AgentToolLoopService {
                     thinkingAccum != null && thinkingAccum.length() > 0 ? thinkingAccum.toString() : null,
                     rawThinking);
             if (thinkingChunk != null && !thinkingChunk.isEmpty()) {
-                if (thinkingAccum != null) {
-                    thinkingAccum.append(thinkingChunk);
+                // 追问提示词泄漏防护：长度 >500 且含“你是HAgent追问助手”直接过滤不推送不落库 @author H
+                if (ThinkingStageSupport.isFollowupPromptLeak(thinkingChunk)) {
+                    log.warn("工具阶段 thinking 追问提示词泄漏已过滤: length={} iter={}", thinkingChunk.length(), i + 1);
+                } else {
+                    if (thinkingAccum != null) {
+                        thinkingAccum.append(thinkingChunk);
+                    }
+                    stageSupport.emitThinkingToSink(sink, thinkingChunk);
+                    log.debug("工具阶段思考内容已实时发射: length={}, iter={}", thinkingChunk.length(), i + 1);
                 }
-                stageSupport.emitThinkingToSink(sink, thinkingChunk);
-                log.debug("工具阶段思考内容已实时发射: length={}, iter={}", thinkingChunk.length(), i + 1);
             }
 
             // 无工具调用 = 最终回复，不加入messages，交给stream阶段生成

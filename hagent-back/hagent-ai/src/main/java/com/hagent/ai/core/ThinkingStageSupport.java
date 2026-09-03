@@ -12,6 +12,7 @@ import tools.jackson.databind.ObjectMapper;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 思考阶段支持组件
@@ -65,6 +66,17 @@ public class ThinkingStageSupport {
     public static final String SQL_TOOL_NAME = "queryBusinessData";
     /** 图片识别工具名称 */
     public static final String IMAGE_TOOL_NAME = "analyze_image";
+
+    /** 追问提示词过滤阈值：长度超过该值且包含追问助手标识的 thinking 直接过滤不推送 */
+    private static final int FOLLOWUP_PROMPT_LENGTH_THRESHOLD = 500;
+    /** 追问助手标识 */
+    private static final String FOLLOWUP_MARKER = "你是HAgent追问助手";
+    /** 同一 thinking 文本去重窗口（毫秒）：5s 内重复不再推送 */
+    private static final long THINKING_DEDUP_WINDOW_MS = 5000L;
+    /** 去重缓存：key -> 首次推送时间戳 */
+    private static final ConcurrentHashMap<String, Long> THINKING_DEDUP_CACHE = new ConcurrentHashMap<>();
+    /** 去重缓存最大条目数，超出时清理过期键 */
+    private static final int DEDUP_CACHE_MAX_SIZE = 1000;
 
     /**
      * 根据思考文本推断阶段标题（关键词映射，前端可据 stage 字段切换标题）
@@ -144,11 +156,18 @@ public class ThinkingStageSupport {
 
     /**
      * 将思考/推理增量包装为结构化JSON字符串（兼容旧调用：推断阶段后带 stage 一并下发）
+     * 增加追问提示词泄漏防护：长度 >500 且含追问标识的 chunk 直接返回空 thinking 事件由调用方丢弃
      *
      * @param thinkingChunk 思考内容增量
-     * @return 结构化JSON字符串，格式：{"type":"thinking","content":"<思考增量>"}
+     * @return 结构化JSON字符串，格式：{"type":"thinking","content":"<思考增量>"}，泄漏时返回空 content
+     * @author H
      */
     public String wrapThinking(String thinkingChunk) {
+        // 追问提示词泄漏过滤（直接返回空，避免前端展示 4 次回环）
+        if (isFollowupPromptLeak(thinkingChunk)) {
+            log.warn("wrapThinking 过滤追问提示词泄漏: length={}", thinkingChunk.length());
+            return "{\"type\":\"thinking\",\"content\":\"\"}";
+        }
         String stage = inferThinkingStage(thinkingChunk);
         if (stage != null) {
             return wrapThinking(thinkingChunk, stage);
@@ -166,9 +185,14 @@ public class ThinkingStageSupport {
      *
      * @param thinkingChunk 思考内容增量
      * @param stage 阶段标题（8 阶段之一）
-     * @return 结构化JSON：{"type":"thinking","content":"...","stage":"..."}
+     * @return 结构化JSON：{"type":"thinking","content":"...","stage":"..."}，泄漏时返回空 content
+     * @author H
      */
     public String wrapThinking(String thinkingChunk, String stage) {
+        if (isFollowupPromptLeak(thinkingChunk)) {
+            log.warn("wrapThinking(stage) 过滤追问提示词泄漏: length={}", thinkingChunk.length());
+            return "{\"type\":\"thinking\",\"content\":\"\"}";
+        }
         try {
             String contentJson = objectMapper.writeValueAsString(thinkingChunk);
             String stageJson = objectMapper.writeValueAsString(stage);
@@ -200,15 +224,81 @@ public class ThinkingStageSupport {
     }
 
     /**
+     * 判断 thinking 是否应被过滤（追问提示词回环防护）
+     * 当 thinking 长度超过阈值且包含“你是HAgent追问助手”标识时，视为追问提示词误入 thinking 通道，直接过滤
+     *
+     * @param thinkingChunk 思考增量
+     * @return 是否应过滤
+     * @author H
+     */
+    public static boolean isFollowupPromptLeak(String thinkingChunk) {
+        if (thinkingChunk == null) {
+            return false;
+        }
+        return thinkingChunk.length() > FOLLOWUP_PROMPT_LENGTH_THRESHOLD && thinkingChunk.contains(FOLLOWUP_MARKER);
+    }
+
+    /**
+     * 同一 conversation 下同一 thinking 文本 5s 内去重
+     * 使用 conversationId + thinking 内容哈希作为 key，5s 内重复推送直接丢弃
+     *
+     * @param conversationId 会话ID（可空，空时按全局去重）
+     * @param thinkingChunk 思考增量
+     * @return 是否允许推送（true 允许，false 去重丢弃）
+     * @author H
+     */
+    public static boolean shouldEmitThinking(Long conversationId, String thinkingChunk) {
+        if (thinkingChunk == null || thinkingChunk.isEmpty()) {
+            return false;
+        }
+        // 追问提示词泄漏直接过滤
+        if (isFollowupPromptLeak(thinkingChunk)) {
+            log.warn("thinking 追问提示词泄漏已过滤: length={} conversationId={}", thinkingChunk.length(), conversationId);
+            return false;
+        }
+        // 生成去重 key：conversationId + 内容哈希/前 200 字符，避免超长 key
+        String contentKey = thinkingChunk.length() <= 200 ? thinkingChunk : thinkingChunk.substring(0, 200) + "#" + thinkingChunk.length();
+        String key = (conversationId != null ? conversationId : "global") + ":" + contentKey.hashCode();
+        long now = System.currentTimeMillis();
+        Long last = THINKING_DEDUP_CACHE.get(key);
+        if (last != null && (now - last) < THINKING_DEDUP_WINDOW_MS) {
+            log.debug("thinking 去重丢弃: conversationId={} keyHash={}", conversationId, contentKey.hashCode());
+            return false;
+        }
+        // 清理过期：超量时移除过期条目
+        if (THINKING_DEDUP_CACHE.size() > DEDUP_CACHE_MAX_SIZE) {
+            THINKING_DEDUP_CACHE.entrySet().removeIf(e -> (now - e.getValue()) > THINKING_DEDUP_WINDOW_MS);
+        }
+        THINKING_DEDUP_CACHE.put(key, now);
+        return true;
+    }
+
+    /**
      * 将思考增量实时写入 SSE sink
      * 大块增量按 THINKING_CHUNK_SIZE 切分、分片间休眠 THINKING_DELAY，模拟逐字输出且保持与后续事件的先后顺序
+     * 增加过滤与去重：追问长提示词直接过滤，同一 conversation 同一 thinking 5s 内不再重复推送
      *
      * @param sink          SSE 事件sink
      * @param thinkingChunk 本次思考增量
-     * @return 实际写入的增量片段（用于调用方去重累积，已切分时为拼接后的 chunk）
+     * @return 实际写入的增量片段（用于调用方去重累积，已切分时为拼接后的 chunk），被过滤/去重时返回 null
+     * @author H
      */
     public String emitThinkingToSink(FluxSink<String> sink, String thinkingChunk) {
         if (thinkingChunk == null || thinkingChunk.isEmpty()) {
+            return null;
+        }
+        // 追问提示词泄漏过滤
+        if (isFollowupPromptLeak(thinkingChunk)) {
+            log.warn("thinking 追问提示词泄漏已过滤不推送: length={}", thinkingChunk.length());
+            return null;
+        }
+        // 从 UserContextHolder 尝试获取 conversationId 用于去重
+        Long cid = null;
+        try {
+            cid = com.hagent.ai.core.UserContextHolder.getConversationId();
+        } catch (Exception ignored) {
+        }
+        if (!shouldEmitThinking(cid, thinkingChunk)) {
             return null;
         }
         if (thinkingChunk.length() <= 50) {

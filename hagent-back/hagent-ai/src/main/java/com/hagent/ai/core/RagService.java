@@ -184,6 +184,21 @@ public class RagService {
     }
 
     /**
+     * 按用户可见性搜索（清单别名，委托同 searchAccessible，保持 filterExpression 权限前置）
+     * <p>
+     * 仅改内部委托为 hybridSearchService.hybridSearch(...)，不改 filterExpression 权限前置口径
+     *
+     * @param query     搜索查询文本
+     * @param topK      Top 结果数量
+     * @param threshold 相似度阈值
+     * @return 当前用户可见的匹配文档列表
+     * @author H
+     */
+    public List<Document> searchVisible(String query, int topK, double threshold) {
+        return searchAccessible(query, topK, threshold);
+    }
+
+    /**
      * 解析当前用户ID：聊天链路（UserContextHolder）优先，HTTP 请求链路（UserContext）兜底
      */
     private Long resolveCurrentUserId() {

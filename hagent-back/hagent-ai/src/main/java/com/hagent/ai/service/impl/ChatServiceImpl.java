@@ -454,10 +454,15 @@ public class ChatServiceImpl implements ChatService {
                                     streamedThinkingSeen.length() > 0 ? streamedThinkingSeen.toString() : null,
                                     rawThinking);
                             if (thinkingChunk != null && !thinkingChunk.isEmpty()) {
-                                // 累积思考内容用于入库持久化（仅新增 delta，避免落库翻倍）
-                                thinkingAccum.append(thinkingChunk);
-                                streamedThinkingSeen.append(thinkingChunk);
-                                stageSupport.emitThinkingToSink(sink, thinkingChunk);
+                                // 追问提示词泄漏防护：长度 >500 且含“你是HAgent追问助手”的 thinking 直接过滤不推送不落库 @author H
+                                if (com.hagent.ai.core.ThinkingStageSupport.isFollowupPromptLeak(thinkingChunk)) {
+                                    log.warn("流式 thinking 追问提示词泄漏已过滤: conversationId={} length={}", finalConversationId, thinkingChunk.length());
+                                } else {
+                                    // 累积思考内容用于入库持久化（仅新增 delta，避免落库翻倍）
+                                    thinkingAccum.append(thinkingChunk);
+                                    streamedThinkingSeen.append(thinkingChunk);
+                                    stageSupport.emitThinkingToSink(sink, thinkingChunk);
+                                }
                             }
                             // 2) 再发射 token 增量
                             String text = null;
@@ -478,6 +483,13 @@ public class ChatServiceImpl implements ChatService {
                             }
                         },
                         error -> {
+                            // 前端主动取消：不计失败、不落库、不推送错误，由前端 MessageAggregator 正常取消 @author H
+                            if (isCancel(error)) {
+                                log.info("流式已取消: conversationId={} cause={}", finalConversationId, error.toString());
+                                sink.next("[FINAL]");
+                                sink.complete();
+                                return;
+                            }
                             log.error("流式输出异常: conversationId={}", finalConversationId, error);
                             // 异常时保存已生成的部分文本+思考内容+来源，保证历史上下文完整（访客模式跳过）
                             String partialText = fullText.toString();
@@ -566,6 +578,89 @@ public class ChatServiceImpl implements ChatService {
      * @return Flux
      * @author H
      */
+    /**
+     * 判断是否为前端主动取消（CANCEL）
+     * 特征：okhttp StreamResetException: CANCEL / stream was reset: CANCEL / IOExceptionWrappingSequence hasNext 为 CANCEL
+     *
+     * @param e 异常
+     * @return 是否为取消
+     * @author H
+     */
+    private static boolean isCancel(Throwable e) {
+        if (e == null) {
+            return false;
+        }
+        Throwable cur = e;
+        int depth = 0;
+        while (cur != null && depth < 10) {
+            String cls = cur.getClass().getSimpleName();
+            String msg = cur.getMessage();
+            if (cls != null && (cls.toLowerCase().contains("cancel") || cls.contains("StreamResetException"))) {
+                return true;
+            }
+            if (msg != null) {
+                String lower = msg.toLowerCase();
+                if (lower.contains("cancel")) {
+                    return true;
+                }
+                if (lower.contains("stream was reset") && lower.contains("cancel")) {
+                    return true;
+                }
+                if (lower.contains("ioexceptionwrappingsequence") && lower.contains("cancel")) {
+                    return true;
+                }
+            }
+            cur = cur.getCause();
+            depth++;
+        }
+        String topMsg = e.getMessage();
+        return topMsg != null && topMsg.toLowerCase().contains("cancel");
+    }
+
+    /**
+     * 判断是否可重试（模型侧 5xx/429/timeout）
+     *
+     * @param e 异常
+     * @return 是否可重试
+     * @author H
+     */
+    private static boolean isRetryable(Throwable e) {
+        if (isCancel(e)) {
+            return false;
+        }
+        if (e instanceof java.util.concurrent.TimeoutException) {
+            return true;
+        }
+        Throwable cur = e;
+        int depth = 0;
+        while (cur != null && depth < 10) {
+            String msg = cur.getMessage();
+            if (msg != null) {
+                String lower = msg.toLowerCase();
+                if (lower.contains("timeout") || lower.contains("timed out") || lower.contains("first packet timeout")) {
+                    return true;
+                }
+                if (lower.contains("429") || lower.contains("too many requests") || lower.contains("rate limit")) {
+                    return true;
+                }
+                if (lower.contains("500") || lower.contains("502") || lower.contains("503") || lower.contains("504")
+                        || lower.contains("internal server error") || lower.contains("bad gateway")
+                        || lower.contains("service unavailable") || lower.contains("gateway timeout")) {
+                    return true;
+                }
+                if (lower.contains("openaiioexception") || lower.contains("stream failed")) {
+                    return true;
+                }
+            }
+            if (cur.getClass().getSimpleName().toLowerCase().contains("timeout")) {
+                return true;
+            }
+            cur = cur.getCause();
+            depth++;
+        }
+        return false;
+    }
+
     private Flux<ChatResponse> streamWithFallbackInternal(List<ChatModel> ordered, List<Message> messages, OpenAiChatOptions baseStreamOptions, int index) {
         if (index >= ordered.size()) {
             return Flux.error(new RuntimeException("all chat models failed"));
@@ -585,6 +680,16 @@ public class ChatServiceImpl implements ChatService {
         Prompt prompt = new Prompt(messages, curOptions);
         return current.stream(prompt)
                 .onErrorResume(e -> {
+                    // 前端主动取消：直接透传，不再 WARN fallback，避免熔断误触发
+                    if (isCancel(e)) {
+                        log.info("stream cancel detected, no fallback model={} cause={}", resolveModelName(current), e.toString());
+                        return Flux.error(e);
+                    }
+                    // 仅 5xx/429/timeout 才重试；其他非重试异常直接透传
+                    if (!isRetryable(e)) {
+                        log.info("stream non-retryable error, no fallback model={} cause={}", resolveModelName(current), e.toString());
+                        return Flux.error(e);
+                    }
                     if (index >= ordered.size() - 1) {
                         return Flux.error(e);
                     }

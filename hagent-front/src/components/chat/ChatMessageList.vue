@@ -114,6 +114,7 @@
             <div v-if="m.elapsedMs !== undefined" class="ai-meta">
               <span>回答耗时 {{ (m.elapsedMs / 1000).toFixed(1) }} 秒</span>
             </div>
+
           </div>
         </div>
 
