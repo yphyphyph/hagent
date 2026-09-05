@@ -66,6 +66,7 @@
                 role="status"
               >
                 {{ contextUsage.percent }}% · {{ formatK(contextUsage.promptTokens) }} / {{ formatK(contextUsage.contextWindow) }} 上下文已使用
+                <span v-if="isActual" class="stage-badge is-actual">实际</span>
               </div>
             </transition>
             <div
@@ -79,8 +80,11 @@
               </div>
               <div class="detail-total">
                 <span class="detail-total__percent">{{ contextUsage.percent }}%</span>
+                <span v-if="isActual" class="stage-badge is-actual">实际</span>
                 <span class="detail-total__text">已使用 {{ formatK(contextUsage.promptTokens) }}/{{ formatK(contextUsage.contextWindow) }}</span>
               </div>
+              <!-- stage=actual 时总量为 usage 回执实际值，分段仍为估算构成（与总量存在小差额） -->
+              <div v-if="isActual" class="detail-bar-note">分段为估算构成</div>
               <div class="detail-bar">
                 <span class="seg seg--system" :style="{ width: `${segPct.system}%` }"></span>
                 <span class="seg seg--history" :style="{ width: `${segPct.history}%` }"></span>
@@ -213,6 +217,8 @@ const usageLevel = computed(() => {
   if (p >= 70) return 'is-warn'
   return ''
 })
+/** 数值口径：actual=usage 回执实际值 / estimated=流中估算（缺省视为估算，兼容旧事件）；估算不显示徽标，实际显示绿色「实际」 */
+const isActual = computed(() => props.contextUsage?.stage === 'actual')
 /** 环形进度：C=2πr，r=9，弧长随 percent */
 const RING_C = 2 * Math.PI * 9
 const ringDash = computed(() => {
@@ -451,6 +457,37 @@ defineExpose({ focus: () => textareaRef.value?.focus() })
 .detail-total__text {
   font-size: 12px;
   color: var(--text-3);
+}
+/* 口径徽标：仅 stage=actual 时显示绿色「实际」（估算态不显示，保持默认干净），pill 与详情卡共用 */
+.stage-badge {
+  display: inline-block;
+  font-size: 10px;
+  line-height: 1;
+  padding: 3px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text-3);
+  background: transparent;
+  vertical-align: middle;
+  margin-left: 6px;
+  white-space: nowrap;
+  user-select: none;
+}
+.stage-badge.is-actual {
+  color: #059669;
+  border-color: rgba(5, 150, 105, 0.35);
+  background: rgba(5, 150, 105, 0.06);
+}
+[data-theme='dark'] .stage-badge.is-actual {
+  color: #34d399;
+  border-color: rgba(52, 211, 153, 0.35);
+  background: rgba(52, 211, 153, 0.1);
+}
+/* stage=actual 时分段提示（总量为实际值，分段为估算构成） */
+.detail-bar-note {
+  font-size: 11px;
+  color: var(--text-3);
+  margin-bottom: 6px;
 }
 .detail-bar {
   display: flex;

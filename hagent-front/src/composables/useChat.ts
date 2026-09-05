@@ -38,11 +38,13 @@ export interface ContextUsage {
   promptTokens: number
   /** 上下文窗口（分母，可在设置页配置） */
   contextWindow: number
-  /** 已用百分比（0-100） */
+  /** 已用百分比（0-100，floor 取整） */
   percent: number
-  /** 明细：历史 / 摘要 / RAG / 系统（未知键保留透传） */
+  /** 数值口径：estimated=流中估算（发送/RAG修正） / actual=回答完成的真实消耗（usage 回执） */
+  stage: 'estimated' | 'actual'
+  /** 明细：历史 / 摘要 / RAG / 系统（未知键保留透传；stage=actual 时为估算构成，与总量存在小差额） */
   breakdown: Record<string, number>
-  /** 上轮实际 promptTokens（仅明细行参考，环形圈仍用预估口径，缺省 0） */
+  /** 上轮实际 promptTokens（仅明细行参考，缺省 0） */
   actualPromptTokens: number
   /** 快照更新时间戳（毫秒） */
   updatedAt: number
@@ -318,6 +320,8 @@ export function useChat(options: UseChatOptions) {
             contextWindow,
             // floor 取整与后端口径一致：分子单调增时显示永不回退
             percent: Math.floor((historyTokens / contextWindow) * 100),
+            // 本地兜底为启发式估算，口径标 estimated
+            stage: 'estimated',
             // 历史页无当轮 RAG/摘要口径，如实归零（明细行显示 0）
             breakdown: { history: historyTokens, summary: 0, rag: 0, system: 0 },
             // 历史页无上轮实际回执，如实置 0（明细行仅参考）
@@ -540,7 +544,9 @@ export function useChat(options: UseChatOptions) {
     }
     // 上轮实际仅进明细行参考，缺省 0（meta 事件无此字段时保持兼容）
     const actualPromptTokens = toNum(m.actualPromptTokens) ?? 0
-    return { promptTokens, contextWindow, percent, breakdown, actualPromptTokens, updatedAt: Date.now() }
+    // 数值口径：actual=usage 回执真实值，其余（含缺省/旧事件）一律视为估算
+    const stage: ContextUsage['stage'] = m.stage === 'actual' ? 'actual' : 'estimated'
+    return { promptTokens, contextWindow, percent, stage, breakdown, actualPromptTokens, updatedAt: Date.now() }
   }
 
   /** 解析溯源字段（兼容 JSON 字符串 / 数组 / 空值） */

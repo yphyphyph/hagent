@@ -455,6 +455,7 @@ public class ChatServiceImpl implements ChatService {
                     + ",\"promptTokens\":" + promptTokens
                     + ",\"contextWindow\":" + contextWindow
                     + ",\"percent\":" + percent
+                    + ",\"stage\":\"estimated\""
                     + ",\"breakdown\":{\"history\":" + historyTokens
                     + ",\"summary\":" + summaryTokens
                     + ",\"rag\":" + ragTokens
@@ -520,7 +521,7 @@ public class ChatServiceImpl implements ChatService {
                                     promptTokensBox[0], historyTokensSnap, summaryTokensSnap, ragTokensBox[0], systemTokensSnap);
                             sink.next(buildContextUpdateJson(finalConversationId, promptTokensBox[0],
                                     contextWindowSnap, percentBox[0], historyTokensSnap, summaryTokensSnap,
-                                    ragTokensBox[0], systemTokensSnap, 0));
+                                    ragTokensBox[0], systemTokensSnap, 0, "estimated"));
                         }
                     } catch (Exception e) {
                         log.warn("RAG 修正失败，保留初始估算", e);
@@ -637,17 +638,22 @@ public class ChatServiceImpl implements ChatService {
                             sink.complete();
                         },
                         () -> {
-                            // usage 校准：环形圈统一用下轮预估口径，不再以实际值覆盖估算快照；
-                            // 实际值仅随 context-update 下发供明细行参考，无回执静默跳过保留估算 @author H
+                            // usage 校准（业界口径：回答完成后环形圈收敛到实际消耗）：用模型 usage 回执的
+                            // promptTokens 覆盖估算快照（总量与 percent 均以 actual 为准，stage=actual 供前端徽标切换）；
+                            // actual 为模型侧精确上报且估算缺口已收敛（<1%），floor 下随轮次单调不跌；
+                            // 无回执（国产接口缺 usage 字段）静默跳过保留估算，stage 维持 estimated @author H
                             try {
                                 int actualPrompt = streamedUsagePromptTokens.get();
                                 if (actualPrompt > 0 && !sink.isCancelled()) {
                                     int estimatedBefore = promptTokensBox[0];
-                                    log.info("usage 校准: estimated={}, actual={}, 下发(promptTokens={}, percent={}, actualPromptTokens={})",
-                                            estimatedBefore, actualPrompt, promptTokensBox[0], percentBox[0], actualPrompt);
+                                    promptTokensBox[0] = actualPrompt;
+                                    percentBox[0] = contextWindowSnap > 0
+                                            ? (int) Math.floor(actualPrompt * 100.0 / contextWindowSnap) : 0;
+                                    log.info("usage 校准: estimated={}, actual={}, 下发(promptTokens={}, percent={}, stage=actual)",
+                                            estimatedBefore, actualPrompt, promptTokensBox[0], percentBox[0]);
                                     sink.next(buildContextUpdateJson(finalConversationId, promptTokensBox[0],
                                             contextWindowSnap, percentBox[0], historyTokensSnap, summaryTokensSnap,
-                                            ragTokensBox[0], systemTokensSnap, actualPrompt));
+                                            ragTokensBox[0], systemTokensSnap, actualPrompt, "actual"));
                                 }
                             } catch (Exception e) {
                                 log.warn("usage 校准失败，保留估算", e);
@@ -1104,7 +1110,7 @@ public class ChatServiceImpl implements ChatService {
 
     /**
      * 构建 context-update 事件（与 meta 同 shape，仅 type 不同，前端忽略未知 type 保持兼容）
-     * 环形圈与 detail-total 统一用下轮预估口径（promptTokens/percent），上轮实际经 actualPromptTokens 下发仅供明细行参考
+     * 环形圈数值口径由 stage 标注：estimated=流中估算（发送/RAG修正），actual=回答完成的真实消耗（usage回执）
      *
      * @param conversationId 会话ID
      * @param promptTokens 提示 token 总数
@@ -1115,17 +1121,19 @@ public class ChatServiceImpl implements ChatService {
      * @param ragTokens RAG 段 token
      * @param systemTokens 系统段 token
      * @param actualPromptTokens 上轮实际 promptTokens（无回执时传 0，前端缺省 0）
+     * @param stage 数值口径：estimated=估算 / actual=实际（前端徽标展示用）
      * @return context-update 事件 JSON
      * @author H
      */
     private String buildContextUpdateJson(Long conversationId, int promptTokens, int contextWindow, int percent,
                                           int historyTokens, int summaryTokens, int ragTokens, int systemTokens,
-                                          int actualPromptTokens) {
+                                          int actualPromptTokens, String stage) {
         return "{\"type\":\"context-update\",\"conversationId\":\""
                 + (conversationId != null ? conversationId : "guest") + "\""
                 + ",\"promptTokens\":" + promptTokens
                 + ",\"contextWindow\":" + contextWindow
                 + ",\"percent\":" + percent
+                + ",\"stage\":\"" + stage + "\""
                 + ",\"actualPromptTokens\":" + actualPromptTokens
                 + ",\"breakdown\":{\"history\":" + historyTokens
                 + ",\"summary\":" + summaryTokens

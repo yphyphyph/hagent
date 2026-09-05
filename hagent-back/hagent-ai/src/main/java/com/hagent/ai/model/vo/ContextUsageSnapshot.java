@@ -26,9 +26,13 @@ public class ContextUsageSnapshot {
     @Schema(description = "上下文窗口")
     private int contextWindow;
 
-    /** 使用百分比（四舍五入） */
+    /** 使用百分比（floor 取整，分子单调增时显示不回退） */
     @Schema(description = "使用百分比")
     private int percent;
+
+    /** 数值口径：estimated=估算 / actual=实际（usage 回执，前端徽标展示） */
+    @Schema(description = "数值口径：estimated=估算 / actual=实际")
+    private String stage;
 
     /** 四段明细 */
     @Schema(description = "四段明细")
@@ -63,7 +67,7 @@ public class ContextUsageSnapshot {
     }
 
     /**
-     * 组装快照（总数恒为四段之和）
+     * 组装快照（总数恒为四段之和，口径恒为估算 estimated——本 VO 仅用于历史页/聊天首值展示）
      *
      * @param promptTokens 提示 token 总数
      * @param contextWindow 上下文窗口
@@ -78,7 +82,7 @@ public class ContextUsageSnapshot {
     public static ContextUsageSnapshot of(int promptTokens, int contextWindow, int percent,
                                           int historyTokens, int summaryTokens,
                                           int ragTokens, int systemTokens) {
-        return new ContextUsageSnapshot(promptTokens, contextWindow, percent,
+        return new ContextUsageSnapshot(promptTokens, contextWindow, percent, "estimated",
                 new Breakdown(historyTokens, summaryTokens, ragTokens, systemTokens));
     }
 }
