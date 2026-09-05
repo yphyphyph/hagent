@@ -54,4 +54,12 @@ public class ChatConversation extends BaseEntity {
 
     /** 状态：1-活跃，2-已归档 */
     private Integer status;
+
+    /** 会话摘要正文（结构化五段：目标/决策/已否决/产物/未决） */
+    @TableField("summary_text")
+    private String summaryText;
+
+    /** 摘要水位线（摘要覆盖到的最大消息ID，幂等键一部分） */
+    @TableField("summary_up_to_message_id")
+    private Long summaryUpToMessageId;
 }

@@ -17,7 +17,86 @@
         <span class="input-bar__hint">
           <kbd>Enter</kbd> 发送 · <kbd>Shift</kbd>+<kbd>Enter</kbd> 换行
         </span>
-        <!-- 三态：流式中=停止（红），有内容=发送（accent），空=禁用 -->
+        <div class="input-bar__send-zone">
+          <!-- 输入长度计数器：码点长度超 8000 显示，超 10000 变红，不挤占发送区 -->
+          <span
+            v-if="inputLen > 8000"
+            class="input-len-counter"
+            :class="{ 'is-over': inputLen > 10000 }"
+          >{{ inputLen }}/10000</span>
+          <span
+            v-if="inputLen > 10000"
+            class="input-over-tip"
+            role="alert"
+          >输入字符已达上限，最多支持 10000 字符</span>
+          <!-- 图标锚定三件套：环形图标 + 小 pill + 详情卡（空数据整体不渲染） -->
+          <div
+            v-if="contextUsage"
+            ref="tokenWrapRef"
+            class="token-wrap"
+            @mouseenter="onWrapEnter"
+            @mouseleave="onWrapLeave"
+          >
+            <span
+              class="token-icon-wrap"
+              :class="usageLevel"
+              :title="`上下文已使用 ${contextUsage.percent}%`"
+              role="button"
+              tabindex="0"
+              @click.stop="toggleDetail"
+              @keydown.enter.stop.prevent="toggleDetail"
+              @keydown.space.stop.prevent="toggleDetail"
+            >
+              <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true">
+                <circle cx="11" cy="11" r="9" fill="none" stroke="#e2e8f0" :stroke-width="2.5" />
+                <circle
+                  cx="11" cy="11" r="9" fill="none"
+                  stroke="currentColor" :stroke-width="2.5" stroke-linecap="round"
+                  :stroke-dasharray="ringDash"
+                  transform="rotate(-90 11 11)"
+                />
+                <text x="11" y="11" text-anchor="middle" dominant-baseline="central" font-size="9">{{ contextUsage.percent }}</text>
+              </svg>
+            </span>
+            <transition name="pill-fade">
+              <div
+                v-if="showTokenPill && !showDetail && contextUsage"
+                class="context-pill"
+                :class="usageLevel"
+                role="status"
+              >
+                {{ contextUsage.percent }}% · {{ formatK(contextUsage.promptTokens) }} / {{ formatK(contextUsage.contextWindow) }} 上下文已使用
+              </div>
+            </transition>
+            <div
+              v-if="showDetail && contextUsage"
+              class="context-detail-card"
+              @click.stop
+            >
+              <div class="context-detail-card__head">
+                <span class="context-detail-card__title">上下文用量</span>
+                <button type="button" class="context-detail-card__close" aria-label="关闭" @click.stop="closeDetail">×</button>
+              </div>
+              <div class="detail-total">
+                <span class="detail-total__percent">{{ contextUsage.percent }}%</span>
+                <span class="detail-total__text">已使用 {{ formatK(contextUsage.promptTokens) }}/{{ formatK(contextUsage.contextWindow) }}</span>
+              </div>
+              <div class="detail-bar">
+                <span class="seg seg--system" :style="{ width: `${segPct.system}%` }"></span>
+                <span class="seg seg--history" :style="{ width: `${segPct.history}%` }"></span>
+                <span class="seg seg--rag" :style="{ width: `${segPct.rag}%` }"></span>
+                <span class="seg seg--summary" :style="{ width: `${segPct.summary}%` }"></span>
+              </div>
+              <div class="context-detail-card__row"><span><i class="dot dot--system"></i>系统提示词</span><span>{{ formatNum(bd.system) }} · {{ segPct.system }}%</span></div>
+              <div class="context-detail-card__row"><span><i class="dot dot--history"></i>对话消息</span><span>{{ formatNum(bd.history) }} · {{ segPct.history }}%</span></div>
+              <div class="context-detail-card__row"><span><i class="dot dot--rag"></i>RAG 检索</span><span>{{ formatNum(bd.rag) }} · {{ segPct.rag }}%</span></div>
+              <div class="context-detail-card__row"><span><i class="dot dot--summary"></i>摘要</span><span>{{ formatNum(bd.summary) }} · {{ segPct.summary }}%</span></div>
+              <!-- 上轮实际仅参考，不参与环形圈与 detail-total（预估口径） -->
+              <div class="context-detail-card__row"><span>上轮实际</span><span>{{ formatNum(contextUsage.actualPromptTokens ?? 0) }}（仅参考）</span></div>
+              <div class="context-detail-card__foot">更新于 {{ updatedText }}</div>
+            </div>
+          </div>
+          <!-- 三态：流式中=停止（红），有内容=发送（accent），空=禁用 -->
         <button
           v-if="streaming"
           type="button"
@@ -32,8 +111,8 @@
           v-else
           type="button"
           class="send-btn"
-          :disabled="!modelValue?.trim()"
-          title="发送"
+          :disabled="!modelValue?.trim() || inputLen > 10000"
+          :title="inputLen > 10000 ? '输入已超限，请删减后发送' : '发送'"
           @click="$emit('send')"
         >
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -41,17 +120,21 @@
             <path d="M22 2 15 22l-4-9-9-4z" />
           </svg>
         </button>
+        </div>
       </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
+import type { ContextUsage } from '@/composables/useChat'
 
-defineProps<{
+const props = defineProps<{
   modelValue?: string
   streaming?: boolean
+  /** 上下文用量快照（来自 useChat.contextUsage，无数据时不展示入口） */
+  contextUsage?: ContextUsage | null
 }>()
 
 const emit = defineEmits<{
@@ -64,6 +147,109 @@ const emit = defineEmits<{
 const textareaRef = ref<HTMLTextAreaElement | null>(null)
 /** 中文输入法组词守卫：组词期间的 Enter 是选词，不触发发送 */
 const composing = ref(false)
+/** 图标悬浮状态：控制 context-pill 显隐（平时仅留环形进度入口） */
+const showTokenPill = ref(false)
+/** 详情卡显隐：点击图标切换 */
+const showDetail = ref(false)
+/** 图标锚定容器：供点击空白关闭时判定内外 */
+const tokenWrapRef = ref<HTMLElement | null>(null)
+/** hover 离开宽限计时器：pill 与图标之间移动不灭 */
+let hideTimer: number | undefined
+
+function onWrapEnter() {
+  if (hideTimer !== undefined) {
+    window.clearTimeout(hideTimer)
+    hideTimer = undefined
+  }
+  showTokenPill.value = true
+}
+
+function onWrapLeave() {
+  if (hideTimer !== undefined) window.clearTimeout(hideTimer)
+  hideTimer = window.setTimeout(() => {
+    showTokenPill.value = false
+    hideTimer = undefined
+  }, 250)
+}
+
+function toggleDetail() {
+  showDetail.value = !showDetail.value
+}
+
+function closeDetail() {
+  showDetail.value = false
+}
+
+/** 点击卡片外关闭：仅详情卡打开时生效 */
+function onDocumentClick(e: MouseEvent) {
+  if (!showDetail.value) return
+  const el = tokenWrapRef.value
+  if (el && e.target instanceof Node && el.contains(e.target)) return
+  showDetail.value = false
+}
+
+/** Esc 关闭详情卡 */
+function onDocumentKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape' && showDetail.value) showDetail.value = false
+}
+
+onMounted(() => {
+  document.addEventListener('click', onDocumentClick)
+  document.addEventListener('keydown', onDocumentKeydown)
+})
+
+onUnmounted(() => {
+  document.removeEventListener('click', onDocumentClick)
+  document.removeEventListener('keydown', onDocumentKeydown)
+  if (hideTimer !== undefined) window.clearTimeout(hideTimer)
+})
+
+/** 输入码点长度（中文 emoji 准确计数） */
+const inputLen = computed(() => [...(props.modelValue ?? '')].length)
+/** 用量等级：70% 黄 90% 红 */
+const usageLevel = computed(() => {
+  const p = props.contextUsage?.percent ?? 0
+  if (p >= 90) return 'is-danger'
+  if (p >= 70) return 'is-warn'
+  return ''
+})
+/** 环形进度：C=2πr，r=9，弧长随 percent */
+const RING_C = 2 * Math.PI * 9
+const ringDash = computed(() => {
+  const p = props.contextUsage?.percent ?? 0
+  return `${((RING_C * p) / 100).toFixed(1)} ${RING_C.toFixed(1)}`
+})
+/** 明细四段（缺失置 0） */
+const bd = computed(() => ({
+  history: props.contextUsage?.breakdown.history ?? 0,
+  summary: props.contextUsage?.breakdown.summary ?? 0,
+  rag: props.contextUsage?.breakdown.rag ?? 0,
+  system: props.contextUsage?.breakdown.system ?? 0,
+}))
+/** 分段占比：总数为 0 时显示 0% 防除零 */
+const segPct = computed(() => {
+  const total = props.contextUsage?.promptTokens ?? 0
+  if (!total || total <= 0) return { system: 0, history: 0, rag: 0, summary: 0 }
+  const pct = (v: number) => Math.min(100, Math.max(0, Math.round((v / total) * 100)))
+  return { system: pct(bd.value.system), history: pct(bd.value.history), rag: pct(bd.value.rag), summary: pct(bd.value.summary) }
+})
+/** 快照更新时间（HH:mm:ss） */
+const updatedText = computed(() => {
+  const ts = props.contextUsage?.updatedAt
+  if (!ts) return '--'
+  const d = new Date(ts)
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+})
+
+/** token 数转 K（保留 1 位小数） */
+function formatK(n: number): string {
+  return `${(n / 1000).toFixed(1)}K`
+}
+/** 明细数字千分位 */
+function formatNum(n: number): string {
+  return n.toLocaleString('en-US')
+}
 
 function onEnter() {
   if (composing.value) return
@@ -88,6 +274,7 @@ defineExpose({ focus: () => textareaRef.value?.focus() })
 
 <style scoped>
 .input-bar__box {
+  position: relative;
   max-width: 840px;
   margin: 0 auto;
   background: var(--bg-elevated);
@@ -133,6 +320,228 @@ defineExpose({ focus: () => textareaRef.value?.focus() })
   border: 1px solid var(--border);
   border-radius: 4px;
   padding: 0 5px;
+}
+/* 发送区定位锚点：轻量入口 absolute 不占布局，发送按钮位置不受影响 */
+.input-bar__send-zone {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+/* 图标锚定容器：发送区内相对定位，三件套的定位基准 */
+.token-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: 8px;
+}
+/* 轻量入口：环形进度图标（70% 黄 90% 红 by usageLevel），点击切换详情卡 */
+.token-icon-wrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  color: var(--accent);
+  cursor: pointer;
+  outline: none;
+}
+.token-icon-wrap svg text {
+  fill: currentColor;
+  font-size: 9px;
+  line-height: 1;
+}
+.token-icon-wrap.is-warn {
+  color: #b45309;
+}
+.token-icon-wrap.is-danger {
+  color: #dc2626;
+}
+/* hover 小 pill：锚定图标正上方，不再居中横跨输入框 */
+.context-pill {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: 0;
+  white-space: nowrap;
+  z-index: 6;
+  background: #fff;
+  color: #333;
+  font-size: 12px;
+  line-height: 1.5;
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.12);
+  border: 1px solid var(--border);
+  padding: 6px 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  user-select: none;
+}
+.context-pill.is-warn {
+  color: #b45309;
+}
+.context-pill.is-danger {
+  color: #dc2626;
+}
+[data-theme='dark'] .context-pill {
+  background: #1e293b;
+  color: #e2e8f0;
+  border-color: rgba(148, 163, 184, 0.2);
+}
+[data-theme='dark'] .context-pill.is-warn {
+  color: #fbbf24;
+}
+[data-theme='dark'] .context-pill.is-danger {
+  color: #f87171;
+}
+/* 详情卡：自制浮层，锚定图标正上方 */
+.context-detail-card {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: 0;
+  width: 264px;
+  z-index: 7;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.18);
+  padding: 12px 14px;
+  font-size: 12px;
+  color: var(--text-1);
+}
+[data-theme='dark'] .context-detail-card {
+  background: #1e293b;
+  border-color: rgba(148, 163, 184, 0.2);
+  color: #e2e8f0;
+}
+.context-detail-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.context-detail-card__title {
+  font-size: 13px;
+  font-weight: 600;
+}
+.context-detail-card__close {
+  border: none;
+  background: transparent;
+  color: var(--text-3);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 6px;
+}
+.context-detail-card__close:hover {
+  background: var(--bg-hover);
+  color: var(--text-1);
+}
+.detail-total {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.detail-total__percent {
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1;
+}
+.detail-total__text {
+  font-size: 12px;
+  color: var(--text-3);
+}
+.detail-bar {
+  display: flex;
+  height: 6px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: #eef2f7;
+  margin-bottom: 10px;
+}
+[data-theme='dark'] .detail-bar {
+  background: rgba(148, 163, 184, 0.2);
+}
+.detail-bar .seg {
+  height: 100%;
+  min-width: 0;
+}
+.context-detail-card__bar {
+  display: flex;
+  height: 8px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--bg-hover);
+  margin-bottom: 10px;
+}
+.context-detail-card__bar .seg {
+  height: 100%;
+  min-width: 0;
+}
+.seg--system { background: #6366f1; }
+.seg--history { background: #22c55e; }
+.seg--rag { background: #f59e0b; }
+.seg--summary { background: #a78bfa; }
+.context-detail-card__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 3px 0;
+}
+.context-detail-card__row .dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 6px;
+}
+.dot--system { background: #3b82f6; }
+.dot--history { background: #22c55e; }
+.dot--rag { background: #f59e0b; }
+.dot--summary { background: #a855f7; }
+.context-detail-card__foot {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  color: var(--text-3);
+  font-size: 11px;
+}
+/* pill 显隐过渡 */
+.pill-fade-enter-active,
+.pill-fade-leave-active {
+  transition: opacity 0.2s ease;
+}
+.pill-fade-enter-from,
+  .pill-fade-leave-to {
+  opacity: 0;
+}
+/* 输入长度计数器：发送区旁轻量展示，超限变红 */
+.input-len-counter {
+  margin-right: 8px;
+  font-size: 11px;
+  color: var(--text-3);
+  white-space: nowrap;
+  user-select: none;
+}
+.input-len-counter.is-over {
+  color: #dc2626;
+}
+[data-theme='dark'] .input-len-counter.is-over {
+  color: #f87171;
+}
+/* 超限红色小字：计数器旁轻量提示，不挤占发送按钮布局 */
+.input-over-tip {
+  margin-right: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #ef4444;
+  white-space: nowrap;
+  user-select: none;
+}
+[data-theme='dark'] .input-over-tip {
+  color: #f87171;
 }
 .send-btn {
   display: grid;
@@ -211,6 +620,10 @@ defineExpose({ focus: () => textareaRef.value?.focus() })
   .send-btn--stop,
   .stop-square {
     animation: none;
+  }
+  .pill-fade-enter-active,
+  .pill-fade-leave-active {
+    transition: none;
   }
 }
 </style>

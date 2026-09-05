@@ -1,5 +1,10 @@
 import request from '@/utils/request'
 
+/** AI 设置批量保存的键名说明：PUT /admin/system/settings 仍为批量键值写入，前端仅组装同键 */
+export interface AiChatSettingsPatch {
+  /** 模型上下文窗口，对应后端键 ai.chat.context-window（4096..1000000，缺省 128000） */
+  contextWindow?: number
+}
 /** 备用模型单项，前端组装为 JSON 字符串写入 ai.fallback.chat.models */
 export interface FallbackChatModelPayload {
   name: string

@@ -82,7 +82,10 @@ springdoc:
     enabled: true
 
 # 工具调用循环上限（可经 system_config ai.tools.max-iterations 热覆盖，范围 1..20）
+# 模型上下文窗口，可在设置页改（可经 system_config ai.chat.context-window 热覆盖，范围 4096..1000000）
 ai:
+  chat:
+    context-window: 128000
   tools:
     max-iterations: 8
 

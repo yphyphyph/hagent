@@ -1,3 +1,4 @@
+import axios from 'axios'
 import request from '@/utils/request'
 import { getToken } from '@/utils/auth'
 
@@ -33,10 +34,38 @@ export interface ChatMessageItem {
   sources?: string | ChatSource[]
 }
 
+/** 上下文用量明细（与后端 meta 事件 breakdown 对齐，未知键保留透传） */
+export interface ChatContextBreakdown {
+  history?: number
+  summary?: number
+  rag?: number
+  system?: number
+  [key: string]: number | undefined
+}
+
+/** meta 事件全量信息（旧回调仅取 conversationId，新字段全部可选保持兼容） */
+export interface ChatMetaInfo {
+  conversationId: string
+  promptTokens?: number
+  contextWindow?: number
+  percent?: number
+  breakdown?: ChatContextBreakdown
+  [key: string]: unknown
+}
+
+/** 后端上下文用量快照（GET /admin/ai/conversations/{id}/context-usage，与 meta 同口径） */
+export interface ChatContextUsage {
+  promptTokens: number
+  contextWindow: number
+  percent?: number
+  breakdown?: ChatContextBreakdown
+  [key: string]: unknown
+}
+
 /** SSE 流式事件处理器集合 */
 export interface StreamEventHandlers {
-  /** 元数据事件：携带会话ID（访客模式为 "guest"） */
-  onMeta?: (conversationId: string) => void
+  /** 元数据事件：携带会话ID（访客模式为 "guest"），第二参数透传全量 meta 字段 */
+  onMeta?: (conversationId: string, meta?: ChatMetaInfo) => void
   /** 文本 token 追加 */
   onToken: (text: string) => void
   /** 思考过程 token 追加（type:thinking） */
@@ -47,6 +76,8 @@ export interface StreamEventHandlers {
   onTool?: (name: string) => void
   /** 溯源引用块（type:source），携带命中片段列表 */
   onSource?: (sources: ChatSource[]) => void
+  /** 上下文快照刷新事件（type:context-update，与 meta 同 shape，RAG 到达与 usage 校准后推送） */
+  onContextUpdate?: (meta: unknown) => void
   onError?: (msg: string) => void
   onDone?: () => void
 }
@@ -55,8 +86,9 @@ export interface StreamEventHandlers {
  * SSE 流式对话（统一入口）
  *
  * 后端事件协议：
- * - {"type":"meta","conversationId":"123"|"guest"}
+ * - {"type":"meta","conversationId":"123"|"guest","promptTokens":12345,"contextWindow":128000,"percent":9,"breakdown":{"history":8000,"summary":1500,"rag":2800,"system":0}}
  * - {"type":"token","content":"..."}
+ * - {"type":"context-update","promptTokens":12345,"contextWindow":128000,"percent":9,"breakdown":{"history":8000,"summary":1500,"rag":2800,"system":0}}
  * - {"type":"thinking","content":"..."}
  * - {"type":"stage","content":"正在生成查询..."}
  * - {"type":"tool","name":"searchKnowledge"}
@@ -94,7 +126,16 @@ export function streamChat(
   })
     .then(async (resp) => {
       if (!resp.ok) {
-        h.onError?.(resp.status === 401 ? '登录已过期，请重新登录' : `请求失败（${resp.status}）`)
+        let serverMsg = ''
+        try {
+          const text = await resp.text()
+          const body = JSON.parse(text) as Record<string, unknown>
+          const msg = body?.msg
+          if (typeof msg === 'string' && msg.trim()) serverMsg = msg.trim()
+        } catch {
+          // 非 JSON 响应体则回退通用提示
+        }
+        h.onError?.(resp.status === 401 ? '登录已过期，请重新登录' : (serverMsg || `请求失败（${resp.status}）`))
         return
       }
       const reader = resp.body?.getReader()
@@ -138,7 +179,12 @@ export function streamChat(
                 h.onError?.((obj.message as string) || 'AI 服务异常')
                 break
               case 'meta':
-                h.onMeta?.(String(obj.conversationId ?? ''))
+                // 全量透传 meta 字段（旧调用仅取 conversationId，新字段经第二参数透传）
+                h.onMeta?.(String(obj.conversationId ?? ''), obj as unknown as ChatMetaInfo)
+                break
+              case 'context-update':
+                // 上下文快照刷新（与 meta 同 shape，仅 type 不同），透传全量字段由上层解析覆盖
+                h.onContextUpdate?.(obj as unknown)
                 break
               case 'tool':
                 h.onTool?.(String(obj.name ?? ''))
@@ -233,5 +279,27 @@ export const conversationApi = {
   },
   rename(id: number, title: string): Promise<void> {
     return request.put(`/admin/ai/conversations/${id}/title`, { title })
+  },
+  /**
+   * 会话上下文用量（与 send 后 meta 同口径，后端按需计算）
+   * 原生 axios 直调以静默失败（不断网 toast），失败返回 null 由调用方回退本地估算
+   */
+  async contextUsage(id: number): Promise<ChatContextUsage | null> {
+    try {
+      const token = getToken()
+      const resp = await axios.get(`/api/admin/ai/conversations/${id}/context-usage`, {
+        headers: { ...(token ? { Authorization: `${token}` } : {}) },
+        timeout: 10000,
+      })
+      const body = resp.data as { code?: number; data?: unknown } & Record<string, unknown>
+      if (!body || typeof body !== 'object') return null
+      // 兼容 Result 包裹（{code:200,data:{...}}）与裸返回
+      const wrapped = body.data
+      if (wrapped && typeof wrapped === 'object') return wrapped as ChatContextUsage
+      if (typeof body.promptTokens !== 'undefined') return body as unknown as ChatContextUsage
+      return null
+    } catch {
+      return null
+    }
   },
 }

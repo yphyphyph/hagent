@@ -50,7 +50,22 @@
                     <n-slider v-model:value="aiForm.temperature" :min="0" :max="2" :step="0.1" :format-tooltip="(v: number) => v.toFixed(1)" class="slider-full" />
                   </n-form-item>
                   <n-form-item label="Max Tokens" class="span-1">
-                    <n-input-number v-model:value="aiForm.maxTokens" :min="256" :max="8192" :step="256" class="num-full" />
+                    <div class="field-stack">
+                      <n-input-number v-model:value="aiForm.maxTokens" :min="256" :max="8192" :step="256" class="num-full" />
+                      <span class="field-hint">单次回答上限，不是上下文窗口</span>
+                    </div>
+                  </n-form-item>
+                  <n-form-item label="上下文窗口" class="span-1">
+                    <div class="field-stack">
+                      <n-input-number
+                        v-model:value="aiForm.contextWindow"
+                        :min="4096"
+                        :max="1000000"
+                        :step="4096"
+                        class="num-full"
+                      />
+                      <span class="field-hint">模型上下文窗口，超出后最早消息被截断或摘要</span>
+                    </div>
                   </n-form-item>
                   <n-form-item label="启用 RAG" class="span-1">
                     <n-checkbox v-model:checked="aiForm.enableRag">开启知识库检索问答</n-checkbox>
@@ -103,6 +118,26 @@
                   前往知识库一键重建 →
                 </n-button>
               </n-alert>
+            </section>
+
+            <section class="block">
+              <h3 class="block__title">Rerank 重排</h3>
+              <n-form :model="aiForm" label-placement="left" label-width="110" size="large">
+                <div class="form-grid">
+                  <n-form-item label="模型名称" class="span-1">
+                    <n-input v-model:value="aiForm.rerankModel" placeholder="如 qwen3.7-text-rerank" />
+                  </n-form-item>
+                  <n-form-item label="API Base URL" class="span-1">
+                    <n-input v-model:value="aiForm.rerankBaseUrl" placeholder="https://dashscope.aliyuncs.com/api/v1" />
+                  </n-form-item>
+                  <n-form-item label="API Key" class="span-full">
+                    <div class="field-stack">
+                      <n-input v-model:value="aiForm.rerankApiKey" type="password" show-password-on="click" placeholder="sk-****" />
+                      <span class="field-hint">为空时复用向量模型 Key</span>
+                    </div>
+                  </n-form-item>
+                </div>
+              </n-form>
             </section>
 
             <section class="block">
@@ -351,6 +386,7 @@ async function loadSettings() {
     aiForm.chatApiKey = pick(['ai.chat.api-key'], '')
     aiForm.temperature = pickNumber(['ai.default_temperature'], 0.7)
     aiForm.maxTokens = pickNumber(['ai.default_max_tokens'], 4096)
+    aiForm.contextWindow = pickNumber(['ai.chat.context-window'], 128000)
     aiForm.systemPrompt = pick(['ai.system_prompt'], '')
     aiForm.enableRag = pick(['ai.enable_rag'], 'true') === 'true'
     aiForm.embModel = pick(['ai.embedding.model'], 'text-embedding-v4')
@@ -359,6 +395,9 @@ async function loadSettings() {
     aiForm.embDimension = pickNumber(['ai.vector-dimension'], 1024)
     initialEmbDimension.value = aiForm.embDimension
     aiForm.vectorIndex = pick(['ai.vector-index'], 'hagent_rag')
+    aiForm.rerankModel = pick(['ai.rerank.model'], 'qwen3.7-text-rerank')
+    aiForm.rerankBaseUrl = pick(['ai.rerank.base-url'], 'https://dashscope.aliyuncs.com/api/v1')
+    aiForm.rerankApiKey = pick(['ai.rerank.api-key'], '')
     aiForm.visModel = pick(['ai.vision.model'], 'mimo-v2.5')
     aiForm.visBaseUrl = pick(['ai.vision.base-url'], '')
     aiForm.visApiKey = pick(['ai.vision.api-key'], '')
@@ -425,6 +464,7 @@ interface AiForm {
   chatApiKey: string
   temperature: number
   maxTokens: number
+  contextWindow: number
   systemPrompt: string
   enableRag: boolean
   embModel: string
@@ -432,6 +472,9 @@ interface AiForm {
   embApiKey: string
   embDimension: number
   vectorIndex: string
+  rerankModel: string
+  rerankBaseUrl: string
+  rerankApiKey: string
   visModel: string
   visBaseUrl: string
   visApiKey: string
@@ -445,6 +488,7 @@ const aiForm = reactive<AiForm>({
   chatApiKey: '',
   temperature: 0.7,
   maxTokens: 4096,
+  contextWindow: 128000,
   systemPrompt: '',
   enableRag: true,
   embModel: 'text-embedding-v4',
@@ -452,6 +496,9 @@ const aiForm = reactive<AiForm>({
   embApiKey: '',
   embDimension: 1024,
   vectorIndex: 'hagent_rag',
+  rerankModel: 'qwen3.7-text-rerank',
+  rerankBaseUrl: 'https://dashscope.aliyuncs.com/api/v1',
+  rerankApiKey: '',
   visModel: 'mimo-v2.5',
   visBaseUrl: '',
   visApiKey: '',
@@ -533,6 +580,7 @@ async function saveAi() {
       'ai.chat.api-key': aiForm.chatApiKey,
       'ai.default_temperature': String(aiForm.temperature),
       'ai.default_max_tokens': String(aiForm.maxTokens),
+      'ai.chat.context-window': String(aiForm.contextWindow),
       'ai.system_prompt': aiForm.systemPrompt,
       'ai.enable_rag': aiForm.enableRag ? 'true' : 'false',
       'ai.embedding.model': aiForm.embModel,
@@ -540,6 +588,9 @@ async function saveAi() {
       'ai.embedding.api-key': aiForm.embApiKey,
       'ai.vector-dimension': String(aiForm.embDimension),
       'ai.vector-index': aiForm.vectorIndex,
+      'ai.rerank.model': aiForm.rerankModel,
+      'ai.rerank.base-url': aiForm.rerankBaseUrl,
+      'ai.rerank.api-key': aiForm.rerankApiKey,
       'ai.vision.model': aiForm.visModel,
       'ai.vision.base-url': aiForm.visBaseUrl,
       'ai.vision.api-key': aiForm.visApiKey,
@@ -844,6 +895,21 @@ function mockAvatarUpload({ file, onFinish }: UploadCustomRequestOptions) {
 }
 .num-full {
   width: 180px;
+}
+
+/* Max Tokens 防混小字 + 上下文窗口：纵向堆叠，不挤占 grid 2 列 */
+.field-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+}
+.field-hint {
+  font-size: 12px;
+  line-height: 1.5;
+  color: #64748b;
+  white-space: nowrap;
 }
 
 /* ---------- 头像 ---------- */

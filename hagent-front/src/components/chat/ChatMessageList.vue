@@ -1,7 +1,7 @@
 <template>
   <div ref="listRef" class="msg-list" @scroll.passive="onScroll">
     <!-- 欢迎屏：无消息且非加载时 -->
-    <div v-if="!loading && messages.length === 0" class="welcome">
+    <div v-if="!loading && messages.length === 0 && showWelcome" class="welcome">
       <span class="welcome__badge">HAgent · Agentic AI</span>
       <h1 class="welcome__title">把问题交给<br /><em>会思考的助手</em></h1>
       <p class="welcome__subtitle">
@@ -45,7 +45,19 @@
         >
           <!-- 用户消息：右侧气泡 -->
           <template v-if="m.role === 'user' && m.content">
-            <div class="user-bubble">{{ m.content }}</div>
+            <div class="user-row">
+              <div class="user-bubble">{{ m.content }}</div>
+              <button
+                class="user-copy"
+                :class="{ 'user-copy--done': copiedId === String(m.id) }"
+                type="button"
+                :disabled="!m.content"
+                :title="copiedId === String(m.id) ? '已复制' : '复制'"
+                @click="copyMessageContent(m)"
+              >
+                <n-icon :component="copiedId === String(m.id) ? CheckOutlined : CopyOutlined" />
+              </button>
+            </div>
           </template>
 
           <!-- AI 回复：去气泡全宽排版（思考中的空内容也需立即渲染，避免 7s 空白） -->
@@ -95,8 +107,20 @@
             ></div>
 
             <!-- 溯源聚合胶囊（风格：紧凑 pill 排列于搜索块底部，点击打开抽屉） -->
-            <div v-if="m.sources?.length" class="source-pill-bar">
+            <!-- 复制回答与引用胶囊同行：无 sources 时仅渲染复制按钮，保证总有入口 -->
+            <div class="source-pill-bar">
               <button
+                class="ai-copy"
+                :class="{ 'ai-copy--done': copiedId === String(m.id) }"
+                type="button"
+                :disabled="!m.content || (props.streaming && isLastAiMessage(m))"
+                :title="!m.content ? '内容为空' : '复制回答原文'"
+                @click="copyMessageContent(m)"
+              >
+                {{ copiedId === String(m.id) ? '已复制 ✓' : '复制回答' }}
+              </button>
+              <button
+                v-if="m.sources?.length"
                 class="source-pill"
                 type="button"
                 :title="`${m.sources.length}个来源，点击查看`"
@@ -130,6 +154,26 @@
       @close="drawerVisible = false"
       @jump="onJumpToSource"
     />
+
+    <!-- 回到底部：上翻超 80px 且消息较多时出现，点击瞬时回到最新 -->
+    <button
+      v-if="!stickToBottom && messages.length > 3"
+      class="to-bottom"
+      type="button"
+      title="回到底部"
+      aria-label="回到底部"
+      @click="scrollToBottom(true)"
+    >
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <path
+          d="M4 6l4 4 4-4"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        />
+      </svg>
+    </button>
   </div>
 </template>
 
@@ -137,7 +181,7 @@
 import { nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { NIcon, useMessage } from 'naive-ui'
-import { FileTextOutlined, RightOutlined } from '@vicons/antd'
+import { FileTextOutlined, RightOutlined, CopyOutlined, CheckOutlined } from '@vicons/antd'
 import { renderMarkdown } from '@/utils/markdown'
 import type { UiChatMessage, ChatSource } from '@/composables/useChat'
 import SourceDrawer from '@/components/chat/SourceDrawer.vue'
@@ -150,10 +194,11 @@ const props = withDefaults(
     stageText?: string
     streaming?: boolean
     guest?: boolean
+    showWelcome?: boolean
     /** 动态思考标题（来自 useChat.thinkingTitle，8 阶段之一） */
     thinkingTitle?: string
   }>(),
-  { loading: false, thinking: false, stageText: '', streaming: false, guest: false, thinkingTitle: '' }
+  { loading: false, thinking: false, stageText: '', streaming: false, guest: false, thinkingTitle: '', showWelcome: true }
 )
 
 const emit = defineEmits<{
@@ -477,6 +522,52 @@ async function onContentClick(e: MouseEvent) {
   }
 }
 
+/* ---------- 回答/气泡复制（复用 .code-copy 成功/失败范式） ---------- */
+const copiedId = ref<string | null>(null)
+let copiedTimer: ReturnType<typeof setTimeout> | null = null
+
+function markCopied(m: UiChatMessage): void {
+  copiedId.value = String(m.id)
+  if (copiedTimer) clearTimeout(copiedTimer)
+  copiedTimer = setTimeout(() => {
+    copiedId.value = null
+  }, 2000)
+}
+
+/** 非安全上下文兜底：textarea + execCommand */
+async function fallbackCopy(text: string): Promise<boolean> {
+  try {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.setAttribute('readonly', '')
+    ta.style.position = 'fixed'
+    ta.style.top = '-9999px'
+    ta.style.opacity = '0'
+    document.body.appendChild(ta)
+    ta.select()
+    const ok = document.execCommand('copy')
+    document.body.removeChild(ta)
+    return ok
+  } catch {
+    return false
+  }
+}
+
+/** 复制消息原文：空内容直接返回不抛错；clipboard 抛错时走兜底 */
+async function copyMessageContent(m: UiChatMessage): Promise<void> {
+  const text = m.content ?? ''
+  if (!text) return
+  try {
+    if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable')
+    await navigator.clipboard.writeText(text)
+    markCopied(m)
+  } catch {
+    const ok = await fallbackCopy(text)
+    if (ok) markCopied(m)
+    else naiveMessage.error('复制失败')
+  }
+}
+
 /* ---------- 溯源引用：渲染与抽屉 ---------- */
 const router = useRouter()
 const naiveMessage = useMessage()
@@ -555,19 +646,28 @@ function onJumpToSource(source: ChatSource, _idx: number) {
 
 /* ---------- 自动贴底 ---------- */
 const listRef = ref<HTMLElement | null>(null)
-let stickToBottom = true
+const stickToBottom = ref(true)
 
 function onScroll() {
   const el = listRef.value
   if (!el) return
-  stickToBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+  stickToBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < 80
 }
 
 function scrollToBottom(force = false) {
-  if (!force && !stickToBottom) return
+  if (!force && !stickToBottom.value) return
   nextTick(() => {
     const el = listRef.value
-    if (el) el.scrollTop = el.scrollHeight
+    if (!el) return
+    // 强制回底走瞬时滚动，避免与流式增量平滑滚动打架
+    if (force) {
+      const prev = el.style.scrollBehavior
+      el.style.scrollBehavior = 'auto'
+      el.scrollTop = el.scrollHeight
+      el.style.scrollBehavior = prev
+    } else {
+      el.scrollTop = el.scrollHeight
+    }
   })
 }
 
@@ -626,6 +726,7 @@ defineExpose({ scrollToBottom })
 
 <style scoped>
 .msg-list {
+  position: relative;
   flex: 1;
   min-height: 0;
   overflow-y: auto;
@@ -636,6 +737,61 @@ defineExpose({ scrollToBottom })
 }
 .msg-list .msg-stream {
   width: 100%;
+}
+
+/* ---------- 回到底部悬浮按钮（底部居中白圆，压输入框上沿骑缝） ---------- */
+.to-bottom {
+  position: sticky;
+  bottom: 10px;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  margin: 0 auto -46px;
+  padding: 0;
+  border: 1px solid #e2e8f0;
+  border-radius: 50%;
+  background: #fff;
+  color: var(--text-1, #0f172a);
+  cursor: pointer;
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.12);
+  transition: transform var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+.to-bottom svg {
+  vertical-align: middle;
+}
+.to-bottom:hover {
+  transform: translateY(1px);
+  box-shadow: 0 8px 24px rgba(2, 6, 23, 0.22), 0 2px 6px rgba(2, 6, 23, 0.14);
+}
+.to-bottom:active {
+  transform: translateY(1px) scale(0.96);
+}
+.to-bottom:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+[data-theme='dark'] .to-bottom {
+  background: var(--bg-elevated);
+  border-color: var(--border-strong);
+  color: #e2e8f0;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.45), 0 1px 4px rgba(0, 0, 0, 0.4);
+}
+@media (max-width: 640px) {
+  .to-bottom {
+    bottom: 8px;
+    margin-bottom: -44px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .msg-list {
+    scroll-behavior: auto;
+  }
+  .to-bottom {
+    transition: none;
+  }
 }
 
 /* ---------- 欢迎屏 ---------- */
@@ -765,8 +921,13 @@ defineExpose({ scrollToBottom })
   display: flex;
   justify-content: flex-end;
 }
-.user-bubble {
+/* 用户行包裹层：相对定位承载右下角绝对定位复制按钮，不挤占气泡布局 */
+.user-row {
+  position: relative;
   max-width: 78%;
+}
+.user-bubble {
+  max-width: 100%;
   padding: 10px 16px;
   background: var(--accent-soft);
   border: 1px solid var(--accent-border);
@@ -776,6 +937,60 @@ defineExpose({ scrollToBottom })
   word-break: break-word;
   line-height: 1.7;
   font-size: var(--text-base);
+}
+/* 用户气泡复制图标：右下角绝对定位，平时隐藏 hover 淡入，不占布局 */
+.user-copy {
+  position: absolute;
+  right: 2px;
+  top: calc(100% + 4px);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text-3);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+.user-row:hover .user-copy {
+  opacity: 1;
+}
+.user-copy:hover {
+  color: var(--accent);
+  border-color: var(--accent-border);
+}
+.user-copy:disabled {
+  cursor: not-allowed;
+  opacity: 0;
+}
+.user-copy:focus-visible {
+  opacity: 1;
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.user-copy--done {
+  opacity: 1;
+  color: var(--accent);
+  border-color: var(--accent-border);
+}
+/* 触屏无 hover 时常显弱化按钮 */
+@media (hover: none) {
+  .user-copy {
+    opacity: 0.45;
+  }
+  .user-copy:disabled {
+    opacity: 0;
+  }
+}
+[data-theme='dark'] .user-copy {
+  background: rgba(255, 255, 255, 0.06);
 }
 
 /* AI 回复：去气泡全宽 */
@@ -1109,6 +1324,49 @@ defineExpose({ scrollToBottom })
   color: var(--accent);
   transform: translateX(2px);
   opacity: 1;
+}
+/* AI 回答复制按钮：幽灵风格 12px，与引用胶囊同行并排 */
+.ai-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 30px;
+  padding: 0 12px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1;
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  transition:
+    color var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease),
+    background var(--dur-fast) var(--ease);
+}
+.ai-copy:hover:not(:disabled) {
+  color: var(--accent);
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+}
+.ai-copy:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.ai-copy:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.ai-copy--done {
+  color: var(--accent);
+  border-color: var(--accent-border);
+}
+[data-theme='dark'] .ai-copy:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.06);
 }
 /* 浅色主题：加深边框对比，阴影更柔和 */
 [data-theme='light'] .source-pill {

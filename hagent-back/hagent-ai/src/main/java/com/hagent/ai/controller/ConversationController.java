@@ -2,7 +2,9 @@ package com.hagent.ai.controller;
 
 import com.hagent.ai.model.dto.ConversationQueryRequest;
 import com.hagent.ai.model.vo.ChatMessageVO;
+import com.hagent.ai.model.vo.ContextUsageSnapshot;
 import com.hagent.ai.model.vo.ConversationVO;
+import com.hagent.ai.service.ChatService;
 import com.hagent.ai.service.ConversationService;
 import com.hagent.common.PageResult;
 import com.hagent.common.Result;
@@ -31,6 +33,7 @@ import java.util.List;
 public class ConversationController {
 
     private final ConversationService conversationService;
+    private final ChatService chatService;
 
     /**
      * 分页查询会话列表
@@ -65,6 +68,20 @@ public class ConversationController {
             @Parameter(description = "会话ID", required = true) @PathVariable Long id) {
         Long userId = UserContext.getUserId();
         return Result.success(conversationService.listMessages(id, userId));
+    }
+
+    /**
+     * 获取会话上下文用量（历史打开首值，后端现算，只读不落库）
+     */
+    @GetMapping("/{id}/context-usage")
+    @Operation(summary = "获取会话上下文用量", description = "以后端现算返回历史打开首值四段，与聊天 meta 首值同一口径，不落库")
+    @ApiResponse(responseCode = "200", description = "查询成功")
+    public Result<ContextUsageSnapshot> contextUsage(
+            @Parameter(description = "会话ID", required = true) @PathVariable Long id) {
+        Long userId = UserContext.getUserId();
+        // 先经归属权校验，再现算用量（复用 listMessages 的 userId 校验逻辑，异常走全局异常）
+        conversationService.getConversationById(id, userId);
+        return Result.success(chatService.estimateInitial(id));
     }
 
     /**

@@ -6,6 +6,7 @@ import {
   type ChatSource,
   type Conversation,
 } from '@/api/chat'
+import { systemApi } from '@/api/system'
 
 
 /** 前端统一消息模型（视图层渲染用） */
@@ -30,6 +31,22 @@ export interface UiChatMessage {
 
 // 供外部引用
 export type { ChatSource }
+
+/** 上下文用量快照（后端 meta 事件解析结果，流结束后定格保留） */
+export interface ContextUsage {
+  /** 本次组装后的提示总 token 数（分子） */
+  promptTokens: number
+  /** 上下文窗口（分母，可在设置页配置） */
+  contextWindow: number
+  /** 已用百分比（0-100） */
+  percent: number
+  /** 明细：历史 / 摘要 / RAG / 系统（未知键保留透传） */
+  breakdown: Record<string, number>
+  /** 上轮实际 promptTokens（仅明细行参考，环形圈仍用预估口径，缺省 0） */
+  actualPromptTokens: number
+  /** 快照更新时间戳（毫秒） */
+  updatedAt: number
+}
 
 export interface UseChatOptions {
   /** SSE 端点（管理端/门户端） */
@@ -60,6 +77,50 @@ export function normalizeRole(role: unknown): 'user' | 'ai' {
   return 'ai'
 }
 
+/** 上下文窗口分母缓存（经 systemApi.getSettings 取 ai.chat.context-window，失败回退 128000） */
+let cachedContextWindow: number | null = null
+const FALLBACK_CONTEXT_WINDOW = 128000
+
+/** 解析上下文窗口：数字/数字字符串均兼容，非法回退 null 由调用方处理 */
+function parseContextWindow(v: unknown): number | null {
+  const n = typeof v === 'string' ? Number(v) : (v as number)
+  return typeof n === 'number' && Number.isFinite(n) && n > 0 ? Math.round(n) : null
+}
+
+/** 分母解析：读设置键 ai.chat.context-window，失败静默回退 128000，不 toast 不抛错 */
+async function resolveContextWindow(): Promise<number> {
+  if (cachedContextWindow !== null) return cachedContextWindow
+  try {
+    const settings = await systemApi.getSettings()
+    const parsed = parseContextWindow(settings?.['ai.chat.context-window'])
+    cachedContextWindow = parsed ?? FALLBACK_CONTEXT_WINDOW
+  } catch {
+    cachedContextWindow = FALLBACK_CONTEXT_WINDOW
+  }
+  return cachedContextWindow
+}
+
+/** CJK 字符判断：与后端 ContextTokenEstimator.isCjk 同口径（统一表意文字/扩展 A/兼容区，按 UTF-16 码元区间） */
+function isCjkCodeUnit(code: number): boolean {
+  return (code >= 0x4e00 && code <= 0x9fff) || (code >= 0x3400 && code <= 0x4dbf) || (code >= 0xf900 && code <= 0xfaff)
+}
+
+/**
+ * 单段文本 token 启发式估算：与后端 ContextTokenEstimator.estimate 同口径
+ * （CJK 按 1.5 字符/token、其余按 4 字符/token、分段加 15% 脚手架裕量，非空文本至少为 1）
+ */
+function estimateTextTokens(text: string): number {
+  if (!text) return 0
+  let cjkChars = 0
+  let otherChars = 0
+  for (let i = 0; i < text.length; i++) {
+    if (isCjkCodeUnit(text.charCodeAt(i))) cjkChars++
+    else otherChars++
+  }
+  const raw = cjkChars / 1.5 + otherChars / 4.0
+  return Math.max(1, Math.round(raw * 1.15))
+}
+
 /**
  * 共享聊天流控制：
  * - 结构化 SSE 事件解析（meta/token/tool/error）
@@ -83,6 +144,8 @@ export function useChat(options: UseChatOptions) {
   const stageText = ref('')
   /** 阶段可见性已废弃：保留字段以兼容旧调用，始终为 false，UI 不再单独展示阶段条 */
   const stageVisible = ref(false)
+  /** 上下文用量快照（meta 事件解析，默认 null；流结束后定格保留，切换会话/clear() 时清空） */
+  const contextUsage: Ref<ContextUsage | null> = ref(null)
 
   // 8 阶段动态标题（与后端 THINK_STAGE_* 对齐，前端据此切换折叠块标题）
   const THINKING_TITLES = [
@@ -219,6 +282,8 @@ export function useChat(options: UseChatOptions) {
   /** 加载历史会话消息（管理端，含 thinkingContent 历史思考回显与溯源） */
   async function loadMessages(conversationId: number): Promise<void> {
     messages.value = []
+    // 切换会话时清空上下文用量快照（新会话首轮 meta 到达前不展示旧数据）
+    contextUsage.value = null
     try {
       const list: ChatMessageItem[] = await conversationApi.messages(conversationId)
       messages.value = list.map((m) => ({
@@ -235,6 +300,32 @@ export function useChat(options: UseChatOptions) {
         // 溯源引用历史回显（后端 sources 字段，可能是 JSON 字符串）
         sources: parseSources((m as unknown as Record<string, unknown>).sources),
       }))
+      // 历史页优先取后端口径（与 send 后 meta 同一代码路径，口径天然一致）；
+      // 后端失败（网络/401/404）才回退本地启发式估算；空历史保持 null 不变
+      if (messages.value.length > 0) {
+        const remote = await conversationApi.contextUsage(conversationId).catch(() => null)
+        const parsed = parseContextUsage(remote)
+        if (parsed) {
+          contextUsage.value = parsed
+        } else {
+          let historyTokens = 0
+          for (const msg of messages.value) {
+            historyTokens += estimateTextTokens(msg.content ?? '')
+          }
+          const contextWindow = await resolveContextWindow()
+          contextUsage.value = {
+            promptTokens: historyTokens,
+            contextWindow,
+            // floor 取整与后端口径一致：分子单调增时显示永不回退
+            percent: Math.floor((historyTokens / contextWindow) * 100),
+            // 历史页无当轮 RAG/摘要口径，如实归零（明细行显示 0）
+            breakdown: { history: historyTokens, summary: 0, rag: 0, system: 0 },
+            // 历史页无上轮实际回执，如实置 0（明细行仅参考）
+            actualPromptTokens: 0,
+            updatedAt: Date.now(),
+          }
+        }
+      }
       // 切换会话后保持消息列表干净
     } catch {
       // 错误已由 request 拦截器统一 toast
@@ -248,6 +339,11 @@ export function useChat(options: UseChatOptions) {
   function send(text: string): boolean {
     const trimmed = text.trim()
     if (!trimmed || thinking.value || streaming.value) return false
+    const msgLen = [...trimmed].length
+    if (msgLen > 10000) {
+      options.onError?.(`消息过长（${msgLen}/10000字），请分段发送或上传为知识库文件`)
+      return false
+    }
 
     // 立即进入思考态，避免 7s SSE 空白期内 UI 无反馈（先置位再推消息，确保首帧即渲染思考块）
     thinking.value = true
@@ -270,7 +366,19 @@ export function useChat(options: UseChatOptions) {
       scene: options.scene ?? 1,
       conversationId: options.getConversationId(),
       handlers: {
-        onMeta: (id) => options.onConversationId?.(id),
+        // meta 事件：首参数会话ID透传旧回调；全量未知字段兼容解析上下文用量（旧字段不受影响）
+        onMeta: (id, meta) => {
+          options.onConversationId?.(id)
+          const parsed = parseContextUsage(meta)
+          if (parsed) contextUsage.value = parsed
+        },
+        // 上下文快照刷新事件：与 meta 同 shape，解析后覆盖快照（后值覆盖前值，定格逻辑与 meta 一致）
+        onContextUpdate: (meta) => {
+          const parsed = parseContextUsage(meta)
+          // 调试审计：debug 级别，生产默认不显示，开控制台可排查快照跳变
+          console.debug('[context-update]', parsed)
+          if (parsed) contextUsage.value = parsed
+        },
         // 思考过程增量累积（type:thinking）：默认展开，标题随内容动态切换
         onThinking: (chunk) => {
           if (!activeAiMsg) return
@@ -398,6 +506,41 @@ export function useChat(options: UseChatOptions) {
     hideStageImmediate()
     stageText.value = ''
     messages.value = []
+    // 切换会话/新建时清空上下文用量快照
+    contextUsage.value = null
+  }
+
+  /** 解析 meta 事件中的上下文用量（未知字段兼容：缺失则返回 null，旧字段不受影响） */
+  function parseContextUsage(meta: unknown): ContextUsage | null {
+    if (!meta || typeof meta !== 'object') return null
+    const m = meta as Record<string, unknown>
+    const toNum = (v: unknown): number | undefined => {
+      const n = typeof v === 'string' ? Number(v) : (v as number)
+      return typeof n === 'number' && Number.isFinite(n) && n >= 0 ? n : undefined
+    }
+    const promptTokens = toNum(m.promptTokens)
+    const contextWindow = toNum(m.contextWindow)
+    // 分子分母缺一不可，否则不更新快照（保持旧 meta 仅带 conversationId 时静默忽略）
+    if (promptTokens === undefined || contextWindow === undefined || contextWindow <= 0) return null
+    let percent = toNum(m.percent)
+    // floor 取整与后端口径一致：分子单调增时显示永不回退
+    if (percent === undefined) percent = Math.floor((promptTokens / contextWindow) * 100)
+    // breakdown 四段归一（history/summary/rag/system），未知键透传数字，其余置 0
+    const breakdown: Record<string, number> = {}
+    const rawBd = (m.breakdown ?? {}) as Record<string, unknown>
+    const rawObj = typeof rawBd === 'object' && rawBd !== null ? rawBd : {}
+    for (const k of ['history', 'summary', 'rag', 'system']) {
+      breakdown[k] = toNum(rawObj[k]) ?? 0
+    }
+    for (const [k, v] of Object.entries(rawObj)) {
+      if (!(k in breakdown)) {
+        const n = toNum(v)
+        if (n !== undefined) breakdown[k] = n
+      }
+    }
+    // 上轮实际仅进明细行参考，缺省 0（meta 事件无此字段时保持兼容）
+    const actualPromptTokens = toNum(m.actualPromptTokens) ?? 0
+    return { promptTokens, contextWindow, percent, breakdown, actualPromptTokens, updatedAt: Date.now() }
   }
 
   /** 解析溯源字段（兼容 JSON 字符串 / 数组 / 空值） */
@@ -440,5 +583,5 @@ function parseSources(raw: unknown): ChatSource[] | undefined {
     return groups.filter((g) => g.items.length > 0)
   }
 
-  return { messages, thinking, streaming, thinkingContent, thinkingHasContent, thinkingTick, contentTick, stageText, stageVisible, thinkingTitle, THINKING_TITLES, THINK_DONE_TITLE, loadMessages, send, stop, clear, groupConversations }
+  return { messages, thinking, streaming, thinkingContent, thinkingHasContent, thinkingTick, contentTick, stageText, stageVisible, thinkingTitle, THINKING_TITLES, THINK_DONE_TITLE, contextUsage, loadMessages, send, stop, clear, groupConversations }
 }

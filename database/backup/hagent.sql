@@ -128,7 +128,9 @@ CACHE 1
   "created_by" varchar(50) COLLATE "pg_catalog"."default",
   "updated_at" timestamp(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
   "updated_by" varchar(50) COLLATE "pg_catalog"."default",
-  "deleted" int2 NOT NULL DEFAULT 0
+  "deleted" int2 NOT NULL DEFAULT 0,
+  "summary_text" text COLLATE "pg_catalog"."default",
+  "summary_up_to_message_id" int8
 )
 ;
 COMMENT ON COLUMN "public"."chat_conversation"."id" IS '会话ID';
@@ -149,6 +151,8 @@ COMMENT ON COLUMN "public"."chat_conversation"."created_by" IS '创建人';
 COMMENT ON COLUMN "public"."chat_conversation"."updated_at" IS '更新时间';
 COMMENT ON COLUMN "public"."chat_conversation"."updated_by" IS '更新人';
 COMMENT ON COLUMN "public"."chat_conversation"."deleted" IS '逻辑删除(0=未删除 1=已删除)';
+COMMENT ON COLUMN "public"."chat_conversation"."summary_text" IS '会话摘要正文（结构化五段）';
+COMMENT ON COLUMN "public"."chat_conversation"."summary_up_to_message_id" IS '摘要水位线（覆盖到的最大消息ID）';
 COMMENT ON TABLE "public"."chat_conversation" IS 'AI聊天会话表';
 
 -- ----------------------------

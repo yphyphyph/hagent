@@ -76,14 +76,16 @@
         :stage-text="stageText"
         :streaming="displayStreaming"
         :guest="guest"
+        :show-welcome="guest || activeId === undefined"
         @send="sendText"
       />
 
-      <!-- 欢迎屏自带 hero 输入框，仅登录用户且已有消息时显示底部输入栏；访客不展示底部输入框 -->
-      <div v-if="!guest && displayMessages.length > 0" class="portal-chat__inputbar">
+      <!-- 新会话（未选会话）仅用欢迎区 hero 输入；已选历史（含空历史/加载中）始终显示底部输入栏；访客不展示 -->
+      <div v-if="!guest && (displayMessages.length > 0 || activeId !== undefined)" class="portal-chat__inputbar">
         <ChatInputBar
           v-model="draft"
           :streaming="displayStreaming"
+          :context-usage="contextUsage"
           @send="submitDraft"
           @stop="onStopStop"
           @focus="onInputFocus"
@@ -175,7 +177,7 @@ const chat = useChat({
   },
 })
 // 思考块为唯一进度载体：thinking-block 从首个 thinking 信号即渲染，标题“思考中…”空内容起步，随后递增
-const { messages, thinking, streaming, stageText, thinkingTitle, stop } = chat
+const { messages, thinking, streaming, stageText, thinkingTitle, contextUsage, stop } = chat
 
 /* ---------- 视图绑定：访客展示演示消息，登录展示真实流 ---------- */
 const displayMessages = computed(() => {

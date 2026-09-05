@@ -2,9 +2,11 @@ package com.hagent.ai.service.impl;
 
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.ObjectMapper;
+import com.hagent.ai.config.AiConfig;
 import com.hagent.ai.core.AgentToolLoopService;
 import com.hagent.ai.core.AiModelProvider;
 import com.hagent.ai.core.ChatPromptHolder;
+import com.hagent.ai.core.ContextTokenEstimator;
 import com.hagent.ai.core.ConversationTitleService;
 import com.hagent.ai.core.ModelRouter;
 import com.hagent.ai.core.RagService;
@@ -12,12 +14,14 @@ import com.hagent.ai.core.ThinkingStageSupport;
 import com.hagent.ai.core.UserContextHolder;
 import com.hagent.ai.mapper.ChatMessageMapper;
 import com.hagent.ai.mcp.AnalyzeImageTool;
+import com.hagent.ai.memory.ConversationMemoryService;
 import com.hagent.ai.model.dto.ChatRequest;
 import com.hagent.ai.model.entity.ChatConversation;
 import com.hagent.ai.model.entity.ChatMessage;
 import com.hagent.ai.model.entity.ChatPendingAction;
 import com.hagent.ai.model.enums.MessageRoleEnum;
 import com.hagent.ai.model.enums.MessageStatusEnum;
+import com.hagent.ai.model.vo.ContextUsageSnapshot;
 import com.hagent.ai.model.vo.ConversationVO;
 import com.hagent.ai.model.vo.PendingActionVO;
 import com.hagent.ai.service.ChatService;
@@ -39,6 +43,7 @@ import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.support.ToolCallbacks;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.context.annotation.Lazy;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Service;
 import reactor.core.Disposable;
@@ -46,9 +51,15 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.FluxSink;
 import reactor.core.scheduler.Schedulers;
 
+import java.time.Duration;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * 聊天服务实现（编排层）
@@ -85,12 +96,25 @@ public class ChatServiceImpl implements ChatService {
     private final ConversationTitleService titleService;
     /** 多级降级路由（无 Ollama，仅备用 API 模型） */
     private final ModelRouter modelRouter;
+    /** AI 配置（上下文窗口分母来源，可在设置页改） */
+    private final AiConfig aiConfig;
+    /** 会话摘要压缩服务（内存 T4 链路接入：历史组装读摘要、落库后异步触发压缩） */
+    private final ConversationMemoryService conversationMemoryService;
+
+    /** Redis 模板（RAG 修正值持久化，重启后自适应占位恢复；异常时降级内存态） */
+    private final StringRedisTemplate stringRedisTemplate;
 
     /** 统一工具回调（管理端与门户端共用同一注册集：知识库检索 + Text to SQL + 图片识别） */
     private final ToolCallback[] unifiedToolCallbacks;
 
-    /** 历史消息最大保留条数（滑动窗口，防止上下文超限） */
-    private static final int MAX_HISTORY_MESSAGES = 20;
+    /** 上轮 RAG 修正后的 ragTokens（按会话记，供下轮估算自适应占位；内存态单机生效，重启后经 Redis 恢复） */
+    private final ConcurrentHashMap<Long, Integer> lastRagTokensByConversation = new ConcurrentHashMap<>();
+
+    /** 上轮 RAG 修正值 Redis key 前缀：key = 前缀 + 会话ID，重启后首轮自适应占位不回落 */
+    private static final String CTX_RAG_REDIS_KEY_PREFIX = "hagent:ctx:rag:";
+
+    /** RAG 修正值 Redis 过期时间（7 天，自动清理死会话） */
+    private static final Duration CTX_RAG_REDIS_TTL = Duration.ofDays(7);
 
     /** 标题最大字符数 */
     private static final int TITLE_MAX_LENGTH = 20;
@@ -131,6 +155,9 @@ public class ChatServiceImpl implements ChatService {
      * @param stageSupport        思考阶段支持组件
      * @param promptHolder        聊天提示词持有者
      * @param titleService        会话标题异步生成服务
+     * @param modelRouter         多级降级路由
+     * @param aiConfig            AI 配置（上下文窗口分母来源）
+     * @param conversationMemoryService 会话摘要压缩服务
      * @author H
      */
     public ChatServiceImpl(AiModelProvider aiModelProvider,
@@ -147,7 +174,10 @@ public class ChatServiceImpl implements ChatService {
                            ThinkingStageSupport stageSupport,
                            ChatPromptHolder promptHolder,
                            ConversationTitleService titleService,
-                           ModelRouter modelRouter) {
+                           ModelRouter modelRouter,
+                           AiConfig aiConfig,
+                           ConversationMemoryService conversationMemoryService,
+                           StringRedisTemplate stringRedisTemplate) {
         this.aiModelProvider = aiModelProvider;
         this.conversationService = conversationService;
         this.chatMessageMapper = chatMessageMapper;
@@ -159,6 +189,9 @@ public class ChatServiceImpl implements ChatService {
         this.promptHolder = promptHolder;
         this.titleService = titleService;
         this.modelRouter = modelRouter;
+        this.aiConfig = aiConfig;
+        this.conversationMemoryService = conversationMemoryService;
+        this.stringRedisTemplate = stringRedisTemplate;
         // 统一工具集：知识库检索 + Text to SQL + 图片识别（管理端与门户端共用）
         this.unifiedToolCallbacks = ToolCallbacks.from(knowledgeTool, textToSqlTool, analyzeImageTool);
     }
@@ -281,11 +314,13 @@ public class ChatServiceImpl implements ChatService {
                         // 保存助手回复到历史，确保上下文完整
                         saveMessage(finalConversationId, MessageRoleEnum.ASSISTANT.getCode(), text, null);
                         conversationService.updateStats(finalConversationId, estimateTokens(text));
+                        triggerCompressAsync(finalConversationId, userId);
                         return Flux.just(wrapText(text), "[DONE]");
                     } catch (BusinessException e) {
                         log.warn("确认操作失败: pendingId={}, msg={}", pending.getId(), e.getMessage());
                         String errText = e.getMessage() != null ? e.getMessage() : "操作执行失败";
                         saveMessage(finalConversationId, MessageRoleEnum.ASSISTANT.getCode(), errText, null);
+                        triggerCompressAsync(finalConversationId, userId);
                         return Flux.just(wrapText(errText), "[DONE]");
                     } finally {
                         UserContextHolder.clear();
@@ -296,6 +331,7 @@ public class ChatServiceImpl implements ChatService {
                         String text = "操作已取消。";
                         saveMessage(finalConversationId, MessageRoleEnum.ASSISTANT.getCode(), text, null);
                         conversationService.updateStats(finalConversationId, estimateTokens(text));
+                        triggerCompressAsync(finalConversationId, userId);
                         return Flux.just(wrapText(text), "[DONE]");
                     } catch (BusinessException e) {
                         log.warn("取消操作失败: pendingId={}, msg={}", pending.getId(), e.getMessage());
@@ -316,20 +352,37 @@ public class ChatServiceImpl implements ChatService {
                 systemPrompt += "\n\n附加上下文: " + conversation.getSystemPrompt();
             }
 
-            // 6. 构建消息历史（滑动窗口，保留最近N条，防止上下文超限；访客模式无历史）
+            // 6. 构建消息历史（摘要 + 滑窗：首条为 running summary 系统消息，不计轮数；
+            // 随后为最近 keepTurns 轮 DB 原文；访客模式无历史）
             // 说明：工具调用过程不落库（仅落最终回复），因此历史中不会出现 TOOL 角色；
             // 若未来开始落库 TOOL 消息，必须同时落库带 tool_calls 的 assistant 消息，否则重建的
             // 消息序列会被 OpenAI 接口以 "tool must follow tool_calls" 拒绝
             List<Message> messages = new ArrayList<>();
+            // 6.1 首条 system：running summary（覆盖写回，缺失或失败时回退纯滑窗）
+            if (finalConversationId != null) {
+                try {
+                    String rawSummary = conversationMemoryService.loadLatestSummary(finalConversationId);
+                    String decoratedSummary = conversationMemoryService.decorateIfNeeded(rawSummary);
+                    if (decoratedSummary != null && !decoratedSummary.isBlank()) {
+                        messages.add(new SystemMessage(decoratedSummary));
+                    }
+                } catch (Exception e) {
+                    log.warn("读取会话摘要失败，回退纯滑窗: conversationId={}, error={}",
+                            finalConversationId, e.getMessage());
+                }
+            }
             messages.add(new SystemMessage(systemPrompt));
 
+            // 6.2 最近 keepTurns 轮整轮保留：DB 查询最近 keepTurns*2 条
+            int keepTurns = resolveKeepTurns();
+            int historyLimit = Math.max(2, keepTurns * 2);
             List<ChatMessage> history = finalConversationId == null
                     ? new ArrayList<>()
                     : chatMessageMapper.selectList(
                     new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<ChatMessage>()
                             .eq(ChatMessage::getConversationId, finalConversationId)
                             .orderByDesc(ChatMessage::getCreatedAt)
-                            .last("LIMIT " + MAX_HISTORY_MESSAGES));
+                            .last("LIMIT " + historyLimit));
             // 反转为时间正序
             java.util.Collections.reverse(history);
 
@@ -385,9 +438,36 @@ public class ChatServiceImpl implements ChatService {
                     .model(baseOptions.getModel())
                     .build();
 
+            // 上下文 token 首值估算：与历史打开接口共用 estimateSnapshot 同一代码路径，不允许两套算法分叉 @author H
+            ContextUsageSnapshot snapshot = estimateSnapshot(systemPrompt, conversation, history);
+            int systemTokens = snapshot.getBreakdown().getSystem();
+            int summaryTokens = snapshot.getBreakdown().getSummary();
+            int historyTokens = snapshot.getBreakdown().getHistory();
+            int ragTokens = snapshot.getBreakdown().getRag();
+            int promptTokens = snapshot.getPromptTokens();
+            int contextWindow = snapshot.getContextWindow();
+            int percent = snapshot.getPercent();
+
             // 元数据消息（第一个SSE事件，结构化JSON：包含type和conversationId；访客模式返回guest标识）
+            // promptTokens/contextWindow/percent/breakdown 为新增展示字段，前端忽略未知字段保持兼容
             String metaJson = "{\"type\":\"meta\",\"conversationId\":\""
-                    + (finalConversationId != null ? finalConversationId : "guest") + "\"}";
+                    + (finalConversationId != null ? finalConversationId : "guest") + "\""
+                    + ",\"promptTokens\":" + promptTokens
+                    + ",\"contextWindow\":" + contextWindow
+                    + ",\"percent\":" + percent
+                    + ",\"breakdown\":{\"history\":" + historyTokens
+                    + ",\"summary\":" + summaryTokens
+                    + ",\"rag\":" + ragTokens
+                    + ",\"system\":" + systemTokens + "}}";
+
+            // 上下文快照盒子：RAG 修正与 usage 校准覆盖同一快照（后值覆盖前值，不累加；system 每轮相同只计一次） @author H
+            final int systemTokensSnap = systemTokens;
+            final int summaryTokensSnap = summaryTokens;
+            final int historyTokensSnap = historyTokens;
+            final int contextWindowSnap = contextWindow;
+            final int[] ragTokensBox = {ragTokens};
+            final int[] promptTokensBox = {promptTokens};
+            final int[] percentBox = {percent};
 
             // 真流式改造：工具循环移入 Flux.create，订阅即刻发射 meta/stage，
             // 工具阶段的 thinking/tool 事件随执行实时写入 sink 直达前端，不再缓存到列表末尾集中爆发
@@ -409,6 +489,42 @@ public class ChatServiceImpl implements ChatService {
                     // 若需整阶段重试，可按 orderedChatModels 再次兜底（全部失败抛最后异常）
                     agentToolLoopService.callWithTools(messages, toolOptions, chatModel,
                             unifiedToolCallbacks, sink, thinkingAccum, sourcesAccum);
+
+                    // RAG 两阶段修正：source 到达后用 snippet 全文替换重估 rag 段（非累加）；
+                    // 同一轮重复 source 以 sourcesAccum 最新全量去重集合为准；snippet 为空时保留初始占位 @author H
+                    try {
+                        int snippetTokens = estimateRagTokensFromSources(sourcesAccum);
+                        if (snippetTokens > 0 && !sink.isCancelled()) {
+                            int ragTokensOld = ragTokensBox[0];
+                            // rag 段 = snippet 全文 + 工具 schema 基数（真实请求两者都进 prompt，收窄与 actual 的缺口）
+                            int schemaTokens = estimateToolSchemaTokens();
+                            int ragTokensNew = snippetTokens + schemaTokens;
+                            ragTokensBox[0] = ragTokensNew;
+                            // 自适应占位回写：钳位上限为窗口 50%，防单轮异常命中回声放大污染后续轮估算；
+                            // 同步写 Redis 持久化（7 天过期），重启后首轮经 Redis 恢复不回落 @author H
+                            if (finalConversationId != null) {
+                                int cappedRag = Math.min(ragTokensNew, contextWindowSnap / 2);
+                                lastRagTokensByConversation.put(finalConversationId, cappedRag);
+                                try {
+                                    stringRedisTemplate.opsForValue().set(CTX_RAG_REDIS_KEY_PREFIX + finalConversationId,
+                                            String.valueOf(cappedRag), CTX_RAG_REDIS_TTL);
+                                } catch (Exception e) {
+                                    log.warn("RAG 修正值写 Redis 失败（内存态仍生效）: conversationId={}", finalConversationId, e);
+                                }
+                            }
+                            promptTokensBox[0] = systemTokensSnap + summaryTokensSnap + historyTokensSnap + ragTokensNew;
+                            percentBox[0] = contextWindowSnap > 0
+                                    ? (int) Math.floor(promptTokensBox[0] * 100.0 / contextWindowSnap) : 0;
+                            log.info("RAG 修正: conversationId={}, ragTokens={}->{}(snippet={}, schema={}), promptTokens={}, breakdown(history={}, summary={}, rag={}, system={})",
+                                    finalConversationId, ragTokensOld, ragTokensNew, snippetTokens, schemaTokens,
+                                    promptTokensBox[0], historyTokensSnap, summaryTokensSnap, ragTokensBox[0], systemTokensSnap);
+                            sink.next(buildContextUpdateJson(finalConversationId, promptTokensBox[0],
+                                    contextWindowSnap, percentBox[0], historyTokensSnap, summaryTokensSnap,
+                                    ragTokensBox[0], systemTokensSnap, 0));
+                        }
+                    } catch (Exception e) {
+                        log.warn("RAG 修正失败，保留初始估算", e);
+                    }
 
                     // 阶段进度：构建输出结构（工具调用结束、流式开始前，对应第 7 阶段）
                     sink.next(stageSupport.wrapStage(ThinkingStageSupport.THINK_STAGE_STRUCTURE));
@@ -440,6 +556,8 @@ public class ChatServiceImpl implements ChatService {
                 // 该块会被拆分到多个 token 逐片到达，单 token 正则无法命中，需按状态机累积完整块后整体剥离
                 final boolean[] inToolCallBlock = {false};
                 final StringBuilder toolCallBlockBuf = new StringBuilder();
+                // 流式 usage 回执暂存：每轮 ChatResponse 到达时以后值覆盖前值，多轮取最新轮 @author H
+                final AtomicInteger streamedUsagePromptTokens = new AtomicInteger(0);
                 // 阶段2：真正的增量流，逐个响应提取 thinking 与 token 并交织发射
                 // 每个token统一包装为结构化JSON：{"type":"token","content":"<token内容>"}
                 // 通过JSON字符串编码，换行符等特殊字符被转义为单行传输，避免SSE帧被破坏
@@ -463,6 +581,15 @@ public class ChatServiceImpl implements ChatService {
                                     streamedThinkingSeen.append(thinkingChunk);
                                     stageSupport.emitThinkingToSink(sink, thinkingChunk);
                                 }
+                            }
+                            // 2) 再发射 token 增量前暂存 usage 回执（国产接口缺字段时静默跳过，保留估算） @author H
+                            try {
+                                Integer usagePrompt = extractPromptTokens(response);
+                                if (usagePrompt != null && usagePrompt > 0) {
+                                    streamedUsagePromptTokens.set(usagePrompt);
+                                }
+                            } catch (Exception ignore) {
+                                log.debug("暂存流式 usage 回执失败，保留估算");
                             }
                             // 2) 再发射 token 增量
                             String text = null;
@@ -503,12 +630,28 @@ public class ChatServiceImpl implements ChatService {
                                 saveMessage(finalConversationId, MessageRoleEnum.ASSISTANT.getCode(),
                                         partialText, null, partialThinking, partialSources);
                                 conversationService.updateStats(finalConversationId, estimateTokens(partialText));
+                                triggerCompressAsync(finalConversationId, userId);
                             }
                             sink.next(wrapError("AI服务暂时不可用，请稍后重试"));
                             sink.next("[FINAL]");
                             sink.complete();
                         },
                         () -> {
+                            // usage 校准：环形圈统一用下轮预估口径，不再以实际值覆盖估算快照；
+                            // 实际值仅随 context-update 下发供明细行参考，无回执静默跳过保留估算 @author H
+                            try {
+                                int actualPrompt = streamedUsagePromptTokens.get();
+                                if (actualPrompt > 0 && !sink.isCancelled()) {
+                                    int estimatedBefore = promptTokensBox[0];
+                                    log.info("usage 校准: estimated={}, actual={}, 下发(promptTokens={}, percent={}, actualPromptTokens={})",
+                                            estimatedBefore, actualPrompt, promptTokensBox[0], percentBox[0], actualPrompt);
+                                    sink.next(buildContextUpdateJson(finalConversationId, promptTokensBox[0],
+                                            contextWindowSnap, percentBox[0], historyTokensSnap, summaryTokensSnap,
+                                            ragTokensBox[0], systemTokensSnap, actualPrompt));
+                                }
+                            } catch (Exception e) {
+                                log.warn("usage 校准失败，保留估算", e);
+                            }
                             // 流完成，保存完整回复+思考内容+来源到DB（访客模式跳过）
                             String finalText = fullText.toString();
                             String finalThinking = thinkingAccum.length() > 0 ? thinkingAccum.toString() : null;
@@ -522,6 +665,7 @@ public class ChatServiceImpl implements ChatService {
                                 saveMessage(finalConversationId, MessageRoleEnum.ASSISTANT.getCode(),
                                         finalText, null, finalThinking, finalSources);
                                 conversationService.updateStats(finalConversationId, estimateTokens(finalText));
+                                triggerCompressAsync(finalConversationId, userId);
                                 log.info("流式输出完成并保存: conversationId={}, length={}, thinkingLength={}, sources={}",
                                         finalConversationId, finalText.length(),
                                         finalThinking != null ? finalThinking.length() : 0,
@@ -700,6 +844,158 @@ public class ChatServiceImpl implements ChatService {
     }
 
     /**
+     * 现算历史打开首值（上下文用量的唯一真源，只读不落库）
+     * 默认提示词取管理端（接口归属 /admin/ai/conversations），自定义部分取会话 systemPrompt；
+     * 核心估算委托 estimateSnapshot，与聊天 meta 首值同一代码路径
+     *
+     * @param conversationId 会话ID
+     * @return 上下文用量快照
+     * @author H
+     */
+    @Override
+    public ContextUsageSnapshot estimateInitial(Long conversationId) {
+        ChatConversation conversation = conversationService.getById(conversationId);
+        if (conversation == null) {
+            throw new BusinessException("会话不存在: id=" + conversationId);
+        }
+        String systemPrompt = promptHolder.getAdminPrompt();
+        if (conversation.getSystemPrompt() != null && !conversation.getSystemPrompt().isBlank()) {
+            systemPrompt += "\n\n附加上下文: " + conversation.getSystemPrompt();
+        }
+        int keepTurns = resolveKeepTurns();
+        int historyLimit = Math.max(2, keepTurns * 2);
+        List<ChatMessage> history = chatMessageMapper.selectList(
+                new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<ChatMessage>()
+                        .eq(ChatMessage::getConversationId, conversationId)
+                        .orderByDesc(ChatMessage::getCreatedAt)
+                        .last("LIMIT " + historyLimit));
+        java.util.Collections.reverse(history);
+        // 历史页快照审计：只读现算结果落一行日志，逻辑与返回值不动 @author H
+        ContextUsageSnapshot initialSnapshot = estimateSnapshot(systemPrompt, conversation, history);
+        log.info("历史页快照: conversationId={}, promptTokens={}, percent={}, msgCount={}",
+                conversationId, initialSnapshot.getPromptTokens(), initialSnapshot.getPercent(),
+                history != null ? history.size() : 0);
+        return initialSnapshot;
+    }
+
+    /**
+     * 上下文首值估算核心（展示用初筛，经 meta 事件透出；不影响模型调用与累计口径）
+     * system 段 = 默认提示词 + 自定义 systemPrompt；summary 段 = 会话摘要正文 summaryText；
+     * history 段 = DB 历史原文求和；rag 段 = 工具 schema 占位（source 到达后二次修正）
+     *
+     * @param systemPrompt 已拼装的系统提示词（默认加自定义）
+     * @param conversation 会话实体（取摘要正文，可空）
+     * @param history DB 历史消息（取内容原文，可空）
+     * @return 上下文用量快照
+     * @author H
+     */
+    private ContextUsageSnapshot estimateSnapshot(String systemPrompt, ChatConversation conversation,
+                                                  List<ChatMessage> history) {
+        int systemTokens = ContextTokenEstimator.estimate(systemPrompt);
+        String summaryTextForTokens = (conversation != null && conversation.getSummaryText() != null
+                && !conversation.getSummaryText().isBlank()) ? conversation.getSummaryText() : null;
+        int summaryTokens = ContextTokenEstimator.estimate(summaryTextForTokens);
+        List<String> historyParts = new ArrayList<>();
+        if (history != null) {
+            for (ChatMessage msg : history) {
+                if (msg.getContent() == null) {
+                    continue;
+                }
+                // 与模型侧组装同口径：跳过非法 role 与空回复兜底文案，避免估算高估 @author H
+                MessageRoleEnum roleEnum = MessageRoleEnum.fromCode(msg.getRole());
+                if (roleEnum == null) {
+                    continue;
+                }
+                if (roleEnum == MessageRoleEnum.ASSISTANT && FALLBACK_TEXT.equals(msg.getContent())) {
+                    continue;
+                }
+                historyParts.add(msg.getContent());
+            }
+        }
+        int historyTokens = ContextTokenEstimator.estimateMessages(historyParts);
+        int ragTokens = estimateToolSchemaTokens();
+        // 自适应 RAG 占位（三级回退：内存 Map → Redis → 默认 schema 占位）：上轮修正后的 rag 段总值
+        // 替代默认占位，消除每轮重置 154 的系统性低估；重启后内存清空经 Redis 恢复，避免首轮显示假跌；
+        // 访客无会话 ID 时沿用默认占位 @author H
+        Long ragConversationId = conversation != null ? conversation.getId() : null;
+        String ragPlaceholder = "默认(" + ragTokens + ")";
+        if (ragConversationId != null) {
+            Integer adaptiveRag = lastRagTokensByConversation.get(ragConversationId);
+            if (adaptiveRag == null) {
+                // 内存 Map 未命中（重启后清空）查 Redis 恢复；异常降级回退默认占位
+                try {
+                    String cached = stringRedisTemplate.opsForValue().get(CTX_RAG_REDIS_KEY_PREFIX + ragConversationId);
+                    if (cached != null) {
+                        adaptiveRag = Integer.parseInt(cached.trim());
+                    }
+                } catch (Exception e) {
+                    log.debug("读取 RAG 占位 Redis 失败，回退默认: conversationId={}", ragConversationId, e);
+                }
+            }
+            if (adaptiveRag != null) {
+                if (adaptiveRag != ragTokens) {
+                    ragPlaceholder = "自适应(" + adaptiveRag + ")";
+                }
+                ragTokens = adaptiveRag;
+            }
+        }
+        int promptTokens = systemTokens + summaryTokens + historyTokens + ragTokens;
+        int contextWindow = 128000;
+        try {
+            Integer configured = aiConfig.getChat().getContextWindow();
+            if (configured != null && configured > 0) {
+                contextWindow = configured;
+            }
+        } catch (Exception e) {
+            log.warn("读取上下文窗口失败，回退 128000", e);
+        }
+        // floor 取整：分子单调增时显示百分比永不回退（round 在占位回落边界会出现真实值涨但显示跌）
+        int percent = contextWindow > 0 ? (int) Math.floor(promptTokens * 100.0 / contextWindow) : 0;
+        Long logConversationId = conversation != null ? conversation.getId() : null;
+        // 可审计输入量：历史条数与原文字符数、系统提示词与摘要字符数（仅日志，不影响估算口径） @author H
+        int historyChars = 0;
+        for (String part : historyParts) {
+            historyChars += part.length();
+        }
+        int systemChars = systemPrompt != null ? systemPrompt.length() : 0;
+        int summaryChars = summaryTextForTokens != null ? summaryTextForTokens.length() : 0;
+        log.info("上下文估算: conversationId={}, promptTokens={}, contextWindow={}, percent={}, breakdown(history={}, summary={}, rag={}, system={}), msgCount={}, historyChars={}, systemChars={}, summaryChars={}, ragPlaceholder={}",
+                logConversationId, promptTokens, contextWindow, percent,
+                historyTokens, summaryTokens, ragTokens, systemTokens,
+                historyParts.size(), historyChars, systemChars, summaryChars, ragPlaceholder);
+        return ContextUsageSnapshot.of(promptTokens, contextWindow, percent,
+                historyTokens, summaryTokens, ragTokens, systemTokens);
+    }
+
+    /**
+     * 估算工具 schema 段 token 数（按 JSON 长度同口径计入 rag 段）
+     *
+     * @return 工具 schema 估算 token 数，失败时返回 0
+     * @author H
+     */
+    private int estimateToolSchemaTokens() {
+        try {
+            List<Map<String, String>> schemas = new ArrayList<>();
+            if (unifiedToolCallbacks != null) {
+                for (ToolCallback callback : unifiedToolCallbacks) {
+                    Map<String, String> schema = new LinkedHashMap<>();
+                    try {
+                        schema.put("name", String.valueOf(callback.getToolDefinition().name()));
+                        schema.put("description", String.valueOf(callback.getToolDefinition().description()));
+                    } catch (Exception e) {
+                        schema.put("name", callback.toString());
+                    }
+                    schemas.add(schema);
+                }
+            }
+            return ContextTokenEstimator.estimate(objectMapper.writeValueAsString(schemas));
+        } catch (Exception e) {
+            log.warn("估算工具 schema token 失败", e);
+            return 0;
+        }
+    }
+
+    /**
      * 估算文本 token 数（中英混合）
      * 中文字符约 0.6 token/字，其他字符约 4 字符/token；比单一 len/4 对中文场景更接近真实
      *
@@ -769,6 +1065,90 @@ public class ChatServiceImpl implements ChatService {
             return objectMapper.writeValueAsString(sourcesAccum);
         } catch (JacksonException e) {
             log.warn("序列化sources失败，跳过持久化", e);
+            return null;
+        }
+    }
+
+    /**
+     * 用累积来源的 snippet 全文重估本轮 rag 段（替换非累加，全量去重）
+     * snippet 为空或缺失时贡献 0，调用方在返回值小于等于 0 时保留初始占位
+     *
+     * @param sourcesAccum 累积的来源列表（含 snippet 字段）
+     * @return rag 段重估 token 数，失败时返回 0
+     * @author H
+     */
+    private int estimateRagTokensFromSources(List<Map<String, Object>> sourcesAccum) {
+        try {
+            if (sourcesAccum == null || sourcesAccum.isEmpty()) {
+                return 0;
+            }
+            Set<String> snippets = new LinkedHashSet<>();
+            for (Map<String, Object> hit : sourcesAccum) {
+                if (hit == null) {
+                    continue;
+                }
+                Object snippet = hit.get("snippet");
+                if (snippet != null) {
+                    String text = String.valueOf(snippet);
+                    if (!text.isBlank()) {
+                        snippets.add(text);
+                    }
+                }
+            }
+            return ContextTokenEstimator.estimateMessages(new ArrayList<>(snippets));
+        } catch (Exception e) {
+            log.warn("重估 RAG snippet token 失败", e);
+            return 0;
+        }
+    }
+
+    /**
+     * 构建 context-update 事件（与 meta 同 shape，仅 type 不同，前端忽略未知 type 保持兼容）
+     * 环形圈与 detail-total 统一用下轮预估口径（promptTokens/percent），上轮实际经 actualPromptTokens 下发仅供明细行参考
+     *
+     * @param conversationId 会话ID
+     * @param promptTokens 提示 token 总数
+     * @param contextWindow 上下文窗口
+     * @param percent 使用百分比
+     * @param historyTokens 历史段 token
+     * @param summaryTokens 摘要段 token
+     * @param ragTokens RAG 段 token
+     * @param systemTokens 系统段 token
+     * @param actualPromptTokens 上轮实际 promptTokens（无回执时传 0，前端缺省 0）
+     * @return context-update 事件 JSON
+     * @author H
+     */
+    private String buildContextUpdateJson(Long conversationId, int promptTokens, int contextWindow, int percent,
+                                          int historyTokens, int summaryTokens, int ragTokens, int systemTokens,
+                                          int actualPromptTokens) {
+        return "{\"type\":\"context-update\",\"conversationId\":\""
+                + (conversationId != null ? conversationId : "guest") + "\""
+                + ",\"promptTokens\":" + promptTokens
+                + ",\"contextWindow\":" + contextWindow
+                + ",\"percent\":" + percent
+                + ",\"actualPromptTokens\":" + actualPromptTokens
+                + ",\"breakdown\":{\"history\":" + historyTokens
+                + ",\"summary\":" + summaryTokens
+                + ",\"rag\":" + ragTokens
+                + ",\"system\":" + systemTokens + "}}";
+    }
+
+    /**
+     * 从 ChatResponse 提取服务端 usage 回执的实际 promptTokens
+     * 国产接口缺字段时返回 null，调用方静默跳过保留估算
+     *
+     * @param response 聊天响应
+     * @return 实际 promptTokens，拿不到时返回 null
+     * @author H
+     */
+    private Integer extractPromptTokens(ChatResponse response) {
+        try {
+            if (response == null || response.getMetadata() == null || response.getMetadata().getUsage() == null) {
+                return null;
+            }
+            Integer promptTokens = response.getMetadata().getUsage().getPromptTokens();
+            return (promptTokens != null && promptTokens > 0) ? promptTokens : null;
+        } catch (Exception e) {
             return null;
         }
     }
@@ -851,6 +1231,40 @@ public class ChatServiceImpl implements ChatService {
             log.warn("解析 rowCount 失败: {}", payloadJson, e);
         }
         return 0;
+    }
+
+    /**
+     * 解析历史保留轮数（整轮保留，DB 查询条数为 keepTurns*2）
+     *
+     * @return 保留轮数，配置缺失或非法时回退 10
+     * @author H
+     */
+    private int resolveKeepTurns() {
+        try {
+            AiConfig.MemorySummary summary = aiConfig.getMemorySummary();
+            if (summary != null && summary.getKeepTurns() >= 1 && summary.getKeepTurns() <= 50) {
+                return summary.getKeepTurns();
+            }
+            log.warn("摘要保留轮数越界，回退 10");
+        } catch (Exception e) {
+            log.warn("读取摘要保留轮数失败，回退 10", e);
+        }
+        return 10;
+    }
+
+    /**
+     * 异步触发会话摘要压缩（assistant 落库后调用一次，失败仅日志不影响主流程）
+     *
+     * @param conversationId 会话ID
+     * @param userId         用户ID
+     * @author H
+     */
+    private void triggerCompressAsync(Long conversationId, Long userId) {
+        try {
+            conversationMemoryService.compressIfNeededAsync(conversationId, userId);
+        } catch (Exception e) {
+            log.warn("触发摘要压缩失败: conversationId={}, error={}", conversationId, e.getMessage());
+        }
     }
 
     /**
