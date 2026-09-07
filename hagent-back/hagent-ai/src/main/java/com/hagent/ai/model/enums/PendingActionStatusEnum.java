@@ -25,7 +25,10 @@ public enum PendingActionStatusEnum {
     EXECUTING(4, "执行中"),
 
     /** 已执行 */
-    EXECUTED(5, "已执行");
+    EXECUTED(5, "已执行"),
+
+    /** 已过期（过期后不再参与确认短路消费） @author H */
+    EXPIRED(6, "已过期");
 
     /** 状态码 */
     private final Integer code;

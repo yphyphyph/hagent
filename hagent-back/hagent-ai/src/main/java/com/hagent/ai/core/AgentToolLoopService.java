@@ -72,6 +72,12 @@ public class AgentToolLoopService {
     /** 文本形式工具调用标记（部分模型在无工具定义阶段会退化为此格式） */
     private static final String TEXT_TOOL_CALL_MARKER = "<tool_call>";
 
+    /** 流式剥离用起始标记前缀（不含右尖括号，兼容 <tool_call> 完整形式） */
+    private static final String STRIP_START_MARKER = "<tool_call";
+
+    /** 流式剥离用结束标记 */
+    private static final String STRIP_END_MARKER = "</tool_call>";
+
     /** 文本形式工具调用解析：<function=name> */
     private static final Pattern TEXT_FUNCTION_PATTERN = Pattern.compile("<function=([\\w.-]+)\\s*>");
 
@@ -233,6 +239,16 @@ public class AgentToolLoopService {
                     break;
                 } catch (Exception e) {
                     lastChatException = e;
+                    // 取消/不可重试守卫：与 ModelRouter.streamWithFallbackInternal 同策略（P0-2）
+                    // ModelRouter.isCancel/isRetryable 为同包静态方法，可直接复用，无需放开可见性或抽公共 ErrorClassifier @author H
+                    if (ModelRouter.isCancel(e)) {
+                        log.info("工具阶段检测到取消，直接中止不再降级");
+                        throw e instanceof RuntimeException re ? re : new RuntimeException(e);
+                    }
+                    if (!ModelRouter.isRetryable(e)) {
+                        log.info("工具阶段不可重试异常，直接透传不再降级 cause={}", e.toString());
+                        throw e instanceof RuntimeException re ? re : new RuntimeException(e);
+                    }
                     if (m == orderedModels.size() - 1) {
                         break;
                     }
@@ -486,46 +502,73 @@ public class AgentToolLoopService {
      * 剥离流式阶段被拆分到多个 token 的文本工具调用块
      * 模型有时会在流式输出中以 XML 文本形式再次表达工具意图（如 <tool_call><function=...>...），
      * 该块会被 tokenizer 拆分成多条增量逐片到达，单 token 正则无法整块命中，需要按状态机累积后整体剥离。
+     * 国产网关常把标签本身切碎：非块内保留 trailing 疑似区（尾部疑似起始标记前缀暂存 buf 待下一分片联合判定），
+     * 块内用 buf+chunk 联合搜索结束标记，避免碎片泄漏为正文或 inBlock 永久为 true 吞掉后续正文。
      *
      * @param chunk   当前 token 的文本增量
      * @param inBlock 是否正处于 <tool_call> 块内（跨 token 状态）
-     * @param buf     块内累积缓冲（跨 token）
+     * @param buf     跨 token 缓冲：块内累积块内容，非块内暂存 trailing 疑似前缀
      * @return 剥离工具调用块后的残留文本（正常正文原样保留）
+     * @author H
      */
     public static String stripToolCallBlock(String chunk, boolean[] inBlock, StringBuilder buf) {
+        // 跨分片联合：先将上轮暂存的前缀疑似区/块内累积与本轮拼接后再扫描
+        String data = chunk;
+        if (buf.length() > 0) {
+            data = buf.toString() + chunk;
+            buf.setLength(0);
+        }
         StringBuilder out = new StringBuilder();
         int i = 0;
-        while (i < chunk.length()) {
+        while (i < data.length()) {
             if (inBlock[0]) {
-                // 正在工具调用块内：查找结束标记
-                int end = chunk.indexOf("</tool_call>", i);
+                // 正在工具调用块内：用联合串查找结束标记
+                int end = data.indexOf(STRIP_END_MARKER, i);
                 if (end < 0) {
-                    // 本 token 未见结束标记，整体累积后等待下一个 token
-                    buf.append(chunk.substring(i));
+                    // 本轮未见完整结束标记（含结束标记被切成两半），整体累积后等待下一个分片
+                    buf.append(data.substring(i));
                     return out.toString();
                 }
-                // 缓冲累积完整块后清除，块内容全部丢弃
-                buf.append(chunk.substring(i, end));
-                buf.setLength(0);
+                // 块内容全部丢弃（含被切碎后经联合才完整的块）
                 inBlock[0] = false;
-                i = end + "</tool_call>".length();
+                i = end + STRIP_END_MARKER.length();
             } else {
                 // 非块内：查找开始标记
-                int start = chunk.indexOf("<tool_call", i);
+                int start = data.indexOf(STRIP_START_MARKER, i);
                 if (start < 0) {
-                    // 无开始标记，剩余均为正常正文
-                    out.append(chunk.substring(i));
-                    i = chunk.length();
-                } else {
-                    // 开始标记之前的正文保留，进入块内状态（含未闭合的 <tool_call 前缀，由下一轮累积）
-                    out.append(chunk.substring(i, start));
-                    inBlock[0] = true;
-                    buf.setLength(0);
-                    i = start;
+                    // 无完整开始标记：尾部可能是被切碎的起始标记前缀（如以 <tool_ 结尾），暂存待下一分片联合判定
+                    String rest = data.substring(i);
+                    int hold = trailingMarkerPrefixLen(rest, STRIP_START_MARKER);
+                    out.append(rest, 0, rest.length() - hold);
+                    buf.append(rest.substring(rest.length() - hold));
+                    return out.toString();
                 }
+                // 开始标记之前的正文保留，进入块内状态，跳过起始标记本身
+                out.append(data, i, start);
+                inBlock[0] = true;
+                i = start + STRIP_START_MARKER.length();
             }
         }
         return out.toString();
+    }
+
+    /**
+     * 计算文本尾部与标记头部的最长前后缀重合长度
+     * 用于跨分片场景：尾部疑似被切碎的标记前缀时暂不输出，待下一分片到达后联合判定
+     *
+     * @param text   待检查文本
+     * @param marker 标记（如 <tool_call）
+     * @return 重合长度（0 表示无疑似前缀）
+     * @author H
+     */
+    private static int trailingMarkerPrefixLen(String text, String marker) {
+        int max = Math.min(text.length(), marker.length() - 1);
+        for (int k = max; k >= 1; k--) {
+            if (text.regionMatches(text.length() - k, marker, 0, k)) {
+                return k;
+            }
+        }
+        return 0;
     }
 
     /**

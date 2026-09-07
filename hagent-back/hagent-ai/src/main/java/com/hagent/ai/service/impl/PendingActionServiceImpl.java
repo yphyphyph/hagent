@@ -201,6 +201,10 @@ public class PendingActionServiceImpl extends ServiceImpl<ChatPendingActionMappe
         LambdaQueryWrapper<ChatPendingAction> wrapper = new LambdaQueryWrapper<>();
         wrapper.eq(ChatPendingAction::getConversationId, conversationId)
                 .eq(ChatPendingAction::getStatus, PendingActionStatusEnum.PENDING.getCode())
+                // 未过期才可被短路消费：expireTime 为 null 视为不过期，避免过期 pending 常驻劫持正常追问 @author H
+                .and(w -> w.isNull(ChatPendingAction::getExpireTime)
+                        .or()
+                        .gt(ChatPendingAction::getExpireTime, LocalDateTime.now()))
                 .orderByDesc(ChatPendingAction::getCreatedAt)
                 .last("LIMIT 1");
         return super.getOne(wrapper, false);

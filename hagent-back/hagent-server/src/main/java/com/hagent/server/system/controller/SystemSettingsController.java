@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.hagent.ai.config.AiConfig;
 import com.hagent.ai.core.AiModelProvider;
 import com.hagent.common.Result;
+import com.hagent.common.annotation.RequireAdmin;
 import com.hagent.common.exception.BusinessException;
 import com.hagent.common.service.SystemConfigService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -33,6 +34,7 @@ import java.util.Map;
 @Tag(name = "系统设置", description = "系统与 AI 配置的读写（基于 system_config 表）")
 @RestController
 @RequestMapping("/admin/system")
+@RequireAdmin
 @RequiredArgsConstructor
 public class SystemSettingsController {
 
@@ -72,7 +74,39 @@ public class SystemSettingsController {
         all.putIfAbsent("memory.summary.max-chars-total", String.valueOf(aiConfig.getMemorySummary().getMaxCharsTotal()));
         all.putIfAbsent("memory.summary.target-tokens", String.valueOf(aiConfig.getMemorySummary().getTargetTokens()));
         all.putIfAbsent("memory.summary.interval-turns", String.valueOf(aiConfig.getMemorySummary().getIntervalTurns()));
+        // 敏感值脱敏：仅处理返回体，不写库
+        maskSensitiveValues(all);
         return Result.success(all);
+    }
+
+    /**
+     * 对返回体中的敏感配置值脱敏为 ***，不写库
+     * 命中规则：key 含 api-key/apikey/secret/token（大小写不敏感）
+     *
+     * @param all 配置 key→value 映射（原位脱敏返回体）
+     * @author H
+     */
+    private void maskSensitiveValues(Map<String, String> all) {
+        for (Map.Entry<String, String> entry : all.entrySet()) {
+            if (isSensitiveKey(entry.getKey())) {
+                entry.setValue("***");
+            }
+        }
+    }
+
+    /**
+     * 判断是否为敏感配置键
+     *
+     * @param key 配置键
+     * @return 是否敏感
+     * @author H
+     */
+    private boolean isSensitiveKey(String key) {
+        if (key == null) {
+            return false;
+        }
+        String lower = key.toLowerCase();
+        return lower.contains("api-key") || lower.contains("apikey") || lower.contains("secret") || lower.contains("token");
     }
 
     /**
@@ -98,6 +132,12 @@ public class SystemSettingsController {
             }
             Object raw = entry.getValue();
             String value = raw == null ? "" : String.valueOf(raw);
+
+            // 脱敏哨兵：敏感键收到 *** 表示前端回填的占位符，直接跳过不写库，避免覆盖真实密钥
+            if (isSensitiveKey(key) && "***".equals(value)) {
+                log.debug("跳过脱敏占位符回写: {}", key);
+                continue;
+            }
 
             // @Valid 校验 FallbackModel 的 name/baseUrl 非空，apiKey 允许空（后端复用主 Key）
             if ("ai.fallback.chat.models".equals(key)) {

@@ -10,9 +10,12 @@ import com.hagent.server.auth.model.entity.UserDO;
 import com.hagent.server.auth.model.vo.CurrentUserVO;
 import com.hagent.server.auth.model.vo.LoginVO;
 import com.hagent.server.auth.service.AuthService;
+import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
 
 /**
  * 认证服务实现
@@ -40,7 +43,8 @@ public class AuthServiceImpl implements AuthService {
                 new LambdaQueryWrapper<UserDO>().eq(UserDO::getUsername, request.getUsername()));
         // 用户不存在或密码校验失败，统一返回友好提示，避免枚举出用户是否存在
         if (user == null || !BCrypt.checkpw(request.getPassword(), user.getPassword())) {
-            log.warn("登录失败，用户名: {}", request.getUsername());
+            // 失败日志只记用户名与 IP，不记密码明文
+            log.warn("登录失败，用户名: {}，IP: {}", request.getUsername(), getClientIp());
             throw new BusinessException("用户名或密码错误");
         }
         // Sa-Token 登录
@@ -52,6 +56,32 @@ public class AuthServiceImpl implements AuthService {
         vo.setUsername(user.getUsername());
         vo.setRole(user.getRole());
         return vo;
+    }
+
+    /**
+     * 获取客户端 IP，用于登录失败日志定位爆破来源
+     *
+     * @return 客户端 IP（取 X-Forwarded-For 首段，缺失时取远端地址）
+     * @author H
+     */
+    private String getClientIp() {
+        ServletRequestAttributes attributes =
+                (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
+        if (attributes == null) {
+            return "unknown";
+        }
+        HttpServletRequest request = attributes.getRequest();
+        String ip = request.getHeader("X-Forwarded-For");
+        if (ip == null || ip.isEmpty() || "unknown".equalsIgnoreCase(ip)) {
+            ip = request.getHeader("X-Real-IP");
+        }
+        if (ip == null || ip.isEmpty() || "unknown".equalsIgnoreCase(ip)) {
+            ip = request.getRemoteAddr();
+        }
+        if (ip != null && ip.contains(",")) {
+            ip = ip.split(",")[0].trim();
+        }
+        return ip;
     }
 
     /**

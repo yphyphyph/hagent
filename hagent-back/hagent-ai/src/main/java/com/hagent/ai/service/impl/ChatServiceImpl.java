@@ -21,6 +21,7 @@ import com.hagent.ai.model.entity.ChatMessage;
 import com.hagent.ai.model.entity.ChatPendingAction;
 import com.hagent.ai.model.enums.MessageRoleEnum;
 import com.hagent.ai.model.enums.MessageStatusEnum;
+import com.hagent.ai.model.enums.PendingActionStatusEnum;
 import com.hagent.ai.model.vo.ContextUsageSnapshot;
 import com.hagent.ai.model.vo.ConversationVO;
 import com.hagent.ai.model.vo.PendingActionVO;
@@ -52,6 +53,7 @@ import reactor.core.publisher.FluxSink;
 import reactor.core.scheduler.Schedulers;
 
 import java.time.Duration;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -304,6 +306,21 @@ public class ChatServiceImpl implements ChatService {
         // 4.1 确认/取消短路：若存在待确认操作且用户发送确认/取消词，直接执行对应操作
         if (conversation != null && userId != null) {
             ChatPendingAction pending = pendingActionService.findLatestPendingByConversationId(finalConversationId);
+            // 过期 pending 不得劫持正常追问：expireTime 为 null 视为不过期；已过期则标记为已过期并视为无 pending，走正常聊天循环（确认词逻辑不动） @author H
+            if (pending != null && pending.getExpireTime() != null
+                    && LocalDateTime.now().isAfter(pending.getExpireTime())) {
+                log.info("待确认操作已过期，跳过短路消费: pendingId={}, conversationId={}",
+                        pending.getId(), finalConversationId);
+                try {
+                    ChatPendingAction expiredMark = new ChatPendingAction();
+                    expiredMark.setId(pending.getId());
+                    expiredMark.setStatus(PendingActionStatusEnum.EXPIRED.getCode());
+                    pendingActionService.updateById(expiredMark);
+                } catch (Exception markEx) {
+                    log.warn("标记过期待确认操作失败: pendingId={}", pending.getId(), markEx);
+                }
+                pending = null;
+            }
             if (pending != null) {
                 String userMsg = request.getMessage();
                 if (isConfirm(userMsg)) {
@@ -533,6 +550,12 @@ public class ChatServiceImpl implements ChatService {
                     sink.next(stageSupport.wrapStage(ThinkingStageSupport.THINK_STAGE_POLISH));
                 } catch (Exception e) {
                     log.error("聊天失败: conversationId={}", finalConversationId, e);
+                    // 工具阶段异常同样落库助手占位回复，避免留下无答复的孤儿 USER，保证历史上下文完整（与流式异常分支一致） @author H
+                    if (finalConversationId != null) {
+                        saveMessage(finalConversationId, MessageRoleEnum.ASSISTANT.getCode(), FALLBACK_TEXT, null);
+                        conversationService.updateStats(finalConversationId, estimateTokens(FALLBACK_TEXT));
+                        triggerCompressAsync(finalConversationId, userId);
+                    }
                     sink.next(wrapError("AI服务暂时不可用，请稍后重试"));
                     sink.next("[FINAL]");
                     sink.complete();

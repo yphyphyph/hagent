@@ -42,7 +42,7 @@ public class ChatPendingAction extends BaseEntity {
     /** 用户确认预览文本 */
     private String previewText;
 
-    /** 状态：1-待处理，2-已确认，3-已取消，4-执行中，5-已执行 */
+    /** 状态：1-待处理，2-已确认，3-已取消，4-执行中，5-已执行，6-已过期 */
     private Integer status;
 
     /** 过期时间 */

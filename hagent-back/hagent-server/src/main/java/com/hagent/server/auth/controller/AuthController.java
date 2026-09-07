@@ -2,6 +2,7 @@ package com.hagent.server.auth.controller;
 
 import com.hagent.common.Result;
 import com.hagent.common.annotation.OperationLog;
+import com.hagent.common.annotation.RateLimit;
 import com.hagent.server.auth.model.dto.LoginRequest;
 import com.hagent.server.auth.model.vo.CurrentUserVO;
 import com.hagent.server.auth.model.vo.LoginVO;
@@ -33,6 +34,9 @@ public class AuthController {
 
     /**
      * 用户登录
+     * 阈值依据：单 admin 账号、无注册口，正常人输错重试远低于 10 次/分钟；
+     * 取宽松值 60 秒 10 次/IP 防暴力破解，不锁正常用户（单机 RateLimit 实现，够用）。
+     * 操作日志关闭参数入库，避免 LoginRequest.password 明文落库 system_log。
      *
      * @param request 登录参数（用户名、密码）
      * @return 登录结果（含 Token、用户名、角色）
@@ -40,7 +44,8 @@ public class AuthController {
      */
     @PostMapping("/login")
     @Operation(summary = "登录", description = "使用用户名密码登录，成功返回 Sa-Token")
-    @OperationLog(module = "auth", operationType = "LOGIN", description = "用户登录", saveParams = true, saveResult = false)
+    @RateLimit(window = 60, limit = 10, message = "登录尝试过于频繁，请稍后再试")
+    @OperationLog(module = "auth", operationType = "LOGIN", description = "用户登录", saveParams = false, saveResult = false)
     public Result<LoginVO> login(@Valid @RequestBody LoginRequest request) {
         return Result.success(authService.login(request));
     }
