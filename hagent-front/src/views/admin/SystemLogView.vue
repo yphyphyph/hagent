@@ -543,7 +543,7 @@ async function onClean() {
 
 /* Trace 看板：轻量聚合，无重型双表 */
 .trace-board-card {
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
   background: var(--bg-elevated);
 }
 .trace-board-title {
@@ -618,7 +618,7 @@ async function onClean() {
 
 .log-filter-card {
   width: 100%;
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
   background: var(--bg-elevated);
 }
 
@@ -628,7 +628,7 @@ async function onClean() {
 
 .log-table-card {
   width: 100%;
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
   background: var(--bg-elevated);
 }
 

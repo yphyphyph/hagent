@@ -97,7 +97,12 @@
         </div>
       </div>
 
-      <p class="welcome__hint">Enter 发送 · Shift + Enter 换行</p>
+      <p class="welcome__hint"><kbd>Enter</kbd> 发送 · <kbd>Shift</kbd> + <kbd>Enter</kbd> 换行</p>
+
+      <!-- 推荐问题：点击即发送（访客点击走登录引导） -->
+      <div class="welcome__questions fade-up">
+        <RecommendedQuestions :questions="welcomeQuestions" @select="onPickQuestion" />
+      </div>
 
       <p v-if="guest" class="welcome__guest-tip">
         访客模式：对话不会被保存，<router-link to="/login">登录</router-link>后可保留历史会话
@@ -336,6 +341,7 @@ import { docTypeLabel, docExtLabel, formatDocSize } from '@/utils/chatAttachment
 import AttachMenu from '@/components/chat/AttachMenu.vue'
 import KnowledgePickerModal from '@/components/chat/KnowledgePickerModal.vue'
 import SourceDrawer from '@/components/chat/SourceDrawer.vue'
+import RecommendedQuestions from '@/components/chat/RecommendedQuestions.vue'
 
 const props = withDefaults(
   defineProps<{
@@ -432,6 +438,20 @@ function clearHeroCompose() {
 function onHeroEnter() {
   if (composing.value) return
   submitDraft()
+}
+
+/* ---------- 欢迎屏推荐问题：点击即发送（访客与 hero 输入同一登录门控语义） ---------- */
+const welcomeQuestions = [
+  '根据知识库总结 HAgent 的架构设计',
+  '检索知识库：HAgent 如何部署与配置？',
+  '统计最近 7 天系统操作日志的趋势',
+]
+function onPickQuestion(text: string) {
+  if (props.guest) {
+    emit('login-request')
+    return
+  }
+  emit('send', text)
 }
 
 /** textarea 高度自适应 */
@@ -1034,9 +1054,9 @@ defineExpose({ scrollToBottom, clearHeroCompose })
   padding: 4px 14px;
 }
 .welcome__title {
-  font-family: var(--font-display), 'Noto Serif SC', serif;
   font-size: clamp(34px, 6vw, 52px);
-  font-weight: 700;
+  font-weight: 800;
+  letter-spacing: -0.02em;
   line-height: 1.15;
   margin: var(--space-5) 0 0;
   color: var(--text-1);
@@ -1124,6 +1144,40 @@ defineExpose({ scrollToBottom, clearHeroCompose })
 }
 .welcome__guest-tip a {
   color: var(--accent);
+}
+.welcome__hint kbd {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  background: var(--bg-hover);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+.welcome__questions {
+  margin-top: var(--space-4);
+}
+
+/* ---------- 欢迎屏入场编排：badge → 标题 → 副标题 → 输入区 → 提示 → 推荐问题依次上浮 ---------- */
+.welcome__badge {
+  animation: fade-up 0.45s var(--ease) both;
+}
+.welcome__title {
+  animation: fade-up 0.45s var(--ease) 0.06s both;
+}
+.welcome__subtitle {
+  animation: fade-up 0.45s var(--ease) 0.12s both;
+}
+.welcome__compose {
+  animation: fade-up 0.45s var(--ease) 0.18s both;
+}
+.welcome__hint {
+  animation: fade-up 0.45s var(--ease) 0.26s both;
+}
+.welcome__questions {
+  animation-delay: 0.32s;
+}
+.welcome__guest-tip {
+  animation: fade-up 0.45s var(--ease) 0.38s both;
 }
 
 /* ---------- hero 附件：chip 条与回形针入口（样式与 ChatInputBar 同款，scoped 样式无法跨组件共享故按 token 复制） ---------- */
@@ -1717,7 +1771,10 @@ a.doc-card[href]:hover {
   word-break: break-word;
 }
 [data-theme='dark'] .thinking-block {
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(255, 255, 255, 0.05);
+  border-color: var(--border-strong);
+  /* 左侧 accent 竖线：暗色下与主区拉开层级 */
+  border-left: 2px solid var(--accent-border);
 }
 [data-theme='dark'] .thinking-block__body {
   background: rgba(255, 255, 255, 0.02);

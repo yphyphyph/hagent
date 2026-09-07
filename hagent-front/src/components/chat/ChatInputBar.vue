@@ -89,7 +89,7 @@
               @keydown.space.stop.prevent="toggleDetail"
             >
               <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true">
-                <circle cx="11" cy="11" r="9" fill="none" stroke="#e2e8f0" :stroke-width="2.5" />
+                <circle cx="11" cy="11" r="9" fill="none" style="stroke: var(--border-strong)" :stroke-width="2.5" />
                 <circle
                   cx="11" cy="11" r="9" fill="none"
                   stroke="currentColor" :stroke-width="2.5" stroke-linecap="round"
@@ -550,13 +550,13 @@ defineExpose({
   right: 0;
   white-space: nowrap;
   z-index: 6;
-  background: #fff;
-  color: #333;
+  background: var(--bg-elevated);
+  color: var(--text-1);
   font-size: 12px;
   line-height: 1.5;
   border-radius: 8px;
   box-shadow: 0 4px 16px rgba(15, 23, 42, 0.12);
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong);
   padding: 6px 14px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -567,11 +567,6 @@ defineExpose({
 }
 .context-pill.is-danger {
   color: #dc2626;
-}
-[data-theme='dark'] .context-pill {
-  background: #1e293b;
-  color: #e2e8f0;
-  border-color: rgba(148, 163, 184, 0.2);
 }
 [data-theme='dark'] .context-pill.is-warn {
   color: #fbbf24;
@@ -586,18 +581,13 @@ defineExpose({
   right: 0;
   width: 264px;
   z-index: 7;
-  background: #fff;
-  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
   border-radius: 12px;
   box-shadow: 0 12px 32px rgba(15, 23, 42, 0.18);
   padding: 12px 14px;
   font-size: 12px;
   color: var(--text-1);
-}
-[data-theme='dark'] .context-detail-card {
-  background: #1e293b;
-  border-color: rgba(148, 163, 184, 0.2);
-  color: #e2e8f0;
 }
 .context-detail-card__head {
   display: flex;
@@ -674,11 +664,8 @@ defineExpose({
   height: 6px;
   border-radius: 999px;
   overflow: hidden;
-  background: #eef2f7;
+  background: var(--bg-hover);
   margin-bottom: 10px;
-}
-[data-theme='dark'] .detail-bar {
-  background: rgba(148, 163, 184, 0.2);
 }
 .detail-bar .seg {
   height: 100%;

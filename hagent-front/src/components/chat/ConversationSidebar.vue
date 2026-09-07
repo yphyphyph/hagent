@@ -49,10 +49,20 @@
             <span class="conv-item__title">{{ c.title || '未命名会话' }}</span>
             <span v-if="c.id < 0" class="demo-badge">演示</span>
             <span v-if="!guest" class="conv-item__ops" @click.stop>
-              <span class="op op--rename" title="重命名" @click="startRename(c)">✎</span>
-              <span class="op op--export" title="导出 Markdown" @click="onExport(c)">↓</span>
-              <span class="op op--del" title="删除" @click="onDelete(c)">
-                {{ deletingId === c.id ? '确认?' : '✕' }}
+              <span class="op op--rename" title="重命名" @click="startRename(c)">
+                <n-icon :component="EditOutlined" :size="13" />
+              </span>
+              <span class="op op--export" title="导出 Markdown" @click="onExport(c)">
+                <n-icon :component="DownloadOutlined" :size="13" />
+              </span>
+              <span
+                class="op op--del"
+                :class="{ 'op--confirming': deletingId === c.id }"
+                :title="deletingId === c.id ? '再次点击确认删除' : '删除'"
+                @click="onDelete(c)"
+              >
+                <span v-if="deletingId === c.id" class="op__confirm">确认?</span>
+                <n-icon v-else :component="CloseOutlined" :size="13" />
               </span>
             </span>
           </template>
@@ -70,6 +80,8 @@
 
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
+import { NIcon } from 'naive-ui'
+import { EditOutlined, DownloadOutlined, CloseOutlined } from '@vicons/antd'
 import type { Conversation } from '@/api/chat'
 
 const props = defineProps<{
@@ -217,8 +229,8 @@ watch(deletingId, (v) => {
   min-width: 0;
 }
 .conv-brand__name {
-  font-family: var(--font-display), 'Noto Serif SC', serif;
-  font-weight: 700;
+  font-weight: 800;
+  letter-spacing: -0.01em;
   font-size: 17px;
   color: var(--text-1);
   line-height: 1.2;
@@ -354,6 +366,22 @@ watch(deletingId, (v) => {
 .op--del:hover {
   color: #ef4444;
 }
+/* 删除两步确认态：红字提示替代图标 */
+.op--confirming {
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+}
+.op--confirming:hover {
+  background: rgba(239, 68, 68, 0.16);
+  color: #ef4444;
+}
+.op__confirm {
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  color: inherit;
+}
 .rename-input {
   flex: 1;
   min-width: 0;
@@ -387,13 +415,13 @@ watch(deletingId, (v) => {
   height: 18px;
   padding: 0 6px;
   border-radius: 999px;
-  background: #dcfce7;
-  color: #15803d;
+  background: var(--accent-soft);
+  color: var(--accent);
   font-size: 11px;
   font-weight: 600;
   line-height: 1;
   flex-shrink: 0;
-  border: 1px solid #bbf7d0;
+  border: 1px solid var(--accent-border);
 }
 .conv-guest__login {
   display: inline-flex;

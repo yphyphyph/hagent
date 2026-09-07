@@ -1,17 +1,15 @@
 <template>
   <div class="prompt-page">
-    <div class="prompt-head">
-      <div>
-        <h2 class="prompt-title">提示词库</h2>
-        <p class="prompt-desc">维护可复用的 AI 提示词，支持分类筛选、复制使用与使用次数统计</p>
-      </div>
-      <n-button type="primary" @click="openCreate">
-        <template #icon>
-          <n-icon :component="PlusOutlined" />
-        </template>
-        新建提示词
-      </n-button>
-    </div>
+    <PageHeader title="提示词库" description="维护可复用的 AI 提示词，支持分类筛选、复制使用与使用次数统计">
+      <template #actions>
+        <n-button type="primary" @click="openCreate">
+          <template #icon>
+            <n-icon :component="PlusOutlined" />
+          </template>
+          新建提示词
+        </n-button>
+      </template>
+    </PageHeader>
 
     <!-- 筛选区 -->
     <n-card class="prompt-filter-card" :bordered="true">
@@ -145,6 +143,7 @@ import {
 } from 'naive-ui'
 import { PlusOutlined } from '@vicons/antd'
 import { promptApi, type AiPrompt } from '@/api/prompt'
+import PageHeader from '@/components/ui/PageHeader.vue'
 
 const message = useMessage()
 
@@ -411,28 +410,10 @@ async function confirmSave() {
   gap: var(--space-5);
 }
 
-.prompt-head {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: var(--space-4);
-  flex-wrap: wrap;
-}
-.prompt-title {
-  font-size: var(--text-lg);
-  font-weight: 700;
-  letter-spacing: -0.02em;
-}
-.prompt-desc {
-  color: var(--text-3);
-  font-size: var(--text-sm);
-  margin-top: 2px;
-}
-
 .prompt-filter-card,
 .prompt-table-card {
   width: 100%;
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
   background: var(--bg-elevated);
 }
 

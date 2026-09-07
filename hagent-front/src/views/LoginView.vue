@@ -282,14 +282,14 @@ async function onSubmit() {
   gap: 4px;
   margin-top: 12px;
   font-size: 13px;
-  color: #64748b;
+  color: var(--text-3);
   text-decoration: none;
   min-height: 32px; /* 无障碍最小点击高度 */
   line-height: 32px;
   transition: color 0.2s var(--ease);
 }
 .login-form__back:hover {
-  color: #0f172a;
+  color: var(--text-1);
 }
 .login-form__back:focus-visible {
   outline: 2px solid var(--accent);

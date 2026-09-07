@@ -1,17 +1,15 @@
 <template>
   <div class="tools-page">
-    <div class="tools-head">
-      <div>
-        <h2 class="tools-title">AI 工具</h2>
-        <p class="tools-desc">注册与维护可被 AI 调用的工具，测试其入参与输出</p>
-      </div>
-      <n-button type="primary" @click="openCreate">
-        <template #icon>
-          <n-icon :component="PlusOutlined" />
-        </template>
-        新建工具
-      </n-button>
-    </div>
+    <PageHeader title="AI 工具" description="注册与维护可被 AI 调用的工具，测试其入参与输出">
+      <template #actions>
+        <n-button type="primary" @click="openCreate">
+          <template #icon>
+            <n-icon :component="PlusOutlined" />
+          </template>
+          新建工具
+        </n-button>
+      </template>
+    </PageHeader>
 
     <n-card class="tools-table-card" :bordered="true">
       <n-data-table
@@ -76,6 +74,7 @@ import {
 } from 'naive-ui'
 import { PlusOutlined, PlayCircleOutlined } from '@vicons/antd'
 import { aiToolApi, type AiToolItem } from '@/api/aiTool'
+import PageHeader from '@/components/ui/PageHeader.vue'
 
 const router = useRouter()
 const message = useMessage()
@@ -203,27 +202,9 @@ function confirmCreate() {
   gap: var(--space-5);
 }
 
-.tools-head {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: var(--space-4);
-  flex-wrap: wrap;
-}
-.tools-title {
-  font-size: var(--text-lg);
-  font-weight: 700;
-  letter-spacing: -0.02em;
-}
-.tools-desc {
-  color: var(--text-3);
-  font-size: var(--text-sm);
-  margin-top: 2px;
-}
-
 .tools-table-card {
   width: 100%;
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
   background: var(--bg-elevated);
 }
 

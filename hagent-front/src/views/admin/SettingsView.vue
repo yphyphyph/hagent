@@ -607,17 +607,28 @@ async function saveAi() {
   }
 }
 
+/** 测试用 Key 归一：空或脱敏占位符（*** / sk-ab****wxyz）返回空串，后端自动回退 system_config 已保存密钥 */
+function normalizeTestKey(v: string): string {
+  const t = (v ?? '').trim()
+  if (!t || t.includes('****') || /^\*+$/.test(t)) return ''
+  return t
+}
+
 async function testTextModel() {
-  if (!aiForm.chatModel || !aiForm.chatBaseUrl || !aiForm.chatApiKey) {
-    message.warning('请先填写文本模型的模型名、Base URL 与 API Key')
+  if (!aiForm.chatModel || !aiForm.chatBaseUrl) {
+    message.warning('请先填写文本模型的模型名与 Base URL')
     return
+  }
+  const apiKey = normalizeTestKey(aiForm.chatApiKey)
+  if (!apiKey) {
+    message.info('API Key 为脱敏占位或未填写，将使用已保存配置中的密钥测试')
   }
   aiTesting.value = true
   aiTestResult.value = ''
   try {
     const res = await systemApi.testModel({
       baseUrl: aiForm.chatBaseUrl,
-      apiKey: aiForm.chatApiKey,
+      apiKey,
       model: aiForm.chatModel,
     })
     aiTestStatus.value = res.status
@@ -631,16 +642,20 @@ async function testTextModel() {
 }
 
 async function testEmbModel() {
-  if (!aiForm.embModel || !aiForm.embBaseUrl || !aiForm.embApiKey) {
-    message.warning('请先填写向量模型的模型名、Base URL 与 API Key')
+  if (!aiForm.embModel || !aiForm.embBaseUrl) {
+    message.warning('请先填写向量模型的模型名与 Base URL')
     return
+  }
+  const apiKey = normalizeTestKey(aiForm.embApiKey)
+  if (!apiKey) {
+    message.info('API Key 为脱敏占位或未填写，将使用已保存配置中的密钥测试')
   }
   embTesting.value = true
   embTestResult.value = ''
   try {
     const res = await systemApi.testEmbedding({
       baseUrl: aiForm.embBaseUrl,
-      apiKey: aiForm.embApiKey,
+      apiKey,
       model: aiForm.embModel,
     })
     embTestStatus.value = res.status
@@ -751,7 +766,7 @@ function mockAvatarUpload({ file, onFinish }: UploadCustomRequestOptions) {
   width: 100%;
   margin: 0 auto;
   padding: 24px 32px;
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
   background: var(--bg-elevated);
   box-sizing: border-box;
   overflow-x: hidden;

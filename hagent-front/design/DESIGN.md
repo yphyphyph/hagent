@@ -1,246 +1,159 @@
-# HAgent Design System
+# HAgent Design System (v2)
 
-> 暗色工具骨架 × 编辑排版灵魂 —— 个人技术网站（门户展示面 + 后台工具面）的统一设计语言。
+> AI-Native · Dark-First —— 深蓝板岩底色上的工程质感。代码暗色 + 运行绿。
+> 唯一令牌源：`src/styles/tokens.css`（CSS 变量）+ `src/theme/naive.ts`（Naive UI 镜像覆盖，两者必须同步）。
 
 ---
 
 ## 1. Visual Theme
 
-**Philosophy**: 像一件被精心排印的工程作品 —— Linear 式的深空暗色提供"专业产品"的骨架，杂志式的衬线排版赋予"创作者"的灵魂。
-**Direction**: dark, editorial, precise, restrained
-**Personality**: confident, meticulous, geeky-but-tasteful
-**Reference**: Linear（色彩与组件基因） × Warm Editorial（排版手法） × Stripe Press（暗色出版质感）
+**Philosophy**: 像 AI 工程师的工作台 —— 深蓝板岩（非纯黑）提供沉稳底座，运行绿作为唯一"活性"信号，Aurora 光晕只在空态隐约呼吸，进入工作态立即收敛。
+**Direction**: dark, precise, alive-in-idle, restrained
+**Personality**: confident, geeky-but-tasteful, engineering-first
+**Reference**: Linear（组件与层级行为） × Vercel（暗色明度阶梯） × Raycast（命令面板/快捷键文化）
 
 **品牌符号 "H" 使用规范**：
-- **Logo**：几何无衬线大写 "H"，横杠处嵌入品牌紫短线（`#5E6AD2`），或以 Playfair Display "H" 用于页脚/文章落款等编辑场景
-- **装饰**：超大号极低透明度（opacity 0.03–0.05）"H" 可作为 Hero 区/关于页的水印底纹，严禁用于内容卡片
-- **加载态**：紫线扫过 "H" 横杠的 1.2s 循环微动画，替代通用 spinner（仅门户）
-- **Favicon**：深底 #08090A + 紫色 H，保证浏览器深色/浅色标签栏均可辨识
+- **Logo**：等宽字体（JetBrains Mono）大写 "H"，放在 `--accent` 圆角方块上；暗色主题下文字用 `#0f172a`，浅色下用 `#fff`
+- **加载态**：首屏 Preloader "H" 呼吸动画（App.vue），替代通用 spinner
+- **Favicon**：`public/favicon.svg`
 
 ---
 
 ## 2. Color Palette
 
-### Brand —— HAgent Iris（品牌紫 #5E6AD2 族）
+### 核心（暗色默认 · 见 tokens.css :root）
 
-| Token | HEX | Usage |
-|-------|-----|-------|
-| --brand-50 | #EEF0FB | 后台浅紫底、tag 底色 |
-| --brand-100 | #DDE0F7 | hover 浅底 |
-| --brand-200 | #BEC4EF | 边框强调 |
-| --brand-300 | #9BA3E5 | 次级强调 |
-| --brand-400 | #7C85DC | 暗色 hover 态 |
-| --brand-500 | #5E6AD2 | **品牌主色**，链接、强调 |
-| --brand-600 | #4C56C0 | **antd colorPrimary**，按钮 |
-| --brand-700 | #3D44A0 | 按下态 |
-| --brand-800 | #2F3378 | 深色强调面 |
-| --brand-900 | #222450 | 深紫底纹 |
+| Token | Value | Usage |
+|-------|-------|-------|
+| --bg | #0f172a | 页面底色（深蓝板岩，禁纯黑） |
+| --bg-elevated | #1b2336 | 卡片/输入框/主聊天区 |
+| --bg-hover / --bg-active | #232e47 / #2b3752 | 悬停/激活面 |
+| --border | rgba(148,163,184,.16) | 分隔线/描边 |
+| --border-strong | rgba(148,163,184,.3) | hover/聚焦描边 |
+| --text-1 / -2 / -3 | #f8fafc / #94a3b8 / #64748b | 主/次/弱文字 |
 
-### Portal Dark（门户语义层 · 暗色）
+### 强调色（`<html data-accent>` 切换，默认 green）
 
-| Token | HEX / 值 | Usage |
-|-------|----------|-------|
-| --p-bg | #08090A | 页面底色 |
-| --p-surface | #101213 | 卡片/区块 |
-| --p-surface-raised | #16181A | 悬浮层、代码岛 |
-| --p-code-bg | #0B0D0F | 代码块深色岛（比卡片更深） |
-| --p-border | rgba(255,255,255,.08) | 分隔线/描边 |
-| --p-border-strong | rgba(255,255,255,.16) | hover/聚焦描边 |
-| --p-text | #F7F8F8 | 标题、正文 |
-| --p-text-secondary | #8A8F98 | 次级文字、元信息 |
-| --p-text-tertiary | #62666D | 占位、弱化信息 |
-| --p-accent | #7C85DC | 暗色下链接/强调（brand-400，保证对比度） |
-| --p-accent-soft | rgba(94,106,210,.14) | 强调底色、选中态 |
+| Accent | 主值 (暗) | 浅色加深 (600 级) | 语义 |
+|--------|-----------|-------------------|------|
+| green（默认） | #22c55e | #16a34a | 运行/成功/主 CTA |
+| blue | #3b82f6 | #2563eb | 备选 |
+| purple | #8b5cf6 | #7c3aed | 备选 |
+| amber | #f59e0b | #d97706 | 备选 |
 
-> 对比度校验：#8A8F98 on #08090A ≈ 7.0:1；#7C85DC on #08090A ≈ 5.2:1，均通过 WCAG AA。
+配套 token：`--accent-hover` `--accent-soft`（12% 透明底） `--accent-border`（35% 描边）。浅色主题一律加深一级保证对比度。
 
-### Admin Light（后台语义层 · 浅色）
+### 状态色
+`--danger #ef4444` · `--warning #f59e0b` · `--info #38bdf8` · `--success #22c55e`
 
-| Token | HEX | Usage |
-|-------|-----|-------|
-| --a-bg-layout | #F5F5F7 | 布局底色 |
-| --a-bg-container | #FFFFFF | 卡片/表格容器 |
-| --a-border | #E5E6EB | 分隔线 |
-| --a-text | #1F2329 | 主文字 |
-| --a-text-secondary | #646A73 | 次级文字 |
-| --a-text-tertiary | #8F959E | 占位/禁用 |
-
-### Semantic（双轨共用）
-
-| Token | HEX | Usage |
-|-------|-----|-------|
-| --color-success | #4CC38A（暗）/ #16A34A（浅） | 成功 |
-| --color-warning | #F5A524（暗）/ #D97706（浅） | 警告 |
-| --color-danger | #F2555A（暗）/ #DC2626（浅） | 错误/危险操作 |
-| --color-info | --brand-500 | 信息 |
+### 硬编码禁令
+组件样式禁止出现十六进制色值面（`#fff`/`#1e293b` 等），一律走语义 token；仅状态色常量（如 warn `#b45309` / dark `#fbbf24`）与代码深色岛 `#0b0d0f` 允许出现。
 
 ---
 
 ## 3. Typography
 
 ### Font Stacks
-- **Display（门户大标题）**: `"Playfair Display", "Noto Serif SC", Georgia, serif` —— 杂志感衬线，字重 600–700
-- **Body（正文/UI）**: `"Inter", "Noto Sans SC", -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif`
-- **Mono（代码/数据）**: `"JetBrains Mono", "SF Mono", Consolas, monospace`
+- **Sans（全部 UI/正文/标题）**: `'Inter Variable', 'Inter', -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif`
+- **Mono（代码/标识/数字）**: `'JetBrains Mono', ui-monospace, Consolas, monospace`
 
-### Scale（门户 · 杂志字阶，大对比）
+> v2.1 起**衬线展示字体已退役**（v1 的 Playfair/Noto Serif 链路已移除）。标题层级靠字重（800 vs 400）+ 字号对比 + 负字距（-0.02em）表达。
 
-| Level | Size | Weight | Line-height | Usage |
-|-------|------|--------|-------------|-------|
-| Display | 56px / 3.5rem | 700 serif | 1.1 | 首页 Hero、关于页 |
-| H1 | 40px / 2.5rem | 700 serif | 1.15 | 文章标题 |
-| H2 | 28px / 1.75rem | 600 serif | 1.3 | 章节标题 |
-| H3 | 20px / 1.25rem | 600 sans | 1.4 | 小节、卡片标题 |
-| Article Body | 17–18px | 400 | **1.75** | 文章正文 |
-| Body | 16px / 1rem | 400 | 1.6 | UI 正文 |
-| Small | 14px / 0.875rem | 400 | 1.5 | 说明、元信息 |
-| Micro | 12px / 0.75rem | 500 | 1.4 | 标签、徽章 |
-| Code | 14px / 0.875rem | 400 | 1.7 | 代码块 |
+### Scale（tokens.css）
 
-**杂志手法在暗色基底的落地**：
-- 标题用衬线 + 大留白，字号对比跨度 ≥ 2.5×（Display 56 vs Body 17）
-- 文章页阅读宽度 **max-width: 680px**，两端留白形成"书页"感
-- 正文 17–18px / 行高 1.75 / 段间距 1.5em，长文阅读不疲劳
-- 元信息行（日期/标签/阅读时长）用 12px uppercase 无衬线 + letter-spacing .08em，衬在衬线大标题下方，制造编辑排版张力
-- 首段可用 20px 引言字号；**不用**首字下沉（暗色下视觉噪音大）
+| Level | Size | Usage |
+|-------|------|-------|
+| --text-4xl | 58px | 欢迎屏 Hero |
+| --text-xl | 26px | 大标题 |
+| --text-lg | 20px | 页面标题（PageHeader） |
+| --text-base | 15px | 正文/消息 |
+| --text-sm | 13px | 次级/侧栏 |
+| --text-xs | 12px | 元信息/徽章 |
+| 代码 | 12px / 1.65 | 代码块 |
 
 ---
 
 ## 4. Component Styles
 
-### Button
-- **Primary**：bg `--brand-600`，text #FFF，radius 8px，padding 10px 20px；hover → `--brand-500`；门户暗色下文字纯白
-- **Secondary（门户）**：bg transparent，1px solid `--p-border`，text `--p-text`；hover → border `--p-border-strong` + bg rgba(255,255,255,.04)
-- **Ghost**：text `--p-accent`；hover → bg `--p-accent-soft`
+### 聊天面（门户 · 核心面）
+- **主区背景**：`--bg-elevated`；欢迎态（未选会话）用 `color-mix(--bg-elevated 72%, transparent)` 半透明透出底层 Aurora，进入会话/出现消息后恢复不透明
+- **欢迎屏**：badge 胶囊 → Inter 800 大标题（`em` 走 accent 渐变文字）→ 副标题 → hero 输入框（圆角 16px、focus 时 `--accent-border` + 3px `--accent-soft` 光环）→ kbd 快捷键提示 → 推荐问题胶囊（RecommendedQuestions，点击即发送）；各元素 60–80ms 依次 fade-up 入场
+- **用户气泡**：`--accent-soft` 底 + `--accent-border` 描边，圆角 `16px 16px 4px 16px`，右侧最大 78% 宽；内嵌文档卡（中性灰图标 + 文件名 + 类型·大小）
+- **AI 回复**：去气泡全宽排版；正文 `--text-base`/1.7；工具徽章 mono 胶囊行；思考块（见下）；回答底部复制/重新生成/来源胶囊（source-pill：accent-soft 渐变底、hover 上浮 1px）
+- **思考块**：圆角 10px 卡片；流式时标题呼吸渐变（text shimmer）+ 脉冲点；暗色主题加 `--border-strong` 描边 + 左侧 2px `--accent-border` 竖线与主区拉层级
+- **代码块（深色岛原则）**：恒定 `#0b0d0f`，比所在卡片更深，顶栏 12px 语言标签 + 复制按钮；明暗主题不变
+- **输入栏**：圆角 16px；顶部 18px 渐隐遮罩柔化消息滚入；context 环形用量（70% 黄 / 90% 红）hover 弹 pill、点击弹明细卡
 
-### Card（门户）
-- Background: `var(--p-surface)`；Border: 1px solid `var(--p-border)`
-- Border-radius: 12px；Padding: 24px
-- Hover：border 变 `--p-border-strong` + 上移 2px（translateY(-2px)），**不加发光阴影**
+### 会话侧栏
+- 展开 280px / 收起 64px 图标窄栏；时间分组（今天/7 天/30 天/更早）；行操作用 @vicons/antd SVG 图标（重命名/导出/删除两步确认）；演示徽章走 accent token
 
-### Code Block（文章页核心组件）
-- Background: `var(--p-code-bg)`（比卡片更深的"深色岛"）
-- Border: 1px solid `var(--p-border)`；radius 10px；padding 16px 20px
-- 顶部可带 12px 文件名栏（等宽字体 + `--p-text-tertiary`）
+### 后台（Admin · Naive UI）
+- 页头统一用 `src/components/ui/PageHeader.vue`（title + description + #actions 插槽），禁止各页手写 head
+- 页面级卡片圆角 `--radius-md`（14px）；表格走 n-data-table；手写色值禁令同上
+- 布局：sider 220px（收起 64px）+ 顶栏 56px + 内容区 padding 24/32
 
-### Input
-- Height: 40px；Border: 1px solid 语义层 border；radius 8px
-- Focus ring: 2px solid `--p-accent-soft`（门户）/ `rgba(76,86,192,.16)`（后台）
-- Placeholder: 语义层 tertiary 文字色
-
-### Navigation
-- 门户：顶部栏，高 64px，backdrop-filter 毛玻璃 + 底部 1px `--p-border`；active 项文字 `--p-text` + 底部 2px 紫线指示
-- 后台：antd 侧边栏 240px（收起 64px）+ 顶栏，全部走 antd token
+### 按钮
+- Primary：`--accent` 底；暗色文字 `#0f172a`，浅色 `#fff`；hover 上浮 1px + `--shadow-accent`
+- Secondary / Ghost / Danger：见 global.css `.hs-btn--*`
 
 ---
 
 ## 5. Layout
 
-### Grid
-- 门户容器 max-width: **1120px**；文章页内容列 max-width: **680px**
-- 栅格：12 列，gutter 24px（桌面端）
-- 大留白纪律：区块间距 ≥ 96px（`--space-4xl`），Hero 上下 ≥ 128px
+| 区 | 值 |
+|----|----|
+| 聊天内容列 | max-width 840px 居中 |
+| 会话侧栏 | 280px / 收起 64px |
+| 后台 sider | 220px / 收起 64px |
+| 顶栏 | 56px，底边 1px `--border` hairline |
+| 容器 | --container 1120px（通用） |
 
-### Spacing Scale
-
-| Token | Value | Usage |
-|-------|-------|-------|
-| --space-xs | 4px | 行内 |
-| --space-sm | 8px | 紧凑 |
-| --space-md | 16px | 默认 |
-| --space-lg | 24px | 卡片内边距 |
-| --space-xl | 32px | 组件间隔 |
-| --space-2xl | 48px | 小节分隔 |
-| --space-3xl | 64px | 大节分隔 |
-| --space-4xl | 96px | 区块分隔（杂志留白） |
-
-### Radius
---radius-sm 6px（后台/输入） · --radius-md 8px（按钮） · --radius-lg 12px（卡片） · --radius-full 999px（标签/头像）
+间距 4px 基准（--space-1…9），圆角 --radius-sm 8 / md 14 / lg 20 / full 999。
 
 ---
 
-## 6. Depth & Elevation
+## 6. Depth & Elevation & Motion
 
-暗色模式下**优先用边框与明度差表达层级，慎用投影**。
-
-| Level | 门户（暗） | 后台（浅） | Usage |
-|-------|-----------|-----------|-------|
-| Flat | none | none | 默认面 |
-| Raised | 0 1px 2px rgba(0,0,0,.4) | 0 1px 3px rgba(0,0,0,.08) | 卡片、下拉 |
-| Floating | 0 8px 24px rgba(0,0,0,.5) | 0 4px 12px rgba(0,0,0,.10) | 弹层、Popover |
-| Overlay | 0 16px 48px rgba(0,0,0,.6) | 0 8px 24px rgba(0,0,0,.14) | Modal |
-
-### Z-index
-Base 0 · Dropdown 100 · Sticky 200 · Modal 300 · Toast 400
-
-### Motion
-| Token | Value | Usage |
-|-------|-------|-------|
-| --duration-fast | 120ms | hover、焦点 |
-| --duration-base | 200ms | 展开/收起、卡片位移 |
-| --duration-slow | 320ms | 页面转场、大元素入场 |
-| --ease-out | cubic-bezier(.16,1,.3,1) | 默认缓动 |
+- 暗色层级优先 1px 边框 + 明度阶梯（#0f172a → #1b2336 → #232e47），投影克制
+- Aurora 背景（HsBackground，z-index -2）+ 粒子（HsParticles，z -1）常驻底层；仅欢迎态/登录页可见
+- Motion：`--dur-fast 120ms`（hover/焦点）· `--dur 200ms` · `--dur-slow 350ms`（主题/背景过渡）· `--ease cubic-bezier(.4,0,.2,1)`
+- 动效仅用 transform/opacity/filter；所有动画尊重 `prefers-reduced-motion`
+- 页面切换：View Transitions API（支持时）或 Vue fade+上移 250ms
 
 ---
 
 ## 7. Cautions
 
 ### Never Do
-- 禁止大面积霓虹渐变、网格线背景、"赛博蓝光效"——这是极客暗色俗套三件套
-- 禁止暗色模式下用纯黑 #000 或纯白 #FFF 文字（用 #08090A / #F7F8F8）
-- 禁止正文衬线字体用于 UI 控件、表格、按钮
-- 禁止门户使用天蓝 #0EA5E9（旧资产已废弃）
-- 禁止卡片 hover 加紫色发光阴影
+- 禁止衬线字体回归 UI（v1 遗留引用已全部清除）
+- 禁止组件内硬编码背景/文字色（token 化，见第 2 节禁令）
+- 禁止标题霓虹 glow（text-shadow 大光晕已废弃清理）
+- 禁止纯黑 #000 / 纯白 #FFF 大面积使用
+- 禁止卡片 hover 加发光阴影（位移 + 边框变化即可）
+- 禁止新增 z-index 魔法数字（用 tokens.css 的 --z-* 阶梯）
 
 ### Prefer
-- 层级用 1px 边框 + 明度阶梯（#08090A → #101213 → #16181A）表达
-- 强调色只给"一处视觉焦点/屏"：一个主 CTA 或一个高亮数据
-- 杂志感靠**字号对比 + 留白**实现，不靠装饰元素堆砌
+- 层级 = 边框 + 明度阶梯；强调色每屏只给一处视觉焦点
+- 字符图标（＋⌕≡✎↓✕）一律换成 @vicons/antd SVG
+- 新后台页面：PageHeader + n-card（radius-md）+ 既有 token，不发明新样式
 
 ---
 
 ## 8. Responsive Behavior
 
-### Breakpoints
-| Name | Width | Behavior |
-|------|-------|----------|
-| Mobile | < 640px | 单列；Display 缩至 36px；导航折叠为抽屉 |
-| Tablet | 640–1024px | 双列；文章列保持 680px 居中 |
-| Desktop | > 1024px | 完整 1120px 容器 + 大留白 |
+| 断点 | 行为 |
+|------|------|
+| < 640px | 欢迎标题 clamp 收缩；to-bottom 下移 |
+| < 768px | 登录卡单栏，品牌区折叠 |
+| < 900px | 聊天侧栏隐藏（⚠ 已知缺口：移动端暂无会话切换入口，待办） |
+| < 1024px | 后台表格横向滚动，不做卡片化 |
 
-### Adaptation Rules
-- 文章页任何断点下阅读列不超过 680px，优先保阅读体验
-- 移动端区块留白从 96px 降为 48px（减半纪律）
-- 后台表格在 < 1024px 允许横向滚动，不做卡片化改造
-- 触摸目标 ≥ 44px
+触摸目标 ≥ 32px（侧栏行 38px、图标钮 32–40px）。
 
 ---
 
-## 9. Agent Prompt Guide
+## 9. Changelog & 归档
 
-### Key Instructions
-- 生成门户页面时：先套 `.portal-dark` 语义变量，排版优先杂志手法（衬线大标题、680px 阅读列、96px 区块留白）
-- 生成后台页面时：禁止手写颜色/圆角，一律引用 antd 组件 + antd-theme.json token
-- 品牌紫双轨分工：门户链接/强调用 `--brand-400`（#7C85DC，暗底对比度），后台按钮/主色用 `--brand-600`（#4C56C0）
-- 代码块必须比所在卡片**更深**（深色岛原则）
-- 任何渐变仅限 `--brand-500 → --brand-700` 的同色系微渐变，且面积不超过屏幕 20%
-
-### Quick CSS Snippet
-```css
-/* 最小可用令牌集，完整版见 tokens.css */
-:root {
-  --brand-400: #7C85DC; --brand-500: #5E6AD2; --brand-600: #4C56C0;
-  --font-display: "Playfair Display", "Noto Serif SC", Georgia, serif;
-  --font-body: "Inter", "Noto Sans SC", -apple-system, sans-serif;
-  --font-mono: "JetBrains Mono", Consolas, monospace;
-}
-.portal-dark {
-  --bg: #08090A; --surface: #101213; --code-bg: #0B0D0F;
-  --border: rgba(255,255,255,.08);
-  --text: #F7F8F8; --text-2: #8A8F98; --accent: #7C85DC;
-}
-.admin-light {
-  --bg: #F5F5F7; --surface: #FFFFFF; --border: #E5E6EB;
-  --text: #1F2329; --text-2: #646A73; --accent: #4C56C0;
-}
-```
+- **v2.1（本次）**：衬线链路清除（--font-display/Noto Serif 引用移除）；暗色硬编码 token 化；字符图标 → SVG；欢迎屏接入推荐问题 + stagger 入场；欢迎态半透明透出 Aurora；顶栏 hairline + 输入栏渐隐遮罩；思考块暗色对比度；后台 PageHeader 统一 + 卡片圆角收敛；死样式清理
+- **v2.0**：AI-Native 绿调体系上线（tokens.css 重写），门户收敛为"对话即产品"单页
+- **v1（已归档）**：品牌紫 #5E6AD2 × Playfair 编辑排版。`design/tokens.css` 已指针化归档；`design/antd-theme.json`、`design/prototype/` 为 v1/antd 遗留历史参考，项目实际使用 Naive UI（`src/theme/naive.ts`），后续可清理

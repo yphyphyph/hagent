@@ -80,8 +80,9 @@ public class SystemSettingsController {
     }
 
     /**
-     * 对返回体中的敏感配置值脱敏为 ***，不写库
+     * 对返回体中的敏感配置值做展示脱敏，不写库
      * 命中规则：key 含 api-key/apikey/secret/token（大小写不敏感）
+     * 脱敏格式：保留前 4 位与后 4 位，中间替换为 ****（如 sk-ab****wxyz），长度不足 8 位时整体替换为 ****
      *
      * @param all 配置 key→value 映射（原位脱敏返回体）
      * @author H
@@ -89,9 +90,39 @@ public class SystemSettingsController {
     private void maskSensitiveValues(Map<String, String> all) {
         for (Map.Entry<String, String> entry : all.entrySet()) {
             if (isSensitiveKey(entry.getKey())) {
-                entry.setValue("***");
+                entry.setValue(maskForDisplay(entry.getValue()));
             }
         }
+    }
+
+    /**
+     * 展示脱敏：前 4 位 + **** + 后 4 位；值为空或长度不足 8 位时返回 ****
+     *
+     * @param value 原始值
+     * @return 脱敏后的展示值
+     * @author H
+     */
+    private String maskForDisplay(String value) {
+        if (value == null || value.length() < 8) {
+            return "****";
+        }
+        return value.substring(0, 4) + "****" + value.substring(value.length() - 4);
+    }
+
+    /**
+     * 判断是否为脱敏占位符（前端回填的展示脱敏值）
+     * 命中规则：全为星号（如 *** / ****）或包含 ****（如 sk-ab****wxyz）
+     *
+     * @param value 待判断的值
+     * @return 是否为占位符
+     * @author H
+     */
+    private boolean isMaskedSentinel(String value) {
+        if (value == null) {
+            return false;
+        }
+        String trimmed = value.trim();
+        return trimmed.matches("^\\*+$") || trimmed.contains("****");
     }
 
     /**
@@ -133,8 +164,8 @@ public class SystemSettingsController {
             Object raw = entry.getValue();
             String value = raw == null ? "" : String.valueOf(raw);
 
-            // 脱敏哨兵：敏感键收到 *** 表示前端回填的占位符，直接跳过不写库，避免覆盖真实密钥
-            if (isSensitiveKey(key) && "***".equals(value)) {
+            // 脱敏哨兵：敏感键收到占位符（*** 或 sk-ab****wxyz 展示格式）表示前端回填，直接跳过不写库，避免覆盖真实密钥
+            if (isSensitiveKey(key) && isMaskedSentinel(value)) {
                 log.debug("跳过脱敏占位符回写: {}", key);
                 continue;
             }

@@ -741,7 +741,7 @@ async function saveHybridSettings() {
   display: flex;
   align-items: center;
   gap: var(--space-4);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
   background: var(--bg-elevated);
 }
 .kb-stat__icon {
@@ -767,7 +767,7 @@ async function saveHybridSettings() {
 /* ---------- 上传 ---------- */
 .kb-upload-card {
   width: 100%;
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
   background: var(--bg-elevated);
 }
 .kb-upload__row {
@@ -821,7 +821,7 @@ async function saveHybridSettings() {
 }
 .kb-table-card {
   width: 100%;
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
   background: var(--bg-elevated);
 }
 

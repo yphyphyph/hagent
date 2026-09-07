@@ -385,14 +385,6 @@ a:hover {
   animation-duration: 0.25s;
 }
 
-/* ---------- 标题霓虹 glow ---------- */
-.section__title,
-.page-head__title,
-.hero__title,
-.hero__role {
-  text-shadow: 0 0 24px var(--accent-soft), 0 0 64px var(--accent-soft);
-}
-
 /* ---------- 点击涟漪 ---------- */
 .hs-ripple-layer {
   position: fixed;
@@ -482,16 +474,6 @@ a:hover {
 }
 [data-easter='konami'] .hs-crt-overlay {
   display: block;
-}
-
-/* CRT RGB 色差：覆盖默认霓虹 glow（更高优先级） */
-[data-easter='konami'] .hero__title,
-[data-easter='konami'] .hero__role,
-[data-easter='konami'] .section__title,
-[data-easter='konami'] .page-head__title {
-  text-shadow:
-    -1.5px 0 rgba(255, 45, 85, 0.55),
-    1.5px 0 rgba(0, 229, 255, 0.55);
 }
 
 @keyframes hs-crt-flicker {

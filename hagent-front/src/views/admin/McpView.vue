@@ -1,12 +1,10 @@
 <template>
   <div class="mcp-page">
-    <div class="mcp-head">
-      <div>
-        <h2 class="mcp-title">MCP 工具</h2>
-        <p class="mcp-desc">查看已注册的 MCP 工具，在线调试调用并获取客户端接入配置</p>
-      </div>
-      <n-button quaternary :loading="toolsLoading" @click="loadTools">刷新</n-button>
-    </div>
+    <PageHeader title="MCP 工具" description="查看已注册的 MCP 工具，在线调试调用并获取客户端接入配置">
+      <template #actions>
+        <n-button quaternary :loading="toolsLoading" @click="loadTools">刷新</n-button>
+      </template>
+    </PageHeader>
 
     <!-- 工具总览 -->
     <n-card class="mcp-table-card" :bordered="true" title="工具总览">
@@ -99,6 +97,7 @@ import {
   type DataTableColumns,
 } from 'naive-ui'
 import { mcpApi, type McpToolItem, type McpToolParam } from '@/api/mcp'
+import PageHeader from '@/components/ui/PageHeader.vue'
 
 const message = useMessage()
 
@@ -280,29 +279,11 @@ async function loadConfig() {
   gap: var(--space-5);
 }
 
-.mcp-head {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: var(--space-4);
-  flex-wrap: wrap;
-}
-.mcp-title {
-  font-size: var(--text-lg);
-  font-weight: 700;
-  letter-spacing: -0.02em;
-}
-.mcp-desc {
-  color: var(--text-3);
-  font-size: var(--text-sm);
-  margin-top: 2px;
-}
-
 .mcp-table-card,
 .mcp-debug-card,
 .mcp-config-card {
   width: 100%;
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
   background: var(--bg-elevated);
 }
 

@@ -307,7 +307,7 @@ onUnmounted(() => {
 .exec-panel {
   background: var(--bg-elevated);
   border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
   overflow: hidden;
 }
 .exec-panel__head {

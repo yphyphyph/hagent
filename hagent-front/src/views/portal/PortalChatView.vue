@@ -26,30 +26,36 @@
         <!-- 垂直图标区 -->
         <div class="narrow-bar__icons">
           <button class="narrow-bar__icon" type="button" title="新建会话" @click="handleNewExpand">
-            <span class="narrow-bar__icon-glyph">＋</span>
+            <n-icon :component="PlusOutlined" :size="16" />
           </button>
           <button class="narrow-bar__icon" type="button" title="搜索会话" @click="toggleSide">
-            <span class="narrow-bar__icon-glyph">⌕</span>
+            <n-icon :component="SearchOutlined" :size="16" />
           </button>
           <button class="narrow-bar__icon" type="button" title="展开侧栏" @click="toggleSide">
-            <span class="narrow-bar__icon-glyph">≡</span>
+            <n-icon :component="MenuOutlined" :size="16" />
           </button>
         </div>
         <!-- 底部展开按钮（辅助） -->
         <button class="narrow-bar__expand" type="button" title="展开侧栏" @click="toggleSide">
-          <span class="narrow-bar__expand-glyph">›</span>
+          <n-icon :component="RightOutlined" :size="14" />
         </button>
       </div>
     </aside>
 
-    <!-- 主聊天区：铺满剩余空间，内容列居中限宽 -->
-    <section class="portal-chat__main">
+    <!-- 主聊天区：铺满剩余空间，内容列居中限宽；欢迎态半透明透出 Aurora 极光 -->
+    <section class="portal-chat__main" :class="{ 'portal-chat__main--welcome': welcomeActive }">
       <!-- 顶部条 -->
       <header class="chat-topbar">
         <div class="chat-topbar__left">
           <!-- 顶部折叠切换：展开/收起均显示，点击切换侧栏状态 -->
-          <button class="collapse-btn" type="button" :title="sideCollapsed ? '展开侧栏' : '收起侧栏'" @click="toggleSide">
-            {{ sideCollapsed ? '展开' : '收起' }}
+          <button
+            class="collapse-btn"
+            type="button"
+            :title="sideCollapsed ? '展开侧栏' : '收起侧栏'"
+            :aria-label="sideCollapsed ? '展开侧栏' : '收起侧栏'"
+            @click="toggleSide"
+          >
+            <n-icon :component="sideCollapsed ? MenuUnfoldOutlined : MenuFoldOutlined" :size="16" />
           </button>
           <template v-if="loggedIn">
             <span class="chat-topbar__title">{{ activeTitle }}</span>
@@ -110,7 +116,15 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { useMessage } from 'naive-ui'
+import { NIcon, useMessage } from 'naive-ui'
+import {
+  MenuFoldOutlined,
+  MenuUnfoldOutlined,
+  PlusOutlined,
+  SearchOutlined,
+  MenuOutlined,
+  RightOutlined,
+} from '@vicons/antd'
 import ChatMessageList from '@/components/chat/ChatMessageList.vue'
 import ChatInputBar from '@/components/chat/ChatInputBar.vue'
 import ConversationSidebar from '@/components/chat/ConversationSidebar.vue'
@@ -125,6 +139,9 @@ import { demoConversations } from '@/data/demoConversations'
 /* ---------- 登录态决定布局 ---------- */
 const loggedIn = ref(isLoggedIn())
 const guest = computed(() => !loggedIn.value)
+
+/** 欢迎态（未选会话）：主区半透明透出 Aurora；有消息/已选会话后恢复不透明保证阅读 */
+const welcomeActive = computed(() => activeId.value === undefined)
 
 const draft = ref('')
 const activeId = ref<number | undefined>(undefined)
@@ -496,11 +513,6 @@ onUnmounted(() => {
   color: var(--text-1);
   border-color: var(--border);
 }
-.narrow-bar__icon-glyph {
-  font-size: 16px;
-  line-height: 1;
-  font-weight: 600;
-}
 .narrow-bar__expand {
   margin-top: auto;
   width: 32px;
@@ -519,10 +531,6 @@ onUnmounted(() => {
   color: var(--text-1);
   border-color: var(--border-strong);
 }
-.narrow-bar__expand-glyph {
-  font-size: 16px;
-  line-height: 1;
-}
 
 /* ---------- 主区 ---------- */
 .portal-chat__main {
@@ -530,7 +538,12 @@ onUnmounted(() => {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  background: var(--bg-elevated);
+  background-color: var(--bg-elevated);
+  transition: background-color var(--dur-slow) var(--ease);
+}
+/* 欢迎态：半透明让底层 Aurora 光晕与粒子隐约透出（克制：仅空态，阅读态不透明） */
+.portal-chat__main--welcome {
+  background-color: color-mix(in srgb, var(--bg-elevated) 72%, transparent);
 }
 
 /* ---------- 顶部条 ---------- */
@@ -542,6 +555,7 @@ onUnmounted(() => {
   justify-content: space-between;
   padding: 0 var(--space-5);
   gap: var(--space-4);
+  border-bottom: 1px solid var(--border);
 }
 .chat-topbar__left {
   display: flex;
@@ -551,8 +565,11 @@ onUnmounted(() => {
 }
 .collapse-btn {
   flex-shrink: 0;
+  width: 32px;
   height: 32px;
-  padding: 0 12px;
+  display: grid;
+  place-items: center;
+  padding: 0;
   border-radius: var(--radius-md);
   border: 1px solid var(--border-strong);
   background: var(--bg);
@@ -571,7 +588,8 @@ onUnmounted(() => {
   font-weight: 600;
   font-size: var(--text-base);
   color: var(--text-1);
-  max-width: 50%;
+  /* 标题完整展示：去掉 50% 宽度上限，占满左区剩余空间；仅当超长触及右侧操作区时才省略兜底 */
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -580,6 +598,8 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: var(--space-3);
+  /* 操作按钮不被长标题挤压 */
+  flex-shrink: 0;
 }
 .topbar-link {
   font-size: var(--text-sm);
@@ -618,8 +638,8 @@ onUnmounted(() => {
   color: #0f172a;
 }
 .topbar-brand__name {
-  font-family: var(--font-display), 'Noto Serif SC', serif;
-  font-weight: 700;
+  font-weight: 800;
+  letter-spacing: -0.01em;
   font-size: 16px;
   color: var(--text-1);
 }
@@ -627,7 +647,19 @@ onUnmounted(() => {
 /* ---------- 输入栏 ---------- */
 .portal-chat__inputbar {
   flex-shrink: 0;
+  position: relative;
   padding: var(--space-2) var(--space-5) var(--space-4);
+}
+/* 输入栏顶部渐隐遮罩：消息滚入输入区时柔和淡出（欢迎态输入栏不渲染，无影响） */
+.portal-chat__inputbar::before {
+  content: '';
+  position: absolute;
+  top: -18px;
+  left: 0;
+  right: 0;
+  height: 18px;
+  background: linear-gradient(to bottom, transparent, var(--bg-elevated));
+  pointer-events: none;
 }
 
 /* 已移除悬浮展开按钮样式，收起态由 .narrow-bar 承载 */
