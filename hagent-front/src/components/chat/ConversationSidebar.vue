@@ -50,6 +50,7 @@
             <span v-if="c.id < 0" class="demo-badge">演示</span>
             <span v-if="!guest" class="conv-item__ops" @click.stop>
               <span class="op op--rename" title="重命名" @click="startRename(c)">✎</span>
+              <span class="op op--export" title="导出 Markdown" @click="onExport(c)">↓</span>
               <span class="op op--del" title="删除" @click="onDelete(c)">
                 {{ deletingId === c.id ? '确认?' : '✕' }}
               </span>
@@ -83,6 +84,7 @@ const emit = defineEmits<{
   (e: 'new'): void
   (e: 'delete', id: number): void
   (e: 'rename', id: number, title: string): void
+  (e: 'export', c: Conversation): void
   (e: 'login'): void
 }>()
 
@@ -147,6 +149,11 @@ function cancelRename() {
 function onSelect(c: Conversation) {
   if (editingId.value === c.id) return
   emit('select', c)
+}
+
+/** 导出 Markdown（透传会话给视图层拉取消息并下载） */
+function onExport(c: Conversation) {
+  emit('export', c)
 }
 
 /** 两步删除确认：第一次点变“确认?”，再次点击才真正删除 */

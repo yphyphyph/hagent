@@ -5,6 +5,11 @@ import { resolve } from 'path'
 
 export default defineConfig({
   plugins: [vue()],
+  esbuild: {
+    // 生产构建丢弃 debugger；console.debug/log 视为无副作用调用，压缩时移除（保留 warn/error）
+    drop: ['debugger'],
+    pure: ['console.debug', 'console.log'],
+  },
   resolve: {
     alias: {
       '@': resolve(__dirname, 'src'),

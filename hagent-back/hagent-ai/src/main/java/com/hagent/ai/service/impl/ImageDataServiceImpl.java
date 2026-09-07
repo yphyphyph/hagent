@@ -21,6 +21,8 @@ import java.util.Set;
  * <p>
  * 将本地路径 / http(s) URL / base64 data URI 统一转换为 data:{mime};base64,{b64}。
  * 限制：单图 ≤ 50MB；支持 JPEG/PNG/GIF/WebP/BMP。
+ * 下载失败按原因分类返回中文提示（DNS 解析失败 / 连接超时或拒绝 / HTTP 403 防盗链），
+ * 让模型一次失败即改道分析用户消息中已上传的图片，不盲目重试该 URL。
  *
  * @author H
  */
@@ -39,6 +41,18 @@ public class ImageDataServiceImpl implements ImageDataService {
 
     /** URL 下载超时（秒） */
     private static final long DOWNLOAD_TIMEOUT = 30L;
+
+    /** DNS 解析失败提示（让模型一次失败即改道：直接分析用户消息中已上传的图片，不重试该 URL） */
+    private static final String DNS_FAIL_MSG = "图片域名无法解析（该地址在你的网络不可达），请直接分析用户消息中已上传的图片，不要重试该 URL";
+
+    /** 连接超时/拒绝提示（让模型一次失败即改道：直接分析用户消息中已上传的图片） */
+    private static final String CONNECT_FAIL_MSG = "图片服务器连接失败，请直接分析用户消息中已上传的图片";
+
+    /** HTTP 403 提示（可能防盗链，引导用户提供可直接访问的图片链接） */
+    private static final String FORBIDDEN_MSG = "图片服务器拒绝访问（可能防盗链），请让用户提供可直接访问的图片链接";
+
+    /** getaddrinfo 失败消息标记（部分 JDK 将 DNS 失败包装在其他 IOException 中，按消息兜底识别） */
+    private static final String GETADDRINFO_MARKER = "getaddrinfo";
 
     /** HTTP 客户端（重定向跟随） */
     private final HttpClient httpClient = HttpClient.newBuilder()
@@ -139,6 +153,10 @@ public class ImageDataServiceImpl implements ImageDataService {
                     .build();
             HttpResponse<byte[]> response = httpClient.send(request, HttpResponse.BodyHandlers.ofByteArray());
             int status = response.statusCode();
+            // 403 单列：多为防盗链，重试无意义，引导模型向用户要可直接访问的链接
+            if (status == 403) {
+                throw new BusinessException(FORBIDDEN_MSG);
+            }
             if (status >= 400) {
                 throw new BusinessException("图片下载失败：" + url + "（HTTP " + status + "）");
             }
@@ -165,11 +183,45 @@ public class ImageDataServiceImpl implements ImageDataService {
             return toDataUriStr(body, mime);
         } catch (BusinessException e) {
             throw e;
+        } catch (java.net.UnknownHostException e) {
+            // DNS 解析失败：该地址在网络不可达，重试无意义，让模型一次失败即改道
+            log.warn("图片下载 DNS 解析失败: {}", url);
+            throw new BusinessException(DNS_FAIL_MSG);
         } catch (java.net.http.HttpTimeoutException e) {
-            throw new BusinessException("图片下载失败：" + url + "（请求超时）");
+            // 连接/请求超时：让模型改道分析已上传图片，不重试该 URL
+            log.warn("图片下载超时: {}", url);
+            throw new BusinessException(CONNECT_FAIL_MSG);
+        } catch (java.net.ConnectException e) {
+            // 连接拒绝：让模型改道分析已上传图片，不重试该 URL
+            log.warn("图片服务器连接失败: {}", url);
+            throw new BusinessException(CONNECT_FAIL_MSG);
         } catch (Exception e) {
+            // 兜底分类：部分 JDK 将 DNS 失败包装在其他 IOException 中（消息含 getaddrinfo），按消息识别
+            if (isDnsFailure(e)) {
+                log.warn("图片下载 DNS 解析失败（包装异常）: {}, error={}", url, e.getMessage());
+                throw new BusinessException(DNS_FAIL_MSG);
+            }
             throw new BusinessException("图片下载失败：" + url + "（" + e.getClass().getSimpleName() + "）");
         }
+    }
+
+    /**
+     * 判断异常是否为 DNS 解析失败（异常消息或 cause 链中含 getaddrinfo 标记）
+     *
+     * @param e 待判断异常
+     * @return 是 DNS 解析失败返回 true
+     * @author H
+     */
+    private boolean isDnsFailure(Exception e) {
+        Throwable current = e;
+        while (current != null) {
+            String msg = current.getMessage();
+            if (msg != null && msg.contains(GETADDRINFO_MARKER)) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
     }
 
     /**

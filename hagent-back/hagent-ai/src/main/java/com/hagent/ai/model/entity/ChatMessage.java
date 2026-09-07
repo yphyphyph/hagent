@@ -79,4 +79,8 @@ public class ChatMessage implements Serializable {
     /** 更新人 */
     @TableField(fill = FieldFill.INSERT_UPDATE)
     private String updatedBy;
+
+    /** 逻辑删除(0-未删除 1-已删除)，删除走 MyBatis-Plus @TableLogic 软删，查询自动过滤已删除记录 */
+    @TableLogic
+    private Integer deleted;
 }

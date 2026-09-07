@@ -1,6 +1,47 @@
 <template>
   <div class="input-bar">
     <div class="input-bar__box">
+      <!-- 编辑态提示条：进入编辑后显示，可取消退出编辑态 -->
+      <div v-if="editingId !== null" class="edit-banner" role="status">
+        <span class="edit-banner__text">正在编辑，发送后将以新内容替换该消息及其后回复</span>
+        <button type="button" class="edit-banner__cancel" @click="onCancelEdit">取消编辑</button>
+      </div>
+      <!-- 附件 chip 条：图片缩略图随消息发送，文档展示上传进度与成功态（均位于输入框上方，不挤占发送区） -->
+      <div v-if="images.length > 0 || docUploads.length > 0 || docs.length > 0" class="attach-chips">
+        <div v-for="(img, idx) in images" :key="img.id" class="attach-chip">
+          <img class="attach-chip__thumb" :src="img.dataUrl" :alt="img.name" />
+          <span class="attach-chip__name" :title="img.name">{{ img.name }}</span>
+          <button
+            type="button"
+            class="attach-chip__remove"
+            :aria-label="`移除图片 ${img.name}`"
+            @click="removeImage(idx)"
+          >×</button>
+        </div>
+        <div v-for="doc in docUploads" :key="doc.id" class="attach-chip attach-chip--doc" role="status">
+          <svg class="attach-chip__doc-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+            <path d="M14 2v6h6" />
+          </svg>
+          <span class="attach-chip__name" :title="doc.name">{{ doc.name }}</span>
+          <span class="attach-chip__progress">{{ doc.percent }}%</span>
+        </div>
+        <!-- 文档成功态 chip：已入库并向量化，随消息发送；点 × 仅移除本地 chip，知识库条目保留 -->
+        <div v-for="(doc, idx) in docs" :key="doc.id" class="attach-chip attach-chip--doc">
+          <svg class="attach-chip__doc-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+            <path d="M14 2v6h6" />
+          </svg>
+          <span class="attach-chip__name" :title="doc.name">{{ doc.name }}</span>
+          <button
+            type="button"
+            class="attach-chip__remove"
+            :title="`移除 ${doc.name}（仅移除卡片，知识库文件保留）`"
+            :aria-label="`移除文档 ${doc.name}（仅移除卡片，知识库文件保留）`"
+            @click="removeDoc(idx)"
+          >×</button>
+        </div>
+      </div>
       <textarea
         ref="textareaRef"
         :value="modelValue"
@@ -100,6 +141,41 @@
               <div class="context-detail-card__foot">更新于 {{ updatedText }}</div>
             </div>
           </div>
+          <!-- 附件入口：点击弹二选一菜单（上传文件 / 从知识库选择）；上传中转圈；编辑态禁用 -->
+          <span class="attach-anchor">
+            <button
+              type="button"
+              class="attach-btn"
+              :class="{ 'is-loading': docUploading }"
+              :disabled="editingId !== null"
+              :title="editingId !== null ? '编辑消息时不可添加附件' : (docUploading ? `正在上传 ${docUploads[0].name} ${docUploads[0].percent}%` : '添加图片或文档')"
+              :aria-label="docUploading ? '文档上传中' : '添加图片或文档'"
+              :aria-haspopup="true"
+              :aria-expanded="attachMenuOpen"
+              @click="attachMenuOpen = !attachMenuOpen"
+            >
+              <svg v-if="!docUploading" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+              </svg>
+              <span v-else class="attach-btn__spinner" aria-hidden="true"></span>
+            </button>
+            <AttachMenu
+              v-if="attachMenuOpen"
+              :guest="guest"
+              @upload="onMenuUpload"
+              @knowledge="onMenuKnowledge"
+              @close="attachMenuOpen = false"
+            />
+          </span>
+          <!-- 隐藏文件选择器：accept 两类（图片 / 知识库文档），选中后按类型分流 -->
+          <input
+            ref="fileInputRef"
+            type="file"
+            class="attach-input"
+            multiple
+            accept="image/*,.md,.txt,.pdf,.doc,.docx"
+            @change="onFilesPicked"
+          />
           <!-- 三态：流式中=停止（红），有内容=发送（accent），空=禁用 -->
         <button
           v-if="streaming"
@@ -115,11 +191,13 @@
           v-else
           type="button"
           class="send-btn"
-          :disabled="!modelValue?.trim() || inputLen > 10000"
-          :title="inputLen > 10000 ? '输入已超限，请删减后发送' : '发送'"
-          @click="$emit('send')"
+          :disabled="!modelValue?.trim() || inputLen > 10000 || imageUploading"
+          :title="imageUploading ? imageUploadStatus : '发送'"
+          :aria-label="imageUploading ? '图片上传中' : '发送'"
+          @click="emitSend"
         >
-          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <span v-if="imageUploading" class="send-btn__spinner" aria-hidden="true"></span>
+          <svg v-else viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M22 2 11 13" />
             <path d="M22 2 15 22l-4-9-9-4z" />
           </svg>
@@ -127,26 +205,76 @@
         </div>
       </div>
     </div>
+    <!-- 知识库选择器：多选后映射为文档成功态 chips，随消息发送 -->
+    <KnowledgePickerModal
+      :visible="kbPickerOpen"
+      @close="kbPickerOpen = false"
+      @confirm="onKbConfirm"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import type { ContextUsage } from '@/composables/useChat'
+import type { ChatAttachment } from '@/api/chat'
+import type { KnowledgeFile } from '@/api/knowledge'
+import { useChatAttachments } from '@/composables/useChatAttachments'
+import AttachMenu from '@/components/chat/AttachMenu.vue'
+import KnowledgePickerModal from '@/components/chat/KnowledgePickerModal.vue'
 
 const props = defineProps<{
   modelValue?: string
   streaming?: boolean
   /** 上下文用量快照（来自 useChat.contextUsage，无数据时不展示入口） */
   contextUsage?: ContextUsage | null
+  /** 访客门控：true 时点附件走登录引导，不打开文件选择器 */
+  guest?: boolean
 }>()
 
 const emit = defineEmits<{
   (e: 'update:modelValue', v: string): void
-  (e: 'send'): void
+  (e: 'send', attachments?: ChatAttachment[]): void
   (e: 'stop'): void
   (e: 'focus'): void
+  (e: 'login-request'): void
+  (e: 'cancel-edit'): void
 }>()
+
+/** 编辑态：待编辑消息的后端 DB id（null 为普通发送态）；发送走 editMessageId 路径由父组件路由 */
+const editingId = ref<number | null>(null)
+
+/**
+ * 进入编辑态（由父组件在消息列表点击“编辑”后调用）：
+ * 填充原文、清空附件 chips（编辑态优先，附件随编辑消息一并清空）并聚焦输入框
+ */
+function startEdit(messageId: number, text: string) {
+  editingId.value = messageId
+  clearAttachments()
+  emit('update:modelValue', text)
+  nextTick(() => {
+    const el = textareaRef.value
+    if (el) {
+      el.style.height = 'auto'
+      el.style.height = `${Math.min(el.scrollHeight, 160)}px`
+      el.focus()
+    }
+  })
+}
+
+/** 退出编辑态（由父组件在发送成功/切换会话时调用；仅在编辑态时清空文本，避免误清普通草稿） */
+function exitEdit() {
+  if (editingId.value === null) return
+  editingId.value = null
+  emit('update:modelValue', '')
+}
+
+/** 取消编辑：恢复普通态并通知父组件同步清理逻辑编辑状态 */
+function onCancelEdit() {
+  editingId.value = null
+  emit('update:modelValue', '')
+  emit('cancel-edit')
+}
 
 const textareaRef = ref<HTMLTextAreaElement | null>(null)
 /** 中文输入法组词守卫：组词期间的 Enter 是选词，不触发发送 */
@@ -259,7 +387,54 @@ function formatNum(n: number): string {
 
 function onEnter() {
   if (composing.value) return
-  emit('send')
+  emitSend()
+}
+
+/**
+ * 发送（按钮与 Enter 共用）：有图片 chips 时先并发上传 OSS（发送按钮 loading「图片上传中 x/N」），
+ * 文档 chips 已在选中时上传知识库；成功后携带混合附件载荷 emit；任一图片失败中止发送（toast 已由拦截器提示，chips 保留可重试）
+ */
+async function emitSend() {
+  if (imageUploading.value) return
+  let attachments: ChatAttachment[] | undefined
+  try {
+    attachments = await uploadAndBuildAttachments()
+  } catch {
+    return
+  }
+  emit('send', attachments)
+}
+
+/* ---------- 附件：图片发送前上传 OSS / 文档直接上传知识库（逻辑抽至 useChatAttachments 共享） ---------- */
+const { images, docs, docUploads, docUploading, imageUploading, imageUploadStatus, fileInputRef, onFilesPicked, removeImage, removeDoc, addKnowledgeDocs, clearAttachments, uploadAndBuildAttachments } = useChatAttachments({
+  isGuest: () => props.guest,
+  onGuestAttach: () => emit('login-request'),
+})
+
+/* ---------- 附件来源菜单：上传文件 / 从知识库选择 ---------- */
+const attachMenuOpen = ref(false)
+const kbPickerOpen = ref(false)
+
+/** 菜单「上传文件」：访客走登录引导（与旧入口同语义），已登录打开文件选择器 */
+function onMenuUpload() {
+  attachMenuOpen.value = false
+  if (props.guest) {
+    emit('login-request')
+    return
+  }
+  fileInputRef.value?.click()
+}
+
+/** 菜单「从知识库选择」：打开选择器 modal（访客不可见该菜单项） */
+function onMenuKnowledge() {
+  attachMenuOpen.value = false
+  kbPickerOpen.value = true
+}
+
+/** 选择器确定：选中文件映射为文档成功态 chips（url 取 fileUrl，不再重复上传） */
+function onKbConfirm(files: KnowledgeFile[]) {
+  kbPickerOpen.value = false
+  addKnowledgeDocs(files)
 }
 
 /** v-model 桥接 + 高度自适应 */
@@ -275,7 +450,12 @@ function autoResize(e: Event) {
   el.style.height = `${Math.min(el.scrollHeight, 160)}px`
 }
 
-defineExpose({ focus: () => textareaRef.value?.focus() })
+defineExpose({
+  focus: () => textareaRef.value?.focus(),
+  clearAttachments,
+  startEdit,
+  exitEdit,
+})
 </script>
 
 <style scoped>
@@ -580,6 +760,163 @@ defineExpose({ focus: () => textareaRef.value?.focus() })
 [data-theme='dark'] .input-over-tip {
   color: #f87171;
 }
+/* ---------- 附件：chip 条（输入框上方）与回形针入口 ---------- */
+.attach-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+.attach-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  max-width: 220px;
+  padding: var(--space-1) var(--space-2);
+  background: var(--bg-hover);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  color: var(--text-1);
+}
+.attach-chip__thumb {
+  width: 28px;
+  height: 28px;
+  object-fit: cover;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.attach-chip__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: none;
+}
+.attach-chip--doc {
+  color: var(--text-2);
+}
+.attach-chip__doc-icon {
+  flex-shrink: 0;
+  color: var(--text-3);
+}
+.attach-chip__progress {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--accent);
+  flex-shrink: 0;
+  user-select: none;
+}
+.attach-chip__remove {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--text-3);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.attach-chip__remove:hover {
+  background: var(--bg-active);
+  color: var(--danger);
+}
+/* 回形针入口：发送区内轻量图标按钮，与上下文环同级不挤占发送键 */
+.attach-anchor {
+  position: relative;
+  display: inline-flex;
+  margin-right: var(--space-2);
+}
+.attach-btn {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  outline: none;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.attach-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-1);
+}
+.attach-btn.is-loading {
+  cursor: progress;
+  color: var(--accent);
+}
+.attach-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+/* ---------- 编辑态提示条（输入框上方，可取消退出） ---------- */
+.edit-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  color: var(--text-2);
+  user-select: none;
+}
+.edit-banner__text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.edit-banner__cancel {
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  line-height: 1.4;
+  cursor: pointer;
+  padding: 2px 8px;
+  border-radius: 6px;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.edit-banner__cancel:hover {
+  background: var(--accent-soft);
+  color: var(--text-1);
+}
+.edit-banner__cancel:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+/* 上传中 spinner：仅 transform 动画 */
+.attach-btn__spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--accent-soft);
+  border-top-color: var(--accent);
+  border-radius: var(--radius-full);
+  animation: attach-spin 0.8s linear infinite;
+}
+@keyframes attach-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+/* 隐藏文件选择器（经回形针按钮触发） */
+.attach-input {
+  display: none;
+}
 .send-btn {
   display: grid;
   place-items: center;
@@ -599,6 +936,19 @@ defineExpose({ focus: () => textareaRef.value?.focus() })
 .send-btn:disabled {
   opacity: 0.35;
   cursor: not-allowed;
+}
+/* 图片上传中 spinner：复用回形针 spinner 样式（仅 transform 动画） */
+.send-btn__spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.45);
+  border-top-color: #fff;
+  border-radius: var(--radius-full);
+  animation: attach-spin 0.8s linear infinite;
+}
+[data-theme='dark'] .send-btn__spinner {
+  border-color: rgba(15, 23, 42, 0.3);
+  border-top-color: #0f172a;
 }
 .send-btn:not(:disabled):hover {
   transform: translateY(-1px);
@@ -655,7 +1005,8 @@ defineExpose({ focus: () => textareaRef.value?.focus() })
 /* 尊重减少动效偏好：降级为静态 */
 @media (prefers-reduced-motion: reduce) {
   .send-btn--stop,
-  .stop-square {
+  .stop-square,
+  .send-btn__spinner {
     animation: none;
   }
   .pill-fade-enter-active,

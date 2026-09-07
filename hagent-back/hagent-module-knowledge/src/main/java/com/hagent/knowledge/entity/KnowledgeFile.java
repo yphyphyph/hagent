@@ -35,6 +35,9 @@ public class KnowledgeFile extends BaseEntity {
     /** 文件扩展名 */
     private String fileExt;
 
+    /** 文件内容 MD5 去重指纹（varchar(32)，历史行为空；仅用于同用户上传去重，跨用户不拦截以避免删除纠缠） */
+    private String fileMd5;
+
     /** 可见性(0=私有 1=公有)：权限仅存 PostgreSQL 关系库，检索侧原生 filterExpression 过滤，切换即时生效无需重新向量化 */
     private Integer visibility;
 

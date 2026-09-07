@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.hagent.ai.config.AiConfig;
 import com.hagent.ai.core.ContextTokenEstimator;
 import com.hagent.ai.core.ModelRouter;
+import com.hagent.ai.core.OpenCodeGatewayHeaders;
 import com.hagent.ai.mapper.ChatConversationMapper;
 import com.hagent.ai.mapper.ChatMessageMapper;
 import com.hagent.ai.model.entity.ChatConversation;
@@ -311,7 +312,10 @@ public class ConversationMemoryService {
         String summaryPrompt = buildSummaryPrompt(conversation.getSummaryText(), transcript,
                 config.getTargetTokens());
         // 摘要生成走主备 API 模型降级链，不碰 Ollama；temperature 0.3 保证归并稳定
-        OpenAiChatOptions summaryOptions = OpenAiChatOptions.builder().temperature(0.3).build();
+        // 摘要生成走主备 API 模型降级链，不碰 Ollama；temperature 0.3 保证归并稳定；
+        // 运行时 Options 会整体覆盖模型默认 Options（Spring AI 2.0 不合并），须显式注入网关会话头 @author H
+        OpenAiChatOptions summaryOptions = OpenCodeGatewayHeaders.applyTo(
+                OpenAiChatOptions.builder().temperature(0.3), conversationId).build();
         Prompt prompt = new Prompt(List.of(new SystemMessage(SUMMARY_SYSTEM_PROMPT),
                 new UserMessage(summaryPrompt)), summaryOptions);
         var response = modelRouter.callWithFallback(prompt);

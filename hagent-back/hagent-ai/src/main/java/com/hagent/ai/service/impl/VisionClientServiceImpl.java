@@ -4,6 +4,7 @@ import cn.hutool.core.util.StrUtil;
 import cn.hutool.json.JSONArray;
 import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
+import com.hagent.ai.core.OpenCodeGatewayHeaders;
 import com.hagent.common.exception.BusinessException;
 import com.hagent.ai.model.ImageMcpConfig;
 import com.hagent.ai.service.VisionClientService;
@@ -137,12 +138,14 @@ public class VisionClientServiceImpl implements VisionClientService {
         String apiKey = config.getApiKey();
         String body = payload.toString();
 
-        HttpRequest request = HttpRequest.newBuilder()
+        // opencode 网关强制会话头（缺失返回 400 MissingSessionID，与主链路同源）：
+        // 视觉调用无会话上下文，传 null 走实例级 UUID 兜底（网关只要求稳定会话 ID） @author H
+        HttpRequest request = OpenCodeGatewayHeaders.applyTo(HttpRequest.newBuilder()
                 .uri(URI.create(url))
                 .timeout(Duration.ofSeconds(REQUEST_TIMEOUT))
                 .header("Content-Type", "application/json")
                 .header("Authorization", "Bearer " + apiKey)
-                .header("api-key", apiKey)
+                .header("api-key", apiKey), null)
                 .POST(HttpRequest.BodyPublishers.ofString(body))
                 .build();
 

@@ -51,6 +51,8 @@ import { useRoute, useRouter } from 'vue-router'
 import { NIcon, NMenu, NLayout, NLayoutSider, NLayoutHeader, NLayoutContent, NButton, type MenuOption } from 'naive-ui'
 import {
   ToolOutlined,
+  FileTextOutlined,
+  ApiOutlined,
   DatabaseOutlined,
   SafetyOutlined,
   FileSearchOutlined,
@@ -69,6 +71,8 @@ function renderIcon(icon: ReturnType<typeof h>) {
 
 const menuOptions: MenuOption[] = [
   { label: 'AI 工具', key: '/admin/tools', icon: renderIcon(h(ToolOutlined)) },
+  { label: '提示词库', key: '/admin/prompts', icon: renderIcon(h(FileTextOutlined)) },
+  { label: 'MCP 工具', key: '/admin/mcp', icon: renderIcon(h(ApiOutlined)) },
   { label: '知识库', key: '/admin/knowledge', icon: renderIcon(h(DatabaseOutlined)) },
   { label: 'SQL 表策略', key: '/admin/sql-policy', icon: renderIcon(h(SafetyOutlined)) },
   { label: '操作日志', key: '/admin/logs', icon: renderIcon(h(FileSearchOutlined)) },

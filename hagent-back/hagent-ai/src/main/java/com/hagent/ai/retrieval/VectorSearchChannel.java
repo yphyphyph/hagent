@@ -103,6 +103,11 @@ public class VectorSearchChannel implements SearchChannel {
                 parts.add("(" + fileFilter + ")");
             }
         }
+        // 精确模式：锁定单一知识库文件（元数据 file_id 为字符串故带引号，与 fileIds 过滤同机制；
+        // fileId 为 Long 数字串，无过滤表达式注入风险） @author H
+        if (context.getFileId() != null) {
+            parts.add("file_id == '" + context.getFileId() + "'");
+        }
         return String.join(" && ", parts);
     }
 }

@@ -1,6 +1,7 @@
 package com.hagent.knowledge.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hagent.common.PageResult;
@@ -27,9 +28,11 @@ import org.springframework.context.annotation.Lazy;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.DigestUtils;
 import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.io.IOException;
 import java.io.InputStream;
 import java.time.LocalDateTime;
 import java.util.*;
@@ -69,6 +72,9 @@ public class KnowledgeServiceImpl extends ServiceImpl<KnowledgeFileMapper, Knowl
 
     /** 单文件大小上限：20MB */
     private static final long MAX_FILE_SIZE = 20L * 1024 * 1024;
+
+    /** 存量行 MD5 懒回填单次上限：极端情况下（大量同大小 NULL 指纹行）防止触发 OSS 下载风暴 */
+    private static final int LEGACY_MD5_BACKFILL_LIMIT = 5;
 
     /** 知识库检索次数 Redis 计数键（与 RagService 保持一致） */
     private static final String SEARCH_COUNT_REDIS_KEY = "hagent:knowledge:search:count";
@@ -118,6 +124,28 @@ public class KnowledgeServiceImpl extends ServiceImpl<KnowledgeFileMapper, Knowl
         String fileExt = getFileExtension(originalFilename);
         validateFile(originalFilename, fileExt, file.getContentType(), file.getSize());
 
+        // 内容指纹去重（仅同用户，跨用户不拦截以避免删除纠缠）：在 OSS 上传之前计算 MD5 并查重，重复文件早拒绝，省流量、不落库、不向量化
+        String fileMd5;
+        try (InputStream md5Stream = file.getInputStream()) {
+            // MultipartFile 每次调用 getInputStream() 返回新流，此处读完后后续 OSS 上传可重新获取流
+            fileMd5 = DigestUtils.md5DigestAsHex(md5Stream);
+        } catch (IOException e) {
+            throw new BusinessException("读取文件内容失败，无法计算 MD5: " + e.getMessage());
+        }
+        // 逻辑删除由 @TableLogic 自动追加 deleted = 0 条件，取第一条命中记录
+        KnowledgeFile existing = super.getOne(new LambdaQueryWrapper<KnowledgeFile>()
+                .eq(KnowledgeFile::getUserId, UserContext.getUserId())
+                .eq(KnowledgeFile::getFileMd5, fileMd5)
+                .last("LIMIT 1"));
+        if (existing != null) {
+            log.info("知识库文件内容重复，拒绝上传: existingId={}, existingName={}, md5={}, uploadName={}",
+                    existing.getId(), existing.getFileName(), fileMd5, originalFilename);
+            throw new BusinessException("文件内容重复：与已有文档《" + existing.getFileName() + "》完全相同（MD5 一致），无需重复上传");
+        }
+
+        // 存量行懒回填查重：file_md5 为 NULL 的历史行不参与上面的精确查重，这里按需下载回填自愈（懒式，非启动全量回填）
+        backfillLegacyMd5AndCheck(fileMd5, file.getSize(), originalFilename);
+
         // OSS 对象键，用于失败时回滚清理
         String objectName = "knowledge/" + System.currentTimeMillis() + "_" + originalFilename;
         // 标记 OSS 是否已上传成功，用于 DB 失败时回滚
@@ -136,6 +164,8 @@ public class KnowledgeServiceImpl extends ServiceImpl<KnowledgeFileMapper, Knowl
             knowledgeFile.setFileSize(file.getSize());
             knowledgeFile.setFileType(file.getContentType());
             knowledgeFile.setFileExt(fileExt);
+            // 写入内容 MD5 去重指纹（历史行为空，仅新上传写入）
+            knowledgeFile.setFileMd5(fileMd5);
             // 公私属性：默认公有；私有文件归属当前上传用户
             knowledgeFile.setVisibility(visibility == null ? 1 : visibility);
             knowledgeFile.setUserId(UserContext.getUserId());
@@ -170,6 +200,61 @@ public class KnowledgeServiceImpl extends ServiceImpl<KnowledgeFileMapper, Knowl
         } catch (Exception e) {
             log.error("上传文档失败", e);
             throw new BusinessException("上传失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 存量行 MD5 懒回填并查重：历史行（file_md5 为 NULL）不参与精确查重，按需下载 OSS 对象补齐指纹实现自愈
+     * <p>
+     * 仅处理与上传文件同大小的 NULL 指纹候选行（MD5 相同必然同大小，不同大小的存量行不可能是同内容），
+     * 逐个下载计算 MD5 并回填；命中同内容存量行即抛业务异常拒绝上传，回填失败的候选仅告警跳过不阻断主流程。
+     *
+     * @param fileMd5    上传文件内容 MD5
+     * @param fileSize   上传文件大小（字节），用于快速过滤候选行
+     * @param uploadName 上传文件名，仅用于日志
+     * @author H
+     */
+    private void backfillLegacyMd5AndCheck(String fileMd5, long fileSize, String uploadName) {
+        // OSS 未启用时无法下载存量对象，跳过懒回填（主流程随后的 OSS 上传同样不可用，由其自行报错）
+        if (aliOssUtil == null) {
+            log.warn("AliOssUtil 未启用，跳过存量 MD5 懒回填查重: uploadName={}", uploadName);
+            return;
+        }
+        // 同用户 + 指纹为空 + 同大小的候选行，按上限截断防止下载风暴；逻辑删除由 @TableLogic 自动追加 deleted = 0
+        List<KnowledgeFile> legacyCandidates = super.list(new LambdaQueryWrapper<KnowledgeFile>()
+                .eq(KnowledgeFile::getUserId, UserContext.getUserId())
+                .isNull(KnowledgeFile::getFileMd5)
+                .eq(KnowledgeFile::getFileSize, fileSize)
+                .last("LIMIT " + LEGACY_MD5_BACKFILL_LIMIT));
+        if (legacyCandidates.isEmpty()) {
+            return;
+        }
+        log.info("发现存量 NULL 指纹候选行，开始懒回填查重: candidates={}, fileSize={}, uploadName={}",
+                legacyCandidates.size(), fileSize, uploadName);
+        for (KnowledgeFile candidate : legacyCandidates) {
+            try (InputStream legacyStream = aliOssUtil.downloadFile(candidate.getObjectName())) {
+                String legacyMd5 = DigestUtils.md5DigestAsHex(legacyStream);
+                // 仅回填单列指纹，避免整行重写（历史行为空，本次按需补齐）
+                super.update(new LambdaUpdateWrapper<KnowledgeFile>()
+                        .eq(KnowledgeFile::getId, candidate.getId())
+                        .set(KnowledgeFile::getFileMd5, legacyMd5));
+                log.info("已回填存量行 MD5 指纹: fileId={}, fileName={}, md5={}",
+                        candidate.getId(), candidate.getFileName(), legacyMd5);
+                // 命中同内容存量行：早退拒绝上传（与第一段查重同一话术，前端拦截器统一 toast）
+                if (legacyMd5.equals(fileMd5)) {
+                    log.info("知识库文件内容重复（存量行懒回填命中），拒绝上传: existingId={}, existingName={}, md5={}, uploadName={}",
+                            candidate.getId(), candidate.getFileName(), legacyMd5, uploadName);
+                    throw new BusinessException("文件内容重复：与已有文档《" + candidate.getFileName()
+                            + "》完全相同（MD5 一致），无需重复上传");
+                }
+            } catch (BusinessException e) {
+                // 命中重复的拒绝必须向上传播，不能被下方失败兜底吞掉
+                throw e;
+            } catch (Exception e) {
+                // 单个候选下载/回填失败仅告警跳过，不阻断上传主流程
+                log.warn("存量行 MD5 回填失败，跳过该候选: fileId={}, objectName={}, error={}",
+                        candidate.getId(), candidate.getObjectName(), e.getMessage());
+            }
         }
     }
 

@@ -145,10 +145,13 @@ public class AgentToolLoopService {
     private OpenAiChatOptions buildToolOptionsForModel(ChatModel chatModel, ToolCallback[] toolCallbacks, OpenAiChatOptions fallbackOptions) {
         if (chatModel instanceof OpenAiChatModel openAiChatModel) {
             OpenAiChatOptions base = openAiChatModel.getOptions();
-            return OpenAiChatOptions.builder()
+            // 降级模型重建工具 Options 时注入 opencode 网关会话头（缺失 400）：
+            // 会话ID取 UserContextHolder（callWithTools 运行线程已在 Flux.create 内重设），
+            // 无会话上下文时回退实例级 UUID @author H
+            return OpenCodeGatewayHeaders.applyTo(OpenAiChatOptions.builder()
                     .apiKey(base.getApiKey())
                     .baseUrl(base.getBaseUrl())
-                    .model(base.getModel())
+                    .model(base.getModel()), UserContextHolder.getConversationId())
                     .toolCallbacks(toolCallbacks)
                     .build();
         }

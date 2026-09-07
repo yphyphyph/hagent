@@ -32,6 +32,8 @@ const routes: RouteRecordRaw[] = [
       { path: 'chat', redirect: { path: '/' } },
       { path: 'tools', name: 'AdminAiTools', component: () => import('@/views/admin/AiToolsView.vue'), meta: { title: 'AI 工具' } },
       { path: 'tools/execute/:key', name: 'AdminAiToolExecute', component: () => import('@/views/admin/AiToolExecuteView.vue'), meta: { title: '工具执行' } },
+      { path: 'prompts', name: 'AdminPrompts', component: () => import('@/views/admin/PromptView.vue'), meta: { title: '提示词库' } },
+      { path: 'mcp', name: 'AdminMcp', component: () => import('@/views/admin/McpView.vue'), meta: { title: 'MCP 工具' } },
       { path: 'knowledge', name: 'AdminKnowledge', component: () => import('@/views/admin/KnowledgeView.vue'), meta: { title: '知识库' } },
       { path: 'sql-policy', name: 'AdminSqlPolicy', component: () => import('@/views/admin/SqlPolicyView.vue'), meta: { title: 'SQL 表策略' } },
       {

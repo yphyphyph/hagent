@@ -3,7 +3,9 @@ package com.hagent.ai.service.impl;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.ObjectMapper;
 import com.hagent.ai.core.AiModelProvider;
+import com.hagent.ai.core.OpenCodeGatewayHeaders;
 import com.hagent.ai.core.RagService;
+import com.hagent.ai.core.UserContextHolder;
 import com.hagent.ai.model.dto.AiToolRequest;
 import com.hagent.ai.service.AiToolService;
 import com.hagent.ai.service.TextToSqlService;
@@ -261,10 +263,11 @@ public class AiToolServiceImpl implements AiToolService {
             return Flux.just(wrapError("AI服务配置异常，请稍后重试"));
         }
         OpenAiChatOptions base = openAiChatModel.getOptions();
-        OpenAiChatOptions options = OpenAiChatOptions.builder()
+        // 注入 opencode 网关会话头（缺失 400）；工具报表场景无会话上下文时回退实例级 UUID @author H
+        OpenAiChatOptions options = OpenCodeGatewayHeaders.applyTo(OpenAiChatOptions.builder()
                 .apiKey(base.getApiKey())
                 .baseUrl(base.getBaseUrl())
-                .model(base.getModel())
+                .model(base.getModel()), UserContextHolder.getConversationId())
                 .build();
 
         List<Message> messages = new ArrayList<>();

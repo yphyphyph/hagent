@@ -16,6 +16,7 @@
         @new="handleNew"
         @delete="onDeleteConversation"
         @rename="onRenameConversation"
+        @export="onExportConversation"
         @login="openLogin"
       />
       <!-- 收起态：64px 窄图标栏 -->
@@ -78,17 +79,24 @@
         :guest="guest"
         :show-welcome="guest || activeId === undefined"
         @send="sendText"
+        @regenerate="onRegenerate"
+        @edit="onEditMessage"
+        @login-request="openLogin"
       />
 
       <!-- 新会话（未选会话）仅用欢迎区 hero 输入；已选历史（含空历史/加载中）始终显示底部输入栏；访客不展示 -->
       <div v-if="!guest && (displayMessages.length > 0 || activeId !== undefined)" class="portal-chat__inputbar">
         <ChatInputBar
+          ref="inputRef"
           v-model="draft"
           :streaming="displayStreaming"
           :context-usage="contextUsage"
+          :guest="guest"
           @send="submitDraft"
           @stop="onStopStop"
           @focus="onInputFocus"
+          @login-request="openLogin"
+          @cancel-edit="onCancelEdit"
         />
       </div>
     </section>
@@ -108,9 +116,10 @@ import ChatInputBar from '@/components/chat/ChatInputBar.vue'
 import ConversationSidebar from '@/components/chat/ConversationSidebar.vue'
 import LoginModal from '@/components/chat/LoginModal.vue'
 import HsThemeToggle from '@/components/ui/HsThemeToggle.vue'
-import { useChat } from '@/composables/useChat'
-import { conversationApi, PORTAL_CHAT_ENDPOINT, type Conversation } from '@/api/chat'
+import { useChat, type UiChatMessage } from '@/composables/useChat'
+import { conversationApi, PORTAL_CHAT_ENDPOINT, type ChatAttachment, type Conversation } from '@/api/chat'
 import { isLoggedIn } from '@/utils/auth'
+import { buildConversationMarkdown, downloadTextFile, sanitizeExportFileName } from '@/utils/exportMarkdown'
 import { demoConversations } from '@/data/demoConversations'
 
 /* ---------- 登录态决定布局 ---------- */
@@ -122,6 +131,8 @@ const activeId = ref<number | undefined>(undefined)
 const conversations = ref<Conversation[]>([])
 const convLoading = ref(false)
 const listRef = ref<InstanceType<typeof ChatMessageList> | null>(null)
+/** 输入栏组件引用：发送成功后清空图片 chips */
+const inputRef = ref<InstanceType<typeof ChatInputBar> | null>(null)
 
 /* ---------- 侧栏折叠持久化 ---------- */
 const SIDE_COLLAPSED_KEY = 'hagent_side_collapsed'
@@ -175,6 +186,8 @@ const chat = useChat({
   onDone: () => {
     if (loggedIn.value) void loadConversations()
   },
+  // 守卫拒绝（生成中/访客/演示会话）与流式错误统一 toast
+  onError: (msg) => message.error(msg),
 })
 // 思考块为唯一进度载体：thinking-block 从首个 thinking 信号即渲染，标题“思考中…”空内容起步，随后递增
 const { messages, thinking, streaming, stageText, thinkingTitle, contextUsage, stop } = chat
@@ -202,25 +215,66 @@ function onStopStop() {
   stop()
 }
 
-/* ---------- 发送（访客门控：未登录一律弹登录框） ---------- */
-function submitDraft() {
+/* ---------- 发送（访客门控：未登录一律弹登录框，不清空已选的文本与图片 chips） ---------- */
+function submitDraft(attachments?: ChatAttachment[]) {
   if (guest.value) {
     openLogin()
     return
   }
   const text = draft.value.trim()
   if (!text) return
-  if (!chat.send(text)) return
+  if (!chat.send(text, attachments)) return
   draft.value = ''
+  // 发送成功后清空图片与文档 chips（附件已随请求体发出；进行中的文档上传不受影响）
+  inputRef.value?.clearAttachments()
+  // 编辑重发成功后退出输入栏编辑态（普通发送时为空操作）
+  inputRef.value?.exitEdit()
 }
 
-function sendText(text: string) {
+/** 欢迎屏 hero 发送（与 ChatInputBar 路径汇合到 chat.send 同一入口；成功后清空 hero 草稿与图片/文档 chips） */
+function sendText(text: string, attachments?: ChatAttachment[]) {
   if (guest.value) {
     openLogin()
     return
   }
-  if (!chat.send(text)) return
+  if (!chat.send(text, attachments)) return
   draft.value = ''
+  listRef.value?.clearHeroCompose()
+}
+
+/* ---------- 重新生成 / 编辑重发 ---------- */
+/** 重新生成最后一条 AI 回复（守卫拒绝由 useChat 经 onError toast） */
+function onRegenerate() {
+  if (guest.value) {
+    openLogin()
+    return
+  }
+  chat.regenerate()
+}
+
+/** 进入编辑态：逻辑状态记入 useChat，视觉状态同步到输入栏（填充原文并清空附件 chips） */
+function onEditMessage(m: UiChatMessage) {
+  if (guest.value) {
+    openLogin()
+    return
+  }
+  if (typeof m.id !== 'number') {
+    message.warning('该消息尚未同步到服务端，暂不支持编辑')
+    return
+  }
+  if (!chat.editMessage(m.id, m.content)) return
+  inputRef.value?.startEdit(m.id, m.content)
+}
+
+/** 输入栏取消编辑：同步清理 useChat 逻辑编辑状态 */
+function onCancelEdit() {
+  chat.cancelEdit()
+}
+
+/** 退出编辑态（切换会话/新建/登录态变化时同步清理输入栏与逻辑编辑状态） */
+function exitEditing() {
+  chat.cancelEdit()
+  inputRef.value?.exitEdit()
 }
 
 /* ---------- 会话管理 ---------- */
@@ -246,6 +300,7 @@ function onSelectConversation(c: Conversation) {
   }
   if (c.id === activeId.value) return
   stop()
+  exitEditing()
   activeId.value = c.id
   void chat.loadMessages(c.id)
 }
@@ -260,6 +315,7 @@ function handleNew() {
 
 function onNewConversation() {
   stop()
+  exitEditing()
   activeId.value = undefined
   chat.clear()
 }
@@ -287,6 +343,33 @@ async function onRenameConversation(id: number, title: string) {
   }
 }
 
+/** 导出进行中标记（防重复点击重复下载） */
+const exporting = ref(false)
+
+/**
+ * 导出会话为 Markdown：拉取该会话全量消息，纯前端拼接后 Blob 下载
+ * 空会话给 toast 提示，不生成文件
+ */
+async function onExportConversation(c: Conversation) {
+  if (guest.value || exporting.value || c.id === undefined || c.id < 0) return
+  exporting.value = true
+  try {
+    const list = await conversationApi.messages(c.id)
+    if (!list || list.length === 0) {
+      message.warning('该会话暂无消息，无法导出')
+      return
+    }
+    const title = c.title || '未命名会话'
+    const md = buildConversationMarkdown(title, list)
+    downloadTextFile(`${sanitizeExportFileName(title)}.md`, md)
+    message.success('会话已导出为 Markdown')
+  } catch {
+    // 已由拦截器 toast
+  } finally {
+    exporting.value = false
+  }
+}
+
 /* ---------- 登录态响应式同步 ---------- */
 /**
  * 登录态变化时校准视图（幂等：状态未变直接返回，快速反复切换安全）
@@ -299,10 +382,12 @@ function refreshAuthState(): void {
   loggedIn.value = now
   if (now) {
     stop()
+    exitEditing()
     chat.clear()
     void loadConversations()
   } else {
     stop()
+    exitEditing()
     chat.clear()
     conversations.value = []
     activeId.value = undefined

@@ -182,10 +182,12 @@ public class AiModelProvider {
             AiConfig.VectorStore vecCfg = aiConfig.getVectorStore();
 
             // 构建主 ChatModel - 通过Options设置apiKey和baseUrl
-            OpenAiChatOptions chatOptions = OpenAiChatOptions.builder()
+            // 模型默认 Options 注入 opencode 网关实例级会话头（缺失返回 400）：
+            // 覆盖裸 Prompt 调用（无运行时 Options 时 buildRequestPrompt 应用默认 Options） @author H
+            OpenAiChatOptions chatOptions = OpenCodeGatewayHeaders.applyTo(OpenAiChatOptions.builder()
                     .apiKey(chatCfg.getApiKey())
                     .baseUrl(chatCfg.getBaseUrl())
-                    .model(chatCfg.getModel())
+                    .model(chatCfg.getModel()), null)
                     .build();
             ChatModel primaryChatModel = OpenAiChatModel.builder()
                     .options(chatOptions)
@@ -202,10 +204,11 @@ public class AiModelProvider {
                     String modelName = StringUtils.hasText(fm.getName()) ? fm.getName() : chatCfg.getModel();
                     String baseUrl = StringUtils.hasText(fm.getBaseUrl()) ? fm.getBaseUrl() : chatCfg.getBaseUrl();
                     String apiKey = StringUtils.hasText(fm.getApiKey()) ? fm.getApiKey() : chatCfg.getApiKey();
-                    OpenAiChatOptions fallbackOptions = OpenAiChatOptions.builder()
+                    // 备用模型默认 Options 同样注入实例级会话头（备用 hy3 同为 opencode 网关，强制校验一致） @author H
+                    OpenAiChatOptions fallbackOptions = OpenCodeGatewayHeaders.applyTo(OpenAiChatOptions.builder()
                             .apiKey(apiKey)
                             .baseUrl(baseUrl)
-                            .model(modelName)
+                            .model(modelName), null)
                             .build();
                     ChatModel fallbackModel = OpenAiChatModel.builder()
                             .options(fallbackOptions)

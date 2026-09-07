@@ -4,6 +4,8 @@ import type { AxiosProgressEvent } from 'axios'
 export interface KnowledgeFile {
   id: number
   fileName?: string
+  /** 文档 OSS 地址（与后端 KnowledgeFileVO.fileUrl 对齐，聊天文档 chip 由此取 url） */
+  fileUrl?: string
   fileExt?: string
   fileSize?: number
   /** 可见性：0=私有 1=公有 */
@@ -35,10 +37,11 @@ export interface KnowledgeChunk {
 }
 
 export const knowledgeApi = {
-  /** 文件列表（后端返回分页结构 {list, total}，取 list） */
-  async list(): Promise<KnowledgeFile[]> {
+  /** 文件列表（后端返回分页结构 {list, total}，取 list；pageSize 可选，知识库选择器一次拉全量用） */
+  async list(opts?: { pageSize?: number }): Promise<KnowledgeFile[]> {
     const data = await request.get<{ list: KnowledgeFile[]; total: number }, { list: KnowledgeFile[]; total: number }>(
-      '/admin/knowledge'
+      '/admin/knowledge',
+      opts?.pageSize ? { params: { pageNum: 1, pageSize: opts.pageSize } } : undefined
     )
     return data.list ?? []
   },

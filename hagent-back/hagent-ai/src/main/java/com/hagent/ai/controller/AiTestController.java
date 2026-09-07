@@ -1,5 +1,6 @@
 package com.hagent.ai.controller;
 
+import com.hagent.ai.core.OpenCodeGatewayHeaders;
 import com.hagent.common.Result;
 import com.hagent.common.annotation.RateLimit;
 import io.swagger.v3.oas.annotations.Operation;
@@ -54,10 +55,11 @@ public class AiTestController {
             return Result.error(400, "缺少必要参数");
         }
         try {
-            OpenAiChatOptions options = OpenAiChatOptions.builder()
+            // 连接测试同样注入网关会话头（测试目标为 opencode 网关时缺失会 400；其他供应商忽略未知头无副作用） @author H
+            OpenAiChatOptions options = OpenCodeGatewayHeaders.applyTo(OpenAiChatOptions.builder()
                     .apiKey(request.getApiKey())
                     .baseUrl(request.getBaseUrl())
-                    .model(request.getModel())
+                    .model(request.getModel()), null)
                     .build();
             OpenAiChatModel model = OpenAiChatModel.builder().options(options).build();
             ChatResponse response = model.call(new Prompt("你好"));

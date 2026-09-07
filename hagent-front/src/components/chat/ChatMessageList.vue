@@ -8,21 +8,93 @@
         知识库问答 · 数据洞察 · 工具编排 —— 每一次回答都有据可循
       </p>
 
-      <div class="welcome__input-wrap">
-        <textarea
-          ref="heroInputRef"
-          v-model="draft"
-          class="welcome-input"
-          rows="1"
-          placeholder="输入你的问题，Enter 发送…"
-          @compositionstart="composing = true"
-          @compositionend="composing = false"
-          @keydown.enter.exact.prevent="onHeroEnter"
-          @input="autoResize"
-        ></textarea>
-        <button class="welcome-send" type="button" :disabled="!draft.trim()" @click="submitDraft">
-          发送
-        </button>
+      <!-- hero 附件：图片 chips 条（输入框上方）+ 回形针入口，与 ChatInputBar 同款交互 -->
+      <div class="welcome__compose">
+        <div v-if="images.length > 0 || docUploads.length > 0 || docs.length > 0" class="attach-chips">
+          <div v-for="(img, idx) in images" :key="img.id" class="attach-chip">
+            <img class="attach-chip__thumb" :src="img.dataUrl" :alt="img.name" />
+            <span class="attach-chip__name" :title="img.name">{{ img.name }}</span>
+            <button
+              type="button"
+              class="attach-chip__remove"
+              :aria-label="`移除图片 ${img.name}`"
+              @click="removeImage(idx)"
+            >×</button>
+          </div>
+          <div v-for="doc in docUploads" :key="doc.id" class="attach-chip attach-chip--doc" role="status">
+            <svg class="attach-chip__doc-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+              <path d="M14 2v6h6" />
+            </svg>
+            <span class="attach-chip__name" :title="doc.name">{{ doc.name }}</span>
+            <span class="attach-chip__progress">{{ doc.percent }}%</span>
+          </div>
+          <!-- 文档成功态 chip：已入库并向量化，随消息发送；点 × 仅移除本地 chip，知识库条目保留 -->
+          <div v-for="(doc, idx) in docs" :key="doc.id" class="attach-chip attach-chip--doc">
+            <svg class="attach-chip__doc-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+              <path d="M14 2v6h6" />
+            </svg>
+            <span class="attach-chip__name" :title="doc.name">{{ doc.name }}</span>
+            <button
+              type="button"
+              class="attach-chip__remove"
+              :title="`移除 ${doc.name}（仅移除卡片，知识库文件保留）`"
+              :aria-label="`移除文档 ${doc.name}（仅移除卡片，知识库文件保留）`"
+              @click="removeDoc(idx)"
+            >×</button>
+          </div>
+        </div>
+        <div class="welcome__input-wrap">
+          <textarea
+            ref="heroInputRef"
+            v-model="draft"
+            class="welcome-input"
+            rows="1"
+            placeholder="输入你的问题，Enter 发送…"
+            @compositionstart="composing = true"
+            @compositionend="composing = false"
+            @keydown.enter.exact.prevent="onHeroEnter"
+            @input="autoResize"
+          ></textarea>
+          <!-- 附件入口：点击弹二选一菜单（上传文件 / 从知识库选择），访客菜单仅上传项走登录引导 -->
+          <span class="attach-anchor">
+            <button
+              type="button"
+              class="attach-btn"
+              :class="{ 'is-loading': docUploading }"
+              :title="docUploading ? `正在上传 ${docUploads[0].name} ${docUploads[0].percent}%` : '添加图片或文档'"
+              :aria-label="docUploading ? '文档上传中' : '添加图片或文档'"
+              :aria-haspopup="true"
+              :aria-expanded="attachMenuOpen"
+              @click="attachMenuOpen = !attachMenuOpen"
+            >
+              <svg v-if="!docUploading" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+              </svg>
+              <span v-else class="attach-btn__spinner" aria-hidden="true"></span>
+            </button>
+            <AttachMenu
+              v-if="attachMenuOpen"
+              :guest="guest"
+              @upload="onMenuUpload"
+              @knowledge="onMenuKnowledge"
+              @close="attachMenuOpen = false"
+            />
+          </span>
+          <!-- 隐藏文件选择器：accept 与 ChatInputBar 一致（图片 / 知识库文档） -->
+          <input
+            ref="fileInputRef"
+            type="file"
+            class="attach-input"
+            multiple
+            accept="image/*,.md,.txt,.pdf,.doc,.docx"
+            @change="onFilesPicked"
+          />
+          <button class="welcome-send" type="button" :disabled="!draft.trim() || imageUploading" :title="imageUploading ? imageUploadStatus : '发送'" @click="submitDraft">
+            {{ imageUploading ? '上传中' : '发送' }}
+          </button>
+        </div>
       </div>
 
       <p class="welcome__hint">Enter 发送 · Shift + Enter 换行</p>
@@ -43,20 +115,69 @@
           class="msg-row fade-up"
           :class="m.role === 'user' ? 'msg-row--user' : 'msg-row--ai'"
         >
-          <!-- 用户消息：右侧气泡 -->
-          <template v-if="m.role === 'user' && m.content">
+          <!-- 用户消息：右侧气泡（文档卡片行与图片缩略图行在文字上方，文档卡片有 url 时新窗口打开） -->
+          <template v-if="m.role === 'user' && (m.content || m.images?.length || m.docs?.length)">
             <div class="user-row">
-              <div class="user-bubble">{{ m.content }}</div>
-              <button
-                class="user-copy"
-                :class="{ 'user-copy--done': copiedId === String(m.id) }"
-                type="button"
-                :disabled="!m.content"
-                :title="copiedId === String(m.id) ? '已复制' : '复制'"
-                @click="copyMessageContent(m)"
-              >
-                <n-icon :component="copiedId === String(m.id) ? CheckOutlined : CopyOutlined" />
-              </button>
+              <div class="user-bubble">
+                <!-- 文档卡片行：对标豆包样式（左彩色图标 + 文件名截断 + 类型·大小副标题） -->
+                <div v-if="m.docs?.length" class="user-bubble__docs">
+                  <a
+                    v-for="(doc, i) in m.docs"
+                    :key="i"
+                    class="doc-card"
+                    :href="doc.url || undefined"
+                    :target="doc.url ? '_blank' : undefined"
+                    :rel="doc.url ? 'noopener noreferrer' : undefined"
+                    :title="doc.url ? `${doc.name}（新窗口打开）` : doc.name"
+                  >
+                    <span class="doc-card__icon" aria-hidden="true">
+                      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                        <path d="M14 2v6h6" />
+                      </svg>
+                      <span class="doc-card__ext">{{ docExtLabel(doc.name) }}</span>
+                    </span>
+                    <span class="doc-card__body">
+                      <span class="doc-card__name">{{ doc.name }}</span>
+                      <span class="doc-card__meta">{{ docTypeLabel(doc.name) }}<template v-if="doc.size"> · {{ formatDocSize(doc.size) }}</template></span>
+                    </span>
+                  </a>
+                </div>
+                <div v-if="m.images?.length" class="user-bubble__images">
+                  <img
+                    v-for="(img, i) in m.images"
+                    :key="i"
+                    class="user-bubble__img"
+                    :src="img.url"
+                    :alt="img.name || '图片'"
+                    @click="openImagePreview(img.url)"
+                  />
+                </div>
+                <div v-if="m.content" class="user-bubble__text">{{ m.content }}</div>
+              </div>
+              <!-- hover 操作区：编辑重发（仅已落库带 DB id 的消息）+ 复制，并排淡入 -->
+              <div class="user-actions">
+                <button
+                  v-if="canEditMessage(m)"
+                  class="user-copy user-edit"
+                  type="button"
+                  title="编辑重发"
+                  aria-label="编辑重发"
+                  @click="emit('edit', m)"
+                >
+                  <n-icon :component="EditOutlined" />
+                </button>
+                <button
+                  class="user-copy"
+                  :class="{ 'user-copy--done': copiedId === String(m.id) }"
+                  type="button"
+                  :disabled="!m.content"
+                  :title="copiedId === String(m.id) ? '已复制' : '复制'"
+                  @click="copyMessageContent(m)"
+                >
+                  <n-icon :component="copiedId === String(m.id) ? CheckOutlined : CopyOutlined" />
+                </button>
+              </div>
             </div>
           </template>
 
@@ -107,7 +228,7 @@
             ></div>
 
             <!-- 溯源聚合胶囊（风格：紧凑 pill 排列于搜索块底部，点击打开抽屉） -->
-            <!-- 复制回答与引用胶囊同行：无 sources 时仅渲染复制按钮，保证总有入口 -->
+            <!-- 复制回答 / 重新生成 / 引用胶囊同行：无 sources 时仅渲染复制按钮，保证总有入口 -->
             <div class="source-pill-bar">
               <button
                 class="ai-copy"
@@ -118,6 +239,17 @@
                 @click="copyMessageContent(m)"
               >
                 {{ copiedId === String(m.id) ? '已复制 ✓' : '复制回答' }}
+              </button>
+              <!-- 重新生成：仅最后一条 AI 回复且非流式时可见（访客/演示会话隐藏，由 useChat 守卫兜底） -->
+              <button
+                v-if="canRegenerate(m)"
+                class="ai-copy regen-btn"
+                type="button"
+                title="重新生成此回复"
+                @click="emit('regenerate')"
+              >
+                <n-icon :component="RedoOutlined" class="regen-btn__icon" />
+                重新生成
               </button>
               <button
                 v-if="m.sources?.length"
@@ -145,6 +277,19 @@
         <!-- 已移除独立“AI 思考中”占位（3 绿点），由上方 thinking-block 统一承载，避免视觉跳变 -->
       </div>
     </template>
+
+    <!-- 知识库选择器（hero 路径）：多选后映射为文档成功态 chips，随消息发送 -->
+    <KnowledgePickerModal
+      :visible="kbPickerOpen"
+      @close="kbPickerOpen = false"
+      @confirm="onKbConfirm"
+    />
+
+    <!-- 图片放大预览遮罩：点击遮罩或关闭按钮退出 -->
+    <div v-if="previewUrl" class="img-preview-mask" role="dialog" aria-label="图片预览" @click="closeImagePreview">
+      <img class="img-preview__img" :src="previewUrl" alt="图片预览" @click.stop />
+      <button type="button" class="img-preview__close" aria-label="关闭预览" @click.stop="closeImagePreview">×</button>
+    </div>
 
     <!-- 溯源抽屉 -->
     <SourceDrawer
@@ -181,9 +326,15 @@
 import { nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { NIcon, useMessage } from 'naive-ui'
-import { FileTextOutlined, RightOutlined, CopyOutlined, CheckOutlined } from '@vicons/antd'
+import { FileTextOutlined, RightOutlined, CopyOutlined, CheckOutlined, EditOutlined, RedoOutlined } from '@vicons/antd'
 import { renderMarkdown } from '@/utils/markdown'
 import type { UiChatMessage, ChatSource } from '@/composables/useChat'
+import type { ChatAttachment } from '@/api/chat'
+import type { KnowledgeFile } from '@/api/knowledge'
+import { useChatAttachments } from '@/composables/useChatAttachments'
+import { docTypeLabel, docExtLabel, formatDocSize } from '@/utils/chatAttachments'
+import AttachMenu from '@/components/chat/AttachMenu.vue'
+import KnowledgePickerModal from '@/components/chat/KnowledgePickerModal.vue'
 import SourceDrawer from '@/components/chat/SourceDrawer.vue'
 
 const props = withDefaults(
@@ -202,19 +353,78 @@ const props = withDefaults(
 )
 
 const emit = defineEmits<{
-  (e: 'send', text: string): void
+  (e: 'send', text: string, attachments?: ChatAttachment[]): void
+  (e: 'regenerate'): void
+  (e: 'edit', message: UiChatMessage): void
+  (e: 'login-request'): void
 }>()
+
+/** 重新生成按钮可见性：仅最后一条 AI 回复、非流式、非访客（访客/演示会话由 useChat 守卫兜底拒绝） */
+function canRegenerate(m: UiChatMessage): boolean {
+  return isLastAiMessage(m) && !props.streaming && !props.thinking && !props.guest
+}
+
+/** 编辑按钮可见性：仅带后端 DB id（number）的 USER 消息可编辑，新生成的内存消息需刷新后才有 id */
+function canEditMessage(m: UiChatMessage): boolean {
+  return !props.guest && typeof m.id === 'number'
+}
 
 /* ---------- 草稿与发送（欢迎屏 hero 输入框） ---------- */
 const draft = ref('')
 const heroInputRef = ref<HTMLTextAreaElement | null>(null)
 const composing = ref(false)
 
-function submitDraft() {
+/* ---------- hero 附件：与 ChatInputBar 共用 useChatAttachments（图片 chips 发送前上传 OSS / 文档直接上传知识库，成功态 chip 随消息发送） ---------- */
+const { images, docs, docUploads, docUploading, imageUploading, imageUploadStatus, fileInputRef, onFilesPicked, removeImage, removeDoc, addKnowledgeDocs, clearAttachments, uploadAndBuildAttachments } = useChatAttachments({
+  isGuest: () => props.guest,
+  onGuestAttach: () => emit('login-request'),
+})
+
+/* ---------- 附件来源菜单（hero）：上传文件 / 从知识库选择 ---------- */
+const attachMenuOpen = ref(false)
+const kbPickerOpen = ref(false)
+
+/** 菜单「上传文件」：访客走登录引导（与 ChatInputBar 同语义），已登录打开文件选择器 */
+function onMenuUpload() {
+  attachMenuOpen.value = false
+  if (props.guest) {
+    emit('login-request')
+    return
+  }
+  fileInputRef.value?.click()
+}
+
+/** 菜单「从知识库选择」：打开选择器 modal（访客不可见该菜单项） */
+function onMenuKnowledge() {
+  attachMenuOpen.value = false
+  kbPickerOpen.value = true
+}
+
+/** 选择器确定：选中文件映射为文档成功态 chips（url 取 fileUrl，不再重复上传） */
+function onKbConfirm(files: KnowledgeFile[]) {
+  kbPickerOpen.value = false
+  addKnowledgeDocs(files)
+}
+
+/** 发送（hero）：有图片 chips 时先并发上传 OSS（按钮 loading「图片上传中 x/N」），文档 chips 已在选中时上传知识库；失败中止发送保留 chips 重试 */
+async function submitDraft() {
   const text = draft.value.trim()
-  if (!text || composing.value) return
-  emit('send', text)
+  if (!text || composing.value || imageUploading.value) return
+  let attachments: ChatAttachment[] | undefined
+  try {
+    attachments = await uploadAndBuildAttachments()
+  } catch {
+    // 失败 toast 已由 request 拦截器统一提示；草稿与 chips 保留，支持重试
+    return
+  }
+  // 图片与文档 chips 随消息发送（契约同 ChatInputBar）；清空时机由父组件在 chat.send 成功后调 clearHeroCompose
+  emit('send', text, attachments)
+}
+
+/** 发送成功后由父组件调用：清空 hero 草稿与图片 chips（失败时保留，支持重试） */
+function clearHeroCompose() {
   draft.value = ''
+  clearAttachments()
   const el = heroInputRef.value
   if (el) el.style.height = 'auto'
 }
@@ -644,6 +854,15 @@ function onJumpToSource(source: ChatSource, _idx: number) {
   }
 }
 
+/* ---------- 用户气泡图片放大预览 ---------- */
+const previewUrl = ref('')
+function openImagePreview(url: string) {
+  previewUrl.value = url
+}
+function closeImagePreview() {
+  previewUrl.value = ''
+}
+
 /* ---------- 自动贴底 ---------- */
 const listRef = ref<HTMLElement | null>(null)
 const stickToBottom = ref(true)
@@ -721,7 +940,7 @@ watch(
 
 onMounted(() => scrollToBottom(true))
 
-defineExpose({ scrollToBottom })
+defineExpose({ scrollToBottom, clearHeroCompose })
 </script>
 
 <style scoped>
@@ -834,9 +1053,15 @@ defineExpose({ scrollToBottom })
   color: var(--text-2);
   font-size: var(--text-base);
 }
-.welcome__input-wrap {
+/* hero 附件容器：chips 条 + 输入框纵向排列，宽度与输入框一致 */
+.welcome__compose {
   width: 100%;
   margin-top: var(--space-5);
+  display: flex;
+  flex-direction: column;
+}
+.welcome__input-wrap {
+  width: 100%;
   display: flex;
   align-items: center;
   gap: var(--space-2);
@@ -901,6 +1126,124 @@ defineExpose({ scrollToBottom })
   color: var(--accent);
 }
 
+/* ---------- hero 附件：chip 条与回形针入口（样式与 ChatInputBar 同款，scoped 样式无法跨组件共享故按 token 复制） ---------- */
+.attach-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+.attach-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  max-width: 220px;
+  padding: var(--space-1) var(--space-2);
+  background: var(--bg-hover);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  color: var(--text-1);
+}
+.attach-chip__thumb {
+  width: 28px;
+  height: 28px;
+  object-fit: cover;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.attach-chip__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: none;
+}
+.attach-chip--doc {
+  color: var(--text-2);
+}
+.attach-chip__doc-icon {
+  flex-shrink: 0;
+  color: var(--text-3);
+}
+.attach-chip__progress {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--accent);
+  flex-shrink: 0;
+  user-select: none;
+}
+.attach-chip__remove {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--text-3);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.attach-chip__remove:hover {
+  background: var(--bg-active);
+  color: var(--danger);
+}
+/* 回形针入口：与 ChatInputBar 同款图标按钮，位于发送键左侧 */
+.attach-anchor {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+}
+.attach-btn {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border: none;
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  outline: none;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.attach-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-1);
+}
+.attach-btn.is-loading {
+  cursor: progress;
+  color: var(--accent);
+}
+/* 上传中 spinner：仅 transform 动画 */
+.attach-btn__spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--accent-soft);
+  border-top-color: var(--accent);
+  border-radius: var(--radius-full);
+  animation: attach-spin 0.8s linear infinite;
+}
+@keyframes attach-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+/* 隐藏文件选择器（经回形针按钮触发） */
+.attach-input {
+  display: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .attach-btn__spinner {
+    animation: none;
+  }
+}
+
 /* ---------- 消息流 ---------- */
 .msg-stream {
   max-width: 840px;
@@ -933,16 +1276,165 @@ defineExpose({ scrollToBottom })
   border: 1px solid var(--accent-border);
   color: var(--text-1);
   border-radius: 16px 16px 4px 16px;
-  white-space: pre-wrap;
   word-break: break-word;
   line-height: 1.7;
   font-size: var(--text-base);
 }
-/* 用户气泡复制图标：右下角绝对定位，平时隐藏 hover 淡入，不占布局 */
-.user-copy {
+/* 气泡内缩略图行：文字上方，统一最高 160px 等比，点击放大预览 */
+.user-bubble__images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.user-bubble__images + .user-bubble__text {
+  margin-top: var(--space-2);
+}
+.user-bubble__img {
+  display: block;
+  max-height: 160px;
+  max-width: 220px;
+  object-fit: cover;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--accent-border);
+  cursor: zoom-in;
+  transition: transform var(--dur-fast) var(--ease);
+}
+.user-bubble__img:hover {
+  transform: scale(1.02);
+}
+/* ---------- 气泡内文档卡片行：对标豆包样式（圆角浅底卡片、左彩色图标、文件名截断、类型·大小副标题） ---------- */
+.user-bubble__docs {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.user-bubble__docs + .user-bubble__images,
+.user-bubble__docs + .user-bubble__text {
+  margin-top: var(--space-2);
+}
+.doc-card {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 200px;
+  max-width: 320px;
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  text-decoration: none;
+  color: inherit;
+  transition: border-color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+}
+/* 有 url 的卡片可跳转：hover 轻抬升提示可点击 */
+a.doc-card[href]:hover {
+  border-color: var(--border-strong);
+  transform: translateY(-1px);
+}
+/* 左图标：中性文件轮廓（--text-3 单色，不按类型染色——文件类型千千万颜色映射表永远不全），下方小号扩展名标注 */
+.doc-card__icon {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-hover);
+  color: var(--text-3);
+  flex-shrink: 0;
+}
+.doc-card__ext {
+  max-width: 32px;
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.doc-card__body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.doc-card__name {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.doc-card__meta {
+  font-size: var(--text-xs);
+  color: var(--text-3);
+  white-space: nowrap;
+}
+.user-bubble__text {
+  white-space: pre-wrap;
+}
+/* 图片放大预览遮罩：全屏半透明黑底居中大图 */
+.img-preview-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 23, 42, 0.72);
+  padding: var(--space-6);
+}
+.img-preview__img {
+  max-width: min(90vw, 960px);
+  max-height: 86vh;
+  object-fit: contain;
+  border-radius: var(--radius-sm);
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.4);
+}
+.img-preview__close {
+  position: absolute;
+  top: var(--space-4);
+  right: var(--space-4);
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: var(--radius-full);
+  background: rgba(15, 23, 42, 0.5);
+  color: #fff;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease);
+}
+.img-preview__close:hover {
+  background: rgba(15, 23, 42, 0.75);
+}
+/* 用户气泡操作区（编辑+复制）：右下角绝对定位，平时隐藏 hover 淡入，不占布局 */
+.user-actions {
   position: absolute;
   right: 2px;
   top: calc(100% + 4px);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+.user-row:hover .user-actions,
+.user-row:focus-within .user-actions {
+  opacity: 1;
+}
+/* 复制后保持操作区可见，让“已复制”状态可感知 */
+.user-row:has(.user-copy--done) .user-actions {
+  opacity: 1;
+}
+.user-copy {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -956,11 +1448,7 @@ defineExpose({ scrollToBottom })
   font-size: 16px;
   line-height: 1;
   cursor: pointer;
-  opacity: 0;
-  transition: opacity var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
-}
-.user-row:hover .user-copy {
-  opacity: 1;
+  transition: color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
 }
 .user-copy:hover {
   color: var(--accent);
@@ -971,18 +1459,16 @@ defineExpose({ scrollToBottom })
   opacity: 0;
 }
 .user-copy:focus-visible {
-  opacity: 1;
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 .user-copy--done {
-  opacity: 1;
   color: var(--accent);
   border-color: var(--accent-border);
 }
-/* 触屏无 hover 时常显弱化按钮 */
+/* 触屏无 hover 时常显弱化操作区 */
 @media (hover: none) {
-  .user-copy {
+  .user-actions {
     opacity: 0.45;
   }
   .user-copy:disabled {
@@ -1364,6 +1850,11 @@ defineExpose({ scrollToBottom })
 .ai-copy--done {
   color: var(--accent);
   border-color: var(--accent-border);
+}
+/* 重新生成按钮图标：与复制回答同风格 pill 内联小图标 */
+.regen-btn__icon {
+  font-size: 13px;
+  margin-right: 4px;
 }
 [data-theme='dark'] .ai-copy:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.06);

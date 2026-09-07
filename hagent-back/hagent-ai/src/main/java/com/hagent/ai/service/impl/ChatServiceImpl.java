@@ -9,12 +9,14 @@ import com.hagent.ai.core.ChatPromptHolder;
 import com.hagent.ai.core.ContextTokenEstimator;
 import com.hagent.ai.core.ConversationTitleService;
 import com.hagent.ai.core.ModelRouter;
+import com.hagent.ai.core.OpenCodeGatewayHeaders;
 import com.hagent.ai.core.RagService;
 import com.hagent.ai.core.ThinkingStageSupport;
 import com.hagent.ai.core.UserContextHolder;
 import com.hagent.ai.mapper.ChatMessageMapper;
 import com.hagent.ai.mcp.AnalyzeImageTool;
 import com.hagent.ai.memory.ConversationMemoryService;
+import com.hagent.ai.model.dto.AttachmentDTO;
 import com.hagent.ai.model.dto.ChatRequest;
 import com.hagent.ai.model.entity.ChatConversation;
 import com.hagent.ai.model.entity.ChatMessage;
@@ -39,22 +41,28 @@ import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.content.Media;
 import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.support.ToolCallbacks;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.context.annotation.Lazy;
+import org.springframework.core.io.ByteArrayResource;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Service;
+import org.springframework.util.MimeType;
 import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.FluxSink;
 import reactor.core.scheduler.Schedulers;
 
+import java.net.URI;
+import java.net.URLConnection;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -62,6 +70,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * 聊天服务实现（编排层）
@@ -138,6 +148,19 @@ public class ChatServiceImpl implements ChatService {
 
     /** 取消词 */
     private static final String[] CANCEL_WORDS = {"取消", "不", "不用", "算了", "no", "No", "放弃", "停止"};
+
+    /** 附件图片单张 token 估算口径：每张固定 1000 token，并入 system 段（实现最简，不新增 SSE breakdown 字段，事件协议不变） */
+    private static final int IMAGE_TOKENS_PER_ATTACHMENT = 1000;
+
+    /** data URL 的 base64 数据段标记（附件图片解析用） */
+    private static final String BASE64_MARKER = ";base64,";
+
+    /**
+     * 当轮用户消息中 [文档：name|fileId] 新格式留痕标记识别正则（group(1)=文件名, group(2)=知识库文件ID）；
+     * 新格式由 buildDocumentMarkers 生成（document 附件带 fileId 时），旧格式 [文档：name] 无 fileId 不匹配
+     */
+    private static final Pattern DOC_MARKER_WITH_FILE_ID_PATTERN =
+            Pattern.compile("\\[文档：([^\\]\\n|]+)\\|(\\d+)\\]");
 
     /**
      * 构造方法：注入聊天依赖并统一注册工具回调
@@ -255,6 +278,16 @@ public class ChatServiceImpl implements ChatService {
      * @return SSE流式响应
      */
     private Flux<String> doChat(Long userId, ChatRequest request, String defaultSystemPrompt) {
+        // 0. 重新生成/编辑重发前置校验：两者互斥且必须基于已保存的会话（访客/无会话拒绝；
+        // HTTP 入口已由 @ValidRegenerateOrEdit 类级校验返回 400，此处兜底服务层直调场景） @author H
+        boolean regenerateOp = Boolean.TRUE.equals(request.getRegenerate());
+        boolean editOp = request.getEditMessageId() != null;
+        if ((regenerateOp || editOp) && (userId == null || request.getConversationId() == null)) {
+            log.warn("重新生成/编辑重发被拒绝（需要已保存的会话）: userId={}, conversationId={}, regenerate={}, editMessageId={}",
+                    userId, request.getConversationId(), request.getRegenerate(), request.getEditMessageId());
+            return Flux.just(wrapError("该操作需要已保存的会话"), "[DONE]");
+        }
+
         // 1. 获取或创建会话（访客匿名模式：userId为空时不落库，使用内存临时会话）
         Long conversationId = request.getConversationId();
         ChatConversation conversation;
@@ -282,13 +315,68 @@ public class ChatServiceImpl implements ChatService {
             return Flux.just(wrapError("会话创建失败"));
         }
 
+        // 1.5 重新生成/编辑重发语义处理（在 USER 落库之前分支，后续 RAG/工具/流式/落库走既有流程不动）；
+        // 软删走 MyBatis-Plus 逻辑删除（chat_message.deleted @TableLogic，不手写 UPDATE），
+        // 滑窗与上下文估算的历史查询自动过滤 deleted=0，软删后的状态自然生效，无需额外处理 @author H
+        boolean skipUserPersist = false;
+        if (regenerateOp) {
+            // 重新生成：忽略请求 message 文本，重用该会话最后一条未删除 USER 消息作为本轮输入
+            ChatMessage lastUser = chatMessageMapper.selectOne(
+                    new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<ChatMessage>()
+                            .eq(ChatMessage::getConversationId, conversationId)
+                            .eq(ChatMessage::getRole, MessageRoleEnum.USER.getCode())
+                            .orderByDesc(ChatMessage::getId)
+                            .last("LIMIT 1"));
+            if (lastUser == null) {
+                log.warn("重新生成被拒绝（会话中无可复用的用户提问）: userId={}, conversationId={}",
+                        userId, conversationId);
+                return Flux.just(wrapError("会话中没有可重新生成的提问"), "[DONE]");
+            }
+            // 软删该 USER 之后最后一条 ASSISTANT 回复（deleteById 走 @TableLogic 逻辑删除）
+            ChatMessage lastAssistant = chatMessageMapper.selectOne(
+                    new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<ChatMessage>()
+                            .eq(ChatMessage::getConversationId, conversationId)
+                            .eq(ChatMessage::getRole, MessageRoleEnum.ASSISTANT.getCode())
+                            .gt(ChatMessage::getId, lastUser.getId())
+                            .orderByDesc(ChatMessage::getId)
+                            .last("LIMIT 1"));
+            if (lastAssistant != null) {
+                chatMessageMapper.deleteById(lastAssistant.getId());
+            }
+            log.info("回答重新生成: conversationId={}, 复用用户消息ID={}, 软删助手消息ID={}",
+                    conversationId, lastUser.getId(), lastAssistant != null ? lastAssistant.getId() : null);
+            // 以该 USER 内容作为本轮输入，不新增 USER 落库
+            request.setMessage(lastUser.getContent());
+            skipUserPersist = true;
+        } else if (editOp) {
+            // 编辑重发：校验目标消息存在、属于本会话且为 USER 角色（selectById 已自动滤 deleted=0）
+            ChatMessage editMsg = chatMessageMapper.selectById(request.getEditMessageId());
+            if (editMsg == null || !conversationId.equals(editMsg.getConversationId())
+                    || !MessageRoleEnum.USER.getCode().equals(editMsg.getRole())) {
+                log.warn("编辑重发被拒绝（消息不存在/不属于本会话/非用户消息）: userId={}, conversationId={}, editMessageId={}",
+                        userId, conversationId, request.getEditMessageId());
+                return Flux.just(wrapError("原始消息不存在或不可编辑"), "[DONE]");
+            }
+            // 软删该消息及其后所有消息（同会话 id >= editMessageId，逻辑删除不手写 UPDATE）
+            chatMessageMapper.delete(
+                    new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<ChatMessage>()
+                            .eq(ChatMessage::getConversationId, conversationId)
+                            .ge(ChatMessage::getId, request.getEditMessageId()));
+            log.info("编辑重发: conversationId={}, editMessageId={}, 该消息及其后消息已软删，以新文本重新提问",
+                    conversationId, request.getEditMessageId());
+        }
+
         final Long finalConversationId = conversationId;
         log.info("聊天请求: userId={}, conversationId={}, message={}",
                 userId, finalConversationId, request.getMessage());
 
-        // 2. 保存用户消息（访客模式跳过持久化）
-        if (userId != null) {
-            saveMessage(finalConversationId, MessageRoleEnum.USER.getCode(), request.getMessage(), null);
+        // 2. 保存用户消息（访客模式跳过持久化；重新生成分支重用历史 USER，不新增落库）；
+        // 带附件时落库内容末尾追加图片占位标记（不加 DB 列，历史可见），
+        // 并记录消息 ID 供后续组装时识别当轮新消息（构建含 Media 的多模态 UserMessage）
+        Long currentUserMessageId = null;
+        if (userId != null && !skipUserPersist) {
+            currentUserMessageId = saveMessage(finalConversationId, MessageRoleEnum.USER.getCode(),
+                    buildUserMessageContent(request), null);
         }
 
         // 3. 首条消息自动生成标题：先以截断占位（列表立即可见），回答完成后由 ConversationTitleService 异步 LLM 生成
@@ -368,6 +456,10 @@ public class ChatServiceImpl implements ChatService {
             if (conversation != null && conversation.getSystemPrompt() != null && !conversation.getSystemPrompt().isBlank()) {
                 systemPrompt += "\n\n附加上下文: " + conversation.getSystemPrompt();
             }
+            // 5.1 知识库文件精确引用注入：当轮用户消息含 [文档：name|fileId] 新格式标记时，在系统提示追加指引，
+            // 提示模型检索该文件内容时使用 searchKnowledge 的 fileId 参数精确锁定（检索层仅向量通道按 file_id 过滤），
+            // 不再依赖文件名语义检索；置于 systemPrompt 拼装处，工具阶段与流式阶段共用同一消息列表 @author H
+            systemPrompt += buildReferencedFilePrompt(request);
 
             // 6. 构建消息历史（摘要 + 滑窗：首条为 running summary 系统消息，不计轮数；
             // 随后为最近 keepTurns 轮 DB 原文；访客模式无历史）
@@ -391,6 +483,7 @@ public class ChatServiceImpl implements ChatService {
             messages.add(new SystemMessage(systemPrompt));
 
             // 6.2 最近 keepTurns 轮整轮保留：DB 查询最近 keepTurns*2 条
+            // （实体 @TableLogic 逻辑删除使查询自动滤 deleted=0，重新生成/编辑重发软删的消息不会进入滑窗与上下文估算） @author H
             int keepTurns = resolveKeepTurns();
             int historyLimit = Math.max(2, keepTurns * 2);
             List<ChatMessage> history = finalConversationId == null
@@ -403,6 +496,12 @@ public class ChatServiceImpl implements ChatService {
             // 反转为时间正序
             java.util.Collections.reverse(history);
 
+            // 当轮新消息带图片附件：按落库消息 ID 精确识别，组装含 Media 的多模态 UserMessage；
+            // 仅 image 类型进 Media（document 走知识库 RAG 通道，仅落库留痕标记，不进多模态）；
+            // 仅对当轮新消息生效，历史消息无附件不处理（历史里只有落库的占位标记文本）
+            boolean hasImageAttachments = request.getAttachments() != null && request.getAttachments().stream()
+                    .anyMatch(a -> a != null && AttachmentDTO.TYPE_IMAGE.equals(a.getType()));
+
             for (ChatMessage msg : history) {
                 MessageRoleEnum roleEnum = MessageRoleEnum.fromCode(msg.getRole());
                 if (roleEnum == null) {
@@ -413,7 +512,17 @@ public class ChatServiceImpl implements ChatService {
                     continue;
                 }
                 switch (roleEnum) {
-                    case USER -> messages.add(new UserMessage(msg.getContent()));
+                    case USER -> {
+                        if (hasImageAttachments && currentUserMessageId != null
+                                && currentUserMessageId.equals(msg.getId())) {
+                            // 当轮文本追加文档留痕标记：document 不进 Media，模型通过消息文本里的 [文档：name](url) 标记感知
+                            messages.add(buildMediaUserMessage(
+                                    request.getMessage() + buildDocumentMarkers(request.getAttachments()),
+                                    request.getAttachments()));
+                        } else {
+                            messages.add(new UserMessage(msg.getContent()));
+                        }
+                    }
                     case ASSISTANT -> messages.add(new AssistantMessage(msg.getContent()));
                     case SYSTEM -> messages.add(new SystemMessage(msg.getContent()));
                     default -> {
@@ -436,10 +545,11 @@ public class ChatServiceImpl implements ChatService {
                 return Flux.just(wrapError("AI服务配置异常，请稍后重试"));
             }
             OpenAiChatOptions baseOptions = openAiChatModel.getOptions();
-            OpenAiChatOptions toolOptions = OpenAiChatOptions.builder()
+            // 阶段1工具调用 Options 注入 opencode 网关会话头（缺失返回 400，会话级稳定ID） @author H
+            OpenAiChatOptions toolOptions = OpenCodeGatewayHeaders.applyTo(OpenAiChatOptions.builder()
                     .apiKey(baseOptions.getApiKey())
                     .baseUrl(baseOptions.getBaseUrl())
-                    .model(baseOptions.getModel())
+                    .model(baseOptions.getModel()), finalConversationId)
                     .toolCallbacks(unifiedToolCallbacks)
                     .build();
 
@@ -449,14 +559,22 @@ public class ChatServiceImpl implements ChatService {
             final List<Map<String, Object>> sourcesAccum = new ArrayList<>();
 
             // 9. 阶段2：构建不带工具回调的流式Options，避免流式阶段触发工具调用导致空文本（降级时按模型重建）
-            OpenAiChatOptions streamOptions = OpenAiChatOptions.builder()
+            // 阶段2流式 Options 同样注入会话头（流式请求与工具阶段同一网关强制校验） @author H
+            OpenAiChatOptions streamOptions = OpenCodeGatewayHeaders.applyTo(OpenAiChatOptions.builder()
                     .apiKey(baseOptions.getApiKey())
                     .baseUrl(baseOptions.getBaseUrl())
-                    .model(baseOptions.getModel())
+                    .model(baseOptions.getModel()), finalConversationId)
                     .build();
 
-            // 上下文 token 首值估算：与历史打开接口共用 estimateSnapshot 同一代码路径，不允许两套算法分叉 @author H
-            ContextUsageSnapshot snapshot = estimateSnapshot(systemPrompt, conversation, history);
+            // 上下文 token 首值估算：与历史打开接口共用 estimateSnapshot 同一代码路径，不允许两套算法分叉；
+            // 当轮附件图片按每张固定 1000 token 计入 system 段（口径见 IMAGE_TOKENS_PER_ATTACHMENT）；
+            // 仅统计 image 类型：document 走知识库 RAG 通道，不占视觉 token @author H
+            int imageCount = hasImageAttachments
+                    ? (int) request.getAttachments().stream()
+                            .filter(a -> a != null && AttachmentDTO.TYPE_IMAGE.equals(a.getType()))
+                            .count()
+                    : 0;
+            ContextUsageSnapshot snapshot = estimateSnapshot(systemPrompt, conversation, history, imageCount);
             int systemTokens = snapshot.getBreakdown().getSystem();
             int summaryTokens = snapshot.getBreakdown().getSummary();
             int historyTokens = snapshot.getBreakdown().getHistory();
@@ -842,10 +960,13 @@ public class ChatServiceImpl implements ChatService {
         OpenAiChatOptions curOptions;
         if (current instanceof OpenAiChatModel openAiChatModel) {
             OpenAiChatOptions base = openAiChatModel.getOptions();
+            // 降级重建 Options 时透传基准流式 Options 的网关会话头（每级降级都必须携带，缺失 400；
+            // 经基准 Options 数据流传递而非 ThreadLocal，保证 reactor 递归线程中会话级 ID 不退化） @author H
             curOptions = OpenAiChatOptions.builder()
                     .apiKey(base.getApiKey())
                     .baseUrl(base.getBaseUrl())
                     .model(base.getModel())
+                    .customHeaders(baseStreamOptions.getCustomHeaders())
                     .build();
         } else {
             curOptions = baseStreamOptions;
@@ -900,7 +1021,8 @@ public class ChatServiceImpl implements ChatService {
                         .last("LIMIT " + historyLimit));
         java.util.Collections.reverse(history);
         // 历史页快照审计：只读现算结果落一行日志，逻辑与返回值不动 @author H
-        ContextUsageSnapshot initialSnapshot = estimateSnapshot(systemPrompt, conversation, history);
+        // 历史页无当轮附件，图片数固定传 0
+        ContextUsageSnapshot initialSnapshot = estimateSnapshot(systemPrompt, conversation, history, 0);
         log.info("历史页快照: conversationId={}, promptTokens={}, percent={}, msgCount={}",
                 conversationId, initialSnapshot.getPromptTokens(), initialSnapshot.getPercent(),
                 history != null ? history.size() : 0);
@@ -909,18 +1031,22 @@ public class ChatServiceImpl implements ChatService {
 
     /**
      * 上下文首值估算核心（展示用初筛，经 meta 事件透出；不影响模型调用与累计口径）
-     * system 段 = 默认提示词 + 自定义 systemPrompt；summary 段 = 会话摘要正文 summaryText；
+     * system 段 = 默认提示词 + 自定义 systemPrompt + 附件图片固定 token（每张 1000，口径见 IMAGE_TOKENS_PER_ATTACHMENT，
+     * 并入 system 段为实现最简方案，不新增 SSE breakdown 字段，事件协议不变）；summary 段 = 会话摘要正文 summaryText；
      * history 段 = DB 历史原文求和；rag 段 = 工具 schema 占位（source 到达后二次修正）
      *
      * @param systemPrompt 已拼装的系统提示词（默认加自定义）
      * @param conversation 会话实体（取摘要正文，可空）
-     * @param history DB 历史消息（取内容原文，可空）
+     * @param history      DB 历史消息（取内容原文，可空）
+     * @param imageCount   当轮附件图片张数（历史页等无附件场景传 0）
      * @return 上下文用量快照
      * @author H
      */
     private ContextUsageSnapshot estimateSnapshot(String systemPrompt, ChatConversation conversation,
-                                                  List<ChatMessage> history) {
-        int systemTokens = ContextTokenEstimator.estimate(systemPrompt);
+                                                  List<ChatMessage> history, int imageCount) {
+        // 附件图片口径：每张固定按 1000 token 计入 system 段（多模态图片无字符数可估，取业界常用固定值）
+        int imageTokens = imageCount * IMAGE_TOKENS_PER_ATTACHMENT;
+        int systemTokens = ContextTokenEstimator.estimate(systemPrompt) + imageTokens;
         String summaryTextForTokens = (conversation != null && conversation.getSummaryText() != null
                 && !conversation.getSummaryText().isBlank()) ? conversation.getSummaryText() : null;
         int summaryTokens = ContextTokenEstimator.estimate(summaryTextForTokens);
@@ -988,10 +1114,10 @@ public class ChatServiceImpl implements ChatService {
         }
         int systemChars = systemPrompt != null ? systemPrompt.length() : 0;
         int summaryChars = summaryTextForTokens != null ? summaryTextForTokens.length() : 0;
-        log.info("上下文估算: conversationId={}, promptTokens={}, contextWindow={}, percent={}, breakdown(history={}, summary={}, rag={}, system={}), msgCount={}, historyChars={}, systemChars={}, summaryChars={}, ragPlaceholder={}",
+        log.info("上下文估算: conversationId={}, promptTokens={}, contextWindow={}, percent={}, breakdown(history={}, summary={}, rag={}, system={}), msgCount={}, historyChars={}, systemChars={}, summaryChars={}, ragPlaceholder={}, images={}",
                 logConversationId, promptTokens, contextWindow, percent,
                 historyTokens, summaryTokens, ragTokens, systemTokens,
-                historyParts.size(), historyChars, systemChars, summaryChars, ragPlaceholder);
+                historyParts.size(), historyChars, systemChars, summaryChars, ragPlaceholder, imageCount);
         return ContextUsageSnapshot.of(promptTokens, contextWindow, percent,
                 historyTokens, summaryTokens, ragTokens, systemTokens);
     }
@@ -1299,16 +1425,198 @@ public class ChatServiceImpl implements ChatService {
     }
 
     /**
+     * 构建用户消息落库内容：带附件时末尾追加标记（不加 DB 列，历史与前端回显可见）
+     * 图片（既有逻辑不动）：URL 形态逐张追加 ![图片](url) markdown；纯 base64 无 URL 时维持（附图片 N 张）文字标记；
+     * 文档：逐个追加 [文档：name](url) 留痕标记（与前端历史解析契约锁死，前端按该格式精确匹配），
+     * 排在图片 markdown 之后；无 url 时退化为 [文档：name]
+     *
+     * @param request 聊天请求
+     * @return 落库内容（无附件时为原始消息原文）
+     * @author H
+     */
+    private String buildUserMessageContent(ChatRequest request) {
+        List<AttachmentDTO> attachments = request.getAttachments();
+        if (attachments == null || attachments.isEmpty()) {
+            return request.getMessage();
+        }
+        // 图片附件（既有口径不变）：收集 URL 形态（base64 形态无 URL，不产生 markdown）
+        List<AttachmentDTO> images = attachments.stream()
+                .filter(a -> a != null && AttachmentDTO.TYPE_IMAGE.equals(a.getType()))
+                .toList();
+        List<String> imageUrls = images.stream()
+                .map(AttachmentDTO::getDataUrl)
+                .filter(url -> url != null && (url.startsWith("http://") || url.startsWith("https://")))
+                .toList();
+        StringBuilder content = new StringBuilder(request.getMessage());
+        if (!imageUrls.isEmpty()) {
+            // URL 形态图片逐张追加 markdown（历史与前端可直接回显）
+            for (String url : imageUrls) {
+                content.append("\n![图片](").append(url).append(")");
+            }
+        } else if (!images.isEmpty()) {
+            // 纯 base64 图片无 URL，维持文字占位（仅统计图片，文档不占视觉口径）
+            content.append("（附图片 ").append(images.size()).append(" 张）");
+        }
+        // 文档留痕标记排在图片 markdown 之后（与前端解析顺序契约一致）
+        content.append(buildDocumentMarkers(attachments));
+        return content.toString();
+    }
+
+    /**
+     * 构建文档附件留痕标记后缀（当轮模型文本与落库内容共用，保证两处格式一致）
+     * 与前端历史解析契约锁死，新旧两格式均合法：
+     * ① 新格式（document 附件带 fileId）："\n[文档：name|fileId](url)"，无 url 退化为 "\n[文档：name|fileId]"；
+     * ② 旧格式（无 fileId，历史消息/旧前端兼容）："\n[文档：name](url)"，无 url 退化为 "\n[文档：name]"；
+     * 新格式供模型经 searchKnowledge 的 fileId 参数精确锁定检索（见 buildReferencedFilePrompt 注入指引），
+     * 文档已在上传时入知识库并向量化，消息侧仅留痕，模型经知识库 RAG 通道感知内容
+     *
+     * @param attachments 附件列表
+     * @return 文档标记串（无文档附件时为空串）
+     * @author H
+     */
+    private String buildDocumentMarkers(List<AttachmentDTO> attachments) {
+        if (attachments == null || attachments.isEmpty()) {
+            return "";
+        }
+        StringBuilder markers = new StringBuilder();
+        for (AttachmentDTO attachment : attachments) {
+            if (attachment == null || !AttachmentDTO.TYPE_DOCUMENT.equals(attachment.getType())) {
+                continue;
+            }
+            String name = attachment.getName() != null ? attachment.getName() : "";
+            // 新格式带 |fileId（精确检索锁定），旧格式无 |fileId 继续合法，前端解析两者兼容
+            markers.append("\n[文档：").append(name);
+            if (attachment.getFileId() != null) {
+                markers.append("|").append(attachment.getFileId());
+            }
+            markers.append("]");
+            if (attachment.getDataUrl() != null && !attachment.getDataUrl().isBlank()) {
+                markers.append("(").append(attachment.getDataUrl()).append(")");
+            }
+        }
+        return markers.toString();
+    }
+
+    /**
+     * 构建知识库文件精确引用指引（当轮用户消息含 [文档：name|fileId] 新格式标记时追加到系统提示）
+     * <p>
+     * 检测口径与落库/当轮组消息同源（buildUserMessageContent），保证标记生成与识别一致；
+     * 重新生成场景 message 即历史落库原文（可能含新格式标记），同样覆盖；
+     * 旧格式 [文档：name]（无 fileId）不匹配、不注入，模型按既有文件名语义检索不受影响
+     *
+     * @param request 聊天请求
+     * @return 指引文本（每个引用文件一行；无精确引用时为空串，直接拼接安全）
+     * @author H
+     */
+    private String buildReferencedFilePrompt(ChatRequest request) {
+        String userContent = buildUserMessageContent(request);
+        Matcher matcher = DOC_MARKER_WITH_FILE_ID_PATTERN.matcher(userContent);
+        StringBuilder instruction = new StringBuilder();
+        while (matcher.find()) {
+            instruction.append("\n用户引用了知识库文件《").append(matcher.group(1))
+                    .append("》(id=").append(matcher.group(2))
+                    .append(")，检索该文件内容时请使用 searchKnowledge 的 fileId 参数");
+        }
+        return instruction.toString();
+    }
+
+    /**
+     * 构建含图片 Media 的多模态用户消息（仅当轮新消息使用）
+     * base64 形态：dataUrl 前缀解析 MimeType，base64 解码为 ByteArrayResource 交给 Spring AI Media（构造签名以依赖 jar 实测为准）；
+     * URL 形态：Media.builder().data(URI) 交给底层（Spring AI 2.0.1 OpenAI 适配对 image/* + URI 数据原样透传 image_url，
+     * 由模型侧拉取，服务端不预下载探测），mime 从 URL 扩展名推断、无法识别时回退 image/png；
+     * 元素级合法性已由 @ValidAttachments 在入口校验，此处解析失败按业务异常兜底（中文提示，不 500）
+     *
+     * @param text        用户消息文本（原始消息，不含落库占位标记）
+     * @param attachments 图片附件列表（入口已校验非空且合法）
+     * @return 含 Media 的多模态 UserMessage
+     * @author H
+     */
+    private UserMessage buildMediaUserMessage(String text, List<AttachmentDTO> attachments) {
+        List<Media> mediaList = new ArrayList<>();
+        for (AttachmentDTO attachment : attachments) {
+            // 仅 image 类型进 Media；document 走知识库 RAG 通道，模型通过消息文本里的 [文档：name](url) 标记感知
+            if (attachment == null || !AttachmentDTO.TYPE_IMAGE.equals(attachment.getType())
+                    || attachment.getDataUrl() == null) {
+                continue;
+            }
+            String dataUrl = attachment.getDataUrl();
+            // URL 形态：URI 交给底层延迟拉取，mime 仅需 image/* 前缀以命中 OpenAI 适配的 image 分支
+            if (dataUrl.startsWith("http://") || dataUrl.startsWith("https://")) {
+                try {
+                    Media.Builder mediaBuilder = Media.builder()
+                            .mimeType(MimeType.valueOf(resolveUrlMime(dataUrl)))
+                            .data(URI.create(dataUrl));
+                    if (attachment.getName() != null && !attachment.getName().isBlank()) {
+                        mediaBuilder.name(attachment.getName());
+                    }
+                    mediaList.add(mediaBuilder.build());
+                } catch (Exception e) {
+                    throw new BusinessException("附件图片链接解析失败，请提供合法的 http(s) 图片链接");
+                }
+                continue;
+            }
+            // base64 形态：解码为字节数组内联传输
+            int markerIdx = dataUrl.indexOf(BASE64_MARKER);
+            if (markerIdx < 0 || !dataUrl.startsWith("data:")) {
+                throw new BusinessException("附件图片数据格式不合法，必须为 data:image/*;base64 数据或 http(s) 图片链接");
+            }
+            String mime = dataUrl.substring("data:".length(), dataUrl.indexOf(";"));
+            byte[] bytes;
+            try {
+                bytes = Base64.getDecoder().decode(dataUrl.substring(markerIdx + BASE64_MARKER.length()));
+            } catch (IllegalArgumentException e) {
+                throw new BusinessException("附件图片数据解码失败，请提供合法的 base64 内容");
+            }
+            try {
+                Media.Builder mediaBuilder = Media.builder()
+                        .mimeType(MimeType.valueOf(mime))
+                        .data(new ByteArrayResource(bytes));
+                if (attachment.getName() != null && !attachment.getName().isBlank()) {
+                    mediaBuilder.name(attachment.getName());
+                }
+                mediaList.add(mediaBuilder.build());
+            } catch (BusinessException e) {
+                throw e;
+            } catch (Exception e) {
+                throw new BusinessException("附件图片解析失败，请检查图片数据格式");
+            }
+        }
+        return UserMessage.builder().text(text).media(mediaList).build();
+    }
+
+    /**
+     * 从 URL 路径推断图片 MIME 类型（仅取路径段，忽略查询参数；无法识别时回退 image/png）
+     *
+     * @param url 图片 URL
+     * @return image/* MIME 类型
+     * @author H
+     */
+    private String resolveUrlMime(String url) {
+        String path = url;
+        int queryIdx = path.indexOf('?');
+        if (queryIdx >= 0) {
+            path = path.substring(0, queryIdx);
+        }
+        String mime = URLConnection.guessContentTypeFromName(path);
+        if (mime != null && mime.startsWith("image/")) {
+            return mime;
+        }
+        return "image/png";
+    }
+
+    /**
      * 保存聊天消息（无思考内容）
      *
      * @param conversationId 会话ID
      * @param role           消息角色
      * @param content        消息内容
      * @param toolName       工具名称（非工具消息为null）
+     * @return 消息ID（访客临时会话无持久化目标时返回 null）
      * @author H
      */
-    private void saveMessage(Long conversationId, Integer role, String content, String toolName) {
-        saveMessage(conversationId, role, content, toolName, null);
+    private Long saveMessage(Long conversationId, Integer role, String content, String toolName) {
+        return saveMessage(conversationId, role, content, toolName, null);
     }
 
     /**
@@ -1319,10 +1627,11 @@ public class ChatServiceImpl implements ChatService {
      * @param content         消息内容
      * @param toolName        工具名称（非工具消息为null）
      * @param thinkingContent 思考过程内容（仅助手消息可能携带，可为null）
+     * @return 消息ID（访客临时会话无持久化目标时返回 null）
      * @author H
      */
-    private void saveMessage(Long conversationId, Integer role, String content, String toolName, String thinkingContent) {
-        saveMessage(conversationId, role, content, toolName, thinkingContent, null);
+    private Long saveMessage(Long conversationId, Integer role, String content, String toolName, String thinkingContent) {
+        return saveMessage(conversationId, role, content, toolName, thinkingContent, null);
     }
 
     /**
@@ -1334,12 +1643,13 @@ public class ChatServiceImpl implements ChatService {
      * @param toolName        工具名称（非工具消息为null）
      * @param thinkingContent 思考过程内容（仅助手消息可能携带，可为null）
      * @param sourcesJson     来源引用JSON数组（RAG命中，可为null）
+     * @return 消息ID（访客临时会话无持久化目标时返回 null）
      * @author H
      */
-    private void saveMessage(Long conversationId, Integer role, String content, String toolName, String thinkingContent, String sourcesJson) {
+    private Long saveMessage(Long conversationId, Integer role, String content, String toolName, String thinkingContent, String sourcesJson) {
         // 访客临时会话无持久化目标，直接跳过
         if (conversationId == null) {
-            return;
+            return null;
         }
         ChatMessage msg = new ChatMessage();
         msg.setConversationId(conversationId);
@@ -1357,5 +1667,7 @@ public class ChatServiceImpl implements ChatService {
         }
         msg.setStatus(MessageStatusEnum.COMPLETED.getCode());
         chatMessageMapper.insert(msg);
+        // MyBatis-Plus 插入后回填自增主键，供当轮多模态消息组装时按 ID 识别
+        return msg.getId();
     }
 }

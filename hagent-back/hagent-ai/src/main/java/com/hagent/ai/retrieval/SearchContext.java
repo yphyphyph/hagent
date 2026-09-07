@@ -28,4 +28,7 @@ public class SearchContext {
 
     /** 限定文件 ID 列表（会话 rag_file_ids 场景，可为 null） */
     private List<String> fileIds;
+
+    /** 精确锁定文件 ID（可空，document 精确引用场景；非空时为精确模式：跳过关键词通道，仅向量通道按 file_id 过滤） */
+    private Long fileId;
 }

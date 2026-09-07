@@ -38,13 +38,21 @@ public class HybridSearchService {
     public List<Document> hybridSearch(SearchContext context, int topK) {
         long start = System.currentTimeMillis();
 
+        // 精确模式判定集中于此（fileId 过滤逻辑唯一入口）：fileId 非空时跳过关键词通道，仅向量通道按 file_id 锁定；
+        // 关键词通道中文 chunks=0 是常态（plainto_tsquery simple 分词），精确模式跳过无损失 @author H
+        boolean preciseMode = context.getFileId() != null;
         // 短路：关键词禁用且向量通道始终启用，直接单通道（仍走精排闸门以保持一致性）
-        boolean keywordEnabled = keywordChannel.isEnabled(context);
+        boolean keywordEnabled = !preciseMode && keywordChannel.isEnabled(context);
         if (!properties.isEnabled() || !keywordEnabled) {
             SearchChannelResult vectorResult = vectorChannel.search(context);
             List<RetrievedChunk> chunks = vectorResult.getChunks();
-            log.info("混合检索单通道（向量）: query={}, topK={}, chunks={}, latencyMs={}",
-                    context.getQuery(), topK, chunks.size(), vectorResult.getLatencyMs());
+            if (preciseMode) {
+                log.info("精确模式(fileId={})：仅向量通道: query={}, topK={}, chunks={}, latencyMs={}",
+                        context.getFileId(), context.getQuery(), topK, chunks.size(), vectorResult.getLatencyMs());
+            } else {
+                log.info("混合检索单通道（向量）: query={}, topK={}, chunks={}, latencyMs={}",
+                        context.getQuery(), topK, chunks.size(), vectorResult.getLatencyMs());
+            }
             List<Document> docs = toDocuments(chunks, topK);
             List<Document> reranked = rerankingService.rerank(context.getQuery(), docs);
             if (EvidenceGate.shouldDiscard(reranked)) {
@@ -140,12 +148,33 @@ public class HybridSearchService {
      * @author H
      */
     public List<Document> hybridSearch(String query, int topK, double threshold, Long userId, List<String> fileIds) {
+        return hybridSearch(query, topK, threshold, userId, fileIds, null);
+    }
+
+    /**
+     * 便捷方法（fileId 精确模式重载）：fileId 非空时锁定单一知识库文件，跳过关键词通道仅走向量通道
+     * <p>
+     * fileIds（会话 rag_file_ids 场景，多文件限定）与 fileId（document 精确引用，单文件锁定）相互独立，
+     * 过滤表达式在 VectorSearchChannel 同机制叠加
+     *
+     * @param query     查询
+     * @param topK      截回数
+     * @param threshold 向量阈值（透传给 SearchContext）
+     * @param userId    当前用户
+     * @param fileIds   限定文件列表（可为 null）
+     * @param fileId    精确锁定文件ID（可空，非空时进入精确模式）
+     * @return Document 列表
+     * @author H
+     */
+    public List<Document> hybridSearch(String query, int topK, double threshold, Long userId,
+                                       List<String> fileIds, Long fileId) {
         SearchContext context = SearchContext.builder()
                 .query(query)
                 .topK(Math.max(properties.getKeyword().getTopK(), topK))
                 .threshold(threshold)
                 .userId(userId)
                 .fileIds(fileIds)
+                .fileId(fileId)
                 .build();
         // threshold 仅向量通道用，关键词通道忽略
         return hybridSearch(context, topK);

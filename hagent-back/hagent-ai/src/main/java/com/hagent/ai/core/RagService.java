@@ -184,6 +184,40 @@ public class RagService {
     }
 
     /**
+     * 按用户可见性搜索（fileId 精确模式重载）：fileId 非空时锁定单一知识库文件，
+     * 由 HybridSearchService 跳过关键词通道仅走向量通道（file_id == '<fileId>' 过滤）；
+     * fileId 为空时委托三参版本，行为完全一致
+     * <p>
+     * 精确模式下不做"无 file_id 过滤"的回退——回退会破坏锁定语义（混入其他文件命中），
+     * 检索层单向量通道本身已覆盖降级路径
+     *
+     * @param query     搜索查询文本
+     * @param topK      最终返回的 Top 结果数量
+     * @param threshold 相似度阈值
+     * @param fileId    精确锁定知识库文件ID（可空）
+     * @return 当前用户可见且属于该文件的匹配文档列表
+     * @author H
+     */
+    public List<Document> searchAccessible(String query, int topK, double threshold, Long fileId) {
+        if (fileId == null) {
+            return searchAccessible(query, topK, threshold);
+        }
+        try {
+            Long userId = resolveCurrentUserId();
+            // fileId 下沉到混合检索门面（精确模式判定集中处），本层仅透传不复制过滤逻辑
+            List<Document> results = hybridSearchService.hybridSearch(query, topK, threshold, userId, null, fileId);
+            retainHitMetadata(results);
+            incrementSearchCount();
+            log.info("RAG精确搜索完成（fileId={}）: query={}, topK={}, hits={}", fileId, query, topK, results.size());
+            return results;
+        } catch (Exception e) {
+            log.error("RAG精确搜索失败: query={}, fileId={}", query, fileId, e);
+            LAST_HITS.remove();
+            return List.of();
+        }
+    }
+
+    /**
      * 按用户可见性搜索（清单别名，委托同 searchAccessible，保持 filterExpression 权限前置）
      * <p>
      * 仅改内部委托为 hybridSearchService.hybridSearch(...)，不改 filterExpression 权限前置口径

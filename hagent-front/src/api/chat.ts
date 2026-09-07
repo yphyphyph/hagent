@@ -62,6 +62,54 @@ export interface ChatContextUsage {
   [key: string]: unknown
 }
 
+/**
+ * 聊天图片附件（与后端请求体契约锁死，勿改字段名）：
+ * attachments: [{type:"image", dataUrl:"data:image/png;base64,...", name}]
+ */
+export interface ChatImageAttachment {
+  type: 'image'
+  /** base64 dataURL（FileReader.readAsDataURL 产物） */
+  dataUrl: string
+  /** 原始文件名 */
+  name: string
+}
+
+/**
+ * 聊天文档附件（与后端请求体契约锁死，勿改字段名）：
+ * attachments: [{type:"document", name:"报告.md", url:"https://oss/...", size:16384}]
+ * url 为知识库上传响应的 fileUrl（OSS 地址，无则为空串）；size 为文件字节数（历史消息无 size）
+ */
+export interface ChatDocumentAttachment {
+  type: 'document'
+  /** 原始文件名 */
+  name: string
+  /** 文档 OSS 地址（知识库上传响应 fileUrl；空串表示不可跳转，仅展示卡片） */
+  url: string
+  /** 文件字节数（气泡卡片副标题人类可读大小；历史解析无 size 时缺省） */
+  size?: number
+  /** 知识库文件 ID（后端按 fileId 过滤检索；知识库选择器/上传路径可得，历史解析旧标记无 fileId 时缺省） */
+  fileId?: number
+}
+
+/** 附件联合类型：图片与文档混合数组随请求体 attachments 字段发送 */
+export type ChatAttachment = ChatImageAttachment | ChatDocumentAttachment
+
+/**
+ * 上传聊天图片到 OSS（POST /admin/upload/image，FormData 字段名 file）
+ * 后端 UploadController 校验 image/* MIME 与 5MB 上限，返回 Result{data:{url}}（request 拦截器已解包 data）
+ * 失败（网络/非 200/未返回 url）抛错，由调用方中止发送并保留 chips 重试
+ */
+export async function uploadChatImage(file: File): Promise<{ url: string; name: string }> {
+  const form = new FormData()
+  form.append('file', file)
+  const data = await request.post<{ url?: string }, { url?: string }>('/admin/upload/image', form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  })
+  const url = data?.url ?? ''
+  if (!url) throw new Error('上传失败：服务端未返回图片地址')
+  return { url, name: file.name }
+}
+
 /** SSE 流式事件处理器集合 */
 export interface StreamEventHandlers {
   /** 元数据事件：携带会话ID（访客模式为 "guest"），第二参数透传全量 meta 字段 */
@@ -104,6 +152,12 @@ export function streamChat(
   opts: {
     scene?: number
     conversationId?: number
+    /** 附件（图片/文档混合数组，随请求体发送，仅作用于本次请求，不影响 SSE 解析） */
+    attachments?: ChatAttachment[]
+    /** 重新生成：重发最后一条 AI 回复（message 传空串，后端忽略 message 内容；与 editMessageId 互斥） */
+    regenerate?: boolean
+    /** 编辑重发：目标后端消息 id（message 为编辑后的新文本；与 regenerate 互斥） */
+    editMessageId?: number
     handlers: StreamEventHandlers
   }
 ): AbortController {
@@ -121,6 +175,11 @@ export function streamChat(
       message,
       scene: opts.scene ?? 1,
       conversationId: opts.conversationId,
+      // 无附件时为 undefined，JSON.stringify 自动省略该键（旧后端不受影响）
+      attachments: opts.attachments,
+      // regenerate / editMessageId 契约与后端锁死：regenerate=true 时 message 为空串；editMessageId 时 message 为新文本
+      regenerate: opts.regenerate,
+      editMessageId: opts.editMessageId,
     }),
     signal: controller.signal,
   })
