@@ -21,8 +21,8 @@ import jakarta.annotation.PreDestroy;
 
 /**
  * 会话标题异步生成服务
- * 首条消息默认以截断占位为标题，首轮回答完成后异步用 LLM 生成更贴切的标题；
- * 生成失败时静默保留截断占位，不影响对话主链路
+ * 首条消息默认以原文为标题（不截断），首轮回答完成后异步用 LLM 生成更贴切的标题；
+ * 生成失败时静默保留占位标题，不影响对话主链路
  *
  * @author H
  */
@@ -32,9 +32,6 @@ public class ConversationTitleService {
 
     /** 默认会话标题（与 ChatServiceImpl/ConversationServiceImpl 的占位一致） */
     private static final String DEFAULT_TITLE = "新会话";
-
-    /** 生成标题最大字符数（超出截断） */
-    private static final int TITLE_MAX_LENGTH = 20;
 
     /** 标题生成系统提示词：要求输出纯标题本身 */
     private static final String TITLE_SYSTEM_PROMPT =
@@ -101,7 +98,7 @@ public class ConversationTitleService {
                         log.info("会话标题已生成: conversationId={}, title={}", conversationId, title);
                     }
                 } catch (Exception e) {
-                    // 静默失败：保留截断占位标题，不影响对话主链路
+                    // 静默失败：保留占位标题，不影响对话主链路
                     log.warn("会话标题生成失败，保留占位标题: conversationId={}, error={}", conversationId, e.getMessage());
                 } finally {
                     inFlight.remove(conversationId);
@@ -136,7 +133,7 @@ public class ConversationTitleService {
     }
 
     /**
-     * 清洗模型输出：去除引号/换行/markdown 标记与"标题："类前缀，截断到最大长度
+     * 清洗模型输出：去除引号/换行/markdown 标记与"标题："类前缀（不做长度截断）
      *
      * @param raw 模型原始输出
      * @return 清洗后的标题；不合法返回 null
@@ -154,9 +151,6 @@ public class ConversationTitleService {
                 .trim();
         if (title.isEmpty() || DEFAULT_TITLE.equals(title)) {
             return null;
-        }
-        if (title.length() > TITLE_MAX_LENGTH) {
-            title = title.substring(0, TITLE_MAX_LENGTH);
         }
         return title;
     }

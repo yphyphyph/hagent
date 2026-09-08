@@ -128,9 +128,6 @@ public class ChatServiceImpl implements ChatService {
     /** RAG 修正值 Redis 过期时间（7 天，自动清理死会话） */
     private static final Duration CTX_RAG_REDIS_TTL = Duration.ofDays(7);
 
-    /** 标题最大字符数 */
-    private static final int TITLE_MAX_LENGTH = 20;
-
     /** 新会话默认标题 */
     private static final String DEFAULT_TITLE = "新会话";
 
@@ -379,12 +376,9 @@ public class ChatServiceImpl implements ChatService {
                     buildUserMessageContent(request), null);
         }
 
-        // 3. 首条消息自动生成标题：先以截断占位（列表立即可见），回答完成后由 ConversationTitleService 异步 LLM 生成
+        // 3. 首条消息自动生成标题：先以消息原文占位（列表立即可见，不截断），回答完成后由 ConversationTitleService 异步 LLM 生成
         if (userId != null && DEFAULT_TITLE.equals(conversation.getTitle())) {
-            String newTitle = request.getMessage().length() > TITLE_MAX_LENGTH
-                    ? request.getMessage().substring(0, TITLE_MAX_LENGTH) + "..."
-                    : request.getMessage();
-            conversationService.updateTitle(finalConversationId, newTitle);
+            conversationService.updateTitle(finalConversationId, request.getMessage());
         }
 
         // 4. 设置工具执行用户上下文（ThreadLocal，供@Tool访问）
