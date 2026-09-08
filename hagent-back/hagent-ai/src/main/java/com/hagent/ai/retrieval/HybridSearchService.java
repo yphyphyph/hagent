@@ -28,6 +28,29 @@ public class HybridSearchService {
     private final HybridSearchProperties properties;
     private final RerankingService rerankingService;
 
+    /** 最近一次混合检索是否因证据门控丢弃而返回空（同线程传递，供上层区分"内容不相关"与"通道异常"以决定是否回退） */
+    private static final ThreadLocal<Boolean> GATE_DISCARDED = new ThreadLocal<>();
+
+    /**
+     * 查询最近一次混合检索是否被证据门控整批丢弃（内容不相关）
+     *
+     * @return 是否被门控丢弃
+     * @author H
+     */
+    public static boolean wasGateDiscarded() {
+        return Boolean.TRUE.equals(GATE_DISCARDED.get());
+    }
+
+    /** 重置门控丢弃标记（每次检索入口调用，避免线程复用跨请求泄漏） */
+    private static void resetGateDiscarded() {
+        GATE_DISCARDED.set(false);
+    }
+
+    /** 标记本次检索被证据门控整批丢弃 */
+    private static void markGateDiscarded() {
+        GATE_DISCARDED.set(true);
+    }
+
     /**
      * 混合检索（业务入口，返回 Document 列表以复用现有溯源链路）
      *
@@ -37,6 +60,7 @@ public class HybridSearchService {
      */
     public List<Document> hybridSearch(SearchContext context, int topK) {
         long start = System.currentTimeMillis();
+        resetGateDiscarded();
 
         // 精确模式判定集中于此（fileId 过滤逻辑唯一入口）：fileId 非空时跳过关键词通道，仅向量通道按 file_id 锁定；
         // 关键词通道中文 chunks=0 是常态（plainto_tsquery simple 分词），精确模式跳过无损失 @author H
@@ -56,6 +80,7 @@ public class HybridSearchService {
             List<Document> docs = toDocuments(chunks, topK);
             List<Document> reranked = rerankingService.rerank(context.getQuery(), docs);
             if (EvidenceGate.shouldDiscard(reranked)) {
+                markGateDiscarded();
                 log.info("证据闸门丢弃（单通道）: query={}, reranked={}", context.getQuery(), reranked.size());
                 return List.of();
             }
@@ -107,6 +132,7 @@ public class HybridSearchService {
         List<Document> docs = toDocuments(fused, topK);
         List<Document> reranked = rerankingService.rerank(context.getQuery(), docs);
         if (EvidenceGate.shouldDiscard(reranked)) {
+            markGateDiscarded();
             log.info("证据闸门丢弃（双路）: query={}, topK={}, reranked={}, latencyMs={}",
                     context.getQuery(), topK, reranked.size(), System.currentTimeMillis() - start);
             return List.of();

@@ -53,6 +53,7 @@ import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Service;
 import org.springframework.util.MimeType;
 import reactor.core.Disposable;
+import reactor.core.Disposables;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.FluxSink;
 import reactor.core.scheduler.Schedulers;
@@ -69,7 +70,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -455,6 +458,14 @@ public class ChatServiceImpl implements ChatService {
             // 不再依赖文件名语义检索；置于 systemPrompt 拼装处，工具阶段与流式阶段共用同一消息列表 @author H
             systemPrompt += buildReferencedFilePrompt(request);
 
+            // 5.2 产品身份注入：自我认知类问题（你是什么/能做什么/什么架构）引导零检索直接回答，
+            // 避免"问自己是谁却去检索知识库"的发散循环（默认提示词无身份信息，模型只能去知识库找"小助手是什么"） @author H
+            systemPrompt += "\n\n【产品身份】你是 HAgent 智能助手——本站自研的 AI 对话与知识库助手，"
+                    + "基于 Spring Boot 4 + Spring AI（Java 17）与 PostgreSQL 18 + pgvector 向量检索构建，前端为 Vue 3；"
+                    + "具备知识库 RAG 问答（混合检索 + 语义重排 + 证据门控）、多轮会话记忆、"
+                    + "工具调用（知识检索 / 数据分析 / 图片理解 / Text-to-SQL）与多级模型降级能力。"
+                    + "凡涉及你自身（是什么、能做什么、什么架构）的问题，请直接依据本段回答，不要检索知识库。";
+
             // 6. 构建消息历史（摘要 + 滑窗：首条为 running summary 系统消息，不计轮数；
             // 随后为最近 keepTurns 轮 DB 原文；访客模式无历史）
             // 说明：工具调用过程不落库（仅落最终回复），因此历史中不会出现 TOOL 角色；
@@ -692,6 +703,14 @@ public class ChatServiceImpl implements ChatService {
                 // 该块会被拆分到多个 token 逐片到达，单 token 正则无法命中，需按状态机累积完整块后整体剥离
                 final boolean[] inToolCallBlock = {false};
                 final StringBuilder toolCallBlockBuf = new StringBuilder();
+                // think 标签剥离状态（流式阶段）：推理模型可能在正文通道泄漏孤儿 </think> 或内联完整 <think> 块 @author H
+                final boolean[] inThinkBlock = {false};
+                final StringBuilder thinkBlockBuf = new StringBuilder();
+                // 纠正性重流状态：流式完成时若最终回复为意图声明残段（"我需要先检索一下…"后停笔，该阶段无工具可兑现），
+                // 注入纠正 SystemMessage 并重流一次（深度限1，CAS 防重入） @author H
+                final AtomicBoolean correctiveRetried = new AtomicBoolean(false);
+                // 底层模型流订阅容器：纠正性重流会产生第二个订阅，统一挂到 sink.onDispose 以支持客户端断连时全部取消 @author H
+                final Disposable.Composite streamDisposables = Disposables.composite();
                 // 流式 usage 回执暂存：每轮 ChatResponse 到达时以后值覆盖前值，多轮取最新轮 @author H
                 final AtomicInteger streamedUsagePromptTokens = new AtomicInteger(0);
                 // 阶段2：真正的增量流，逐个响应提取 thinking 与 token 并交织发射
@@ -699,8 +718,8 @@ public class ChatServiceImpl implements ChatService {
                 // 通过JSON字符串编码，换行符等特殊字符被转义为单行传输，避免SSE帧被破坏
                 // 多级降级流式：按 order 0..N 逐级重试，每级仅一次，总重试 N 次，不循环
                 Flux<ChatResponse> rawStream = streamWithFallback(orderedChatModels, messages, streamOptions);
-                Disposable rawDisposable = rawStream.subscribe(
-                        response -> {
+                // 三参数订阅回调抽为局部变量：onComplete 检测到意图声明残段时，需复用同一组回调重新订阅流（纠正性重流，深度限1） @author H
+                Consumer<ChatResponse> onNext = response -> {
                             // 1) 优先发射 thinking 增量（若模型提供了 reasoning_content / thinking）
                             // 网关可能在每个增量中重放已见的完整 thinking，用 dedupThinkingDelta 仅发送新增后缀，避免 thinking-token 交织重复
                             String rawThinking = stageSupport.extractThinking(response);
@@ -735,6 +754,8 @@ public class ChatServiceImpl implements ChatService {
                             if (text != null && !text.isEmpty()) {
                                 // 剥离可能被拆分到多个 token 的文本工具调用块（如 <tool_call>...</tool_call>），防止 XML 碎片泄漏为正文
                                 String filtered = AgentToolLoopService.stripToolCallBlock(text, inToolCallBlock, toolCallBlockBuf);
+                                // 剥离正文通道的 think 标签：孤儿 </think> 仅删标记保正文，成对内联 <think> 块整段抑制 @author H
+                                filtered = AgentToolLoopService.stripThinkTags(filtered, inThinkBlock, thinkBlockBuf);
                                 // 兜底：过滤单 token 内完整的幻觉工具调用标签残留
                                 filtered = AgentToolLoopService.filterHallucinatedTags(filtered);
                                 // 过滤后为空或仅空白则跳过该 token，不向前端发射
@@ -744,8 +765,8 @@ public class ChatServiceImpl implements ChatService {
                                 fullText.append(filtered);
                                 sink.next(wrapToken(filtered));
                             }
-                        },
-                        error -> {
+                        };
+                Consumer<Throwable> onError = error -> {
                             // 前端主动取消：不计失败、不落库、不推送错误，由前端 MessageAggregator 正常取消 @author H
                             if (isCancel(error)) {
                                 log.info("流式已取消: conversationId={} cause={}", finalConversationId, error.toString());
@@ -771,8 +792,31 @@ public class ChatServiceImpl implements ChatService {
                             sink.next(wrapError("AI服务暂时不可用，请稍后重试"));
                             sink.next("[FINAL]");
                             sink.complete();
-                        },
-                        () -> {
+                        };
+                Runnable[] onCompleteRef = new Runnable[1];
+                Runnable onComplete = () -> {
+                            // 纠正性重流兜底：最终回复为意图声明残段（推理模型 flip-flop 后仅输出"我需要先检索一下…"即停笔，
+                            // 该阶段无工具可调、检索永远无法兑现）时，注入纠正 SystemMessage 并复用同一组回调重流一次（深度限1，
+                            // CAS 防重入）；第二遍结束或已重流过则直接走原 finalize 流程 @author H
+                            String stubCheck = fullText.toString();
+                            if (!sink.isCancelled()
+                                    && AgentToolLoopService.isIntentStub(stubCheck)
+                                    && correctiveRetried.compareAndSet(false, true)) {
+                                messages.add(new SystemMessage(AgentToolLoopService.CORRECTIVE_ANSWER_INSTRUCTION));
+                                // 重置跨流解析状态：第二遍为全新请求，不继承第一遍的标签剥离残态
+                                inToolCallBlock[0] = false;
+                                toolCallBlockBuf.setLength(0);
+                                inThinkBlock[0] = false;
+                                thinkBlockBuf.setLength(0);
+                                String separator = "\n\n";
+                                fullText.append(separator);
+                                sink.next(wrapToken(separator));
+                                log.warn("检测到意图声明残段（length={}），注入纠正指令并重流（深度1）: conversationId={}",
+                                        stubCheck.length(), finalConversationId);
+                                streamDisposables.add(streamWithFallback(orderedChatModels, messages, streamOptions)
+                                        .subscribe(onNext, onError, onCompleteRef[0]));
+                                return;
+                            }
                             // usage 校准（业界口径：回答完成后环形圈收敛到实际消耗）：用模型 usage 回执的
                             // promptTokens 覆盖估算快照（总量与 percent 均以 actual 为准，stage=actual 供前端徽标切换）；
                             // actual 为模型侧精确上报且估算缺口已收敛（<1%），floor 下随轮次单调不跌；
@@ -825,10 +869,11 @@ public class ChatServiceImpl implements ChatService {
                             // 发送明确结束标记，前端据此判断流正常结束
                             sink.next("[FINAL]");
                             sink.complete();
-                        }
-                );
-                // 客户端断连/取消时同步取消底层模型流，避免继续生成浪费token
-                sink.onDispose(rawDisposable);
+                        };
+                onCompleteRef[0] = onComplete;
+                streamDisposables.add(rawStream.subscribe(onNext, onError, onComplete));
+                // 客户端断连/取消时同步取消底层模型流（含可能的纠正性重流第二遍），避免继续生成浪费token
+                sink.onDispose(streamDisposables);
             }).subscribeOn(Schedulers.boundedElastic());
 
         } catch (Exception e) {

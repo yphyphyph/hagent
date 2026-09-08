@@ -157,6 +157,12 @@ public class RagService {
             Long userId = resolveCurrentUserId();
             List<Document> results = hybridSearchService.hybridSearch(query, topK, threshold, userId, null);
             if (results == null || results.isEmpty()) {
+                // 证据门控已判定"内容不相关"：跳过单向量回退——回退会把低相关噪声重新捡回给模型，
+                // 诱发"换词重搜→又被丢弃→再换词"的发散循环；直接返回空，由工具层向模型明示"知识库无此内容"
+                if (com.hagent.ai.retrieval.HybridSearchService.wasGateDiscarded()) {
+                    log.info("证据门控判定无相关内容，跳过单向量回退: query={}", query);
+                    return List.of();
+                }
                 // 降级：混合检索未返回时回退到原单向量路径（兼容检索层异常）
                 log.warn("混合检索未返回结果，尝试单向量回退: query={}", query);
                 VectorStore vectorStore = aiModelProvider.getVectorStore();

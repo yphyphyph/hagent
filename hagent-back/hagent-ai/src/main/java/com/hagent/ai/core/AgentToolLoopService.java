@@ -60,14 +60,33 @@ public class AgentToolLoopService {
     /** 连续重复工具调用检测阈值：同一工具连续相似调用达到该次数视为发散循环，强制收敛 */
     private static final int REPEAT_TOOL_LIMIT = 4;
 
+    /** 知识检索连续无相关结果终止阈值：达到该次数注入收敛指令，引导模型直接基于自身知识回答（防"换词重搜"发散循环） */
+    private static final int RAG_MISS_LIMIT = 2;
+
+    /** 知识检索无相关结果提示语前缀（与 KnowledgeTool.NO_HIT_HINT 保持一致，用于工具结果判定） */
+    private static final String RAG_MISS_MARKER = "知识库中未找到";
+
+    /** 工具循环总时间预算（毫秒）：超时强制收敛进入流式阶段，防止慢模型（改写+推理）耗尽 SSE 5 分钟超时 */
+    private static final long TOOL_LOOP_BUDGET_MS = 90_000L;
+
     /** 工具结果最大字符数（超出截断，防止撑爆上下文） */
     private static final int MAX_TOOL_RESULT_LENGTH = 4000;
 
     /** 日志中工具参数最大截断长度 */
     private static final int MAX_LOG_ARGS_LEN = 100;
 
-    /** 收敛指令：工具阶段结束，强制模型基于已有信息直接回答，禁止再发起工具调用 */
-    private static final String CONVERGE_INSTRUCTION = "工具调用阶段已结束，请基于已有信息直接回答用户问题，不要再发起或以文本形式输出任何工具调用（如 <tool_call> 等标签）。";
+    /** 收敛指令：工具阶段结束，强制模型基于已有信息一次性给出完整回答，禁止再发起工具调用或输出"需要检索"的意图声明（依据测试一"半截回答"教训强化措辞） */
+    private static final String CONVERGE_INSTRUCTION = "工具调用阶段已结束。请基于已有信息直接给出完整、连贯的最终回答。即使你认为还需要检索知识库或调用工具，也不得发起或以文本形式输出任何工具调用（如 <tool_call> 等标签），不得输出“我需要先检索一下”之类的意图声明后停止作答；若已有信息不足以完整回答，直接依据你自身的知识作答，或如实向用户说明信息不足。请一次性输出完整回答，不要话说一半停止。";
+
+    /** 意图声明残段判定最大长度：流式最终回复短于该值且含检索/查询意图短语时，视为"话说一半"的残段（依据测试四 HXX 25 字残段教训） */
+    private static final int INTENT_STUB_MAX_LEN = 100;
+
+    /**
+     * 纠正性重流指令：流式最终回复被判定为意图声明残段后注入，强制模型基于已有知识直接给出完整回答。
+     * 场景：推理模型在无工具定义的流式阶段重新得出"应先检索知识库"的结论（flip-flop），仅输出意图声明即停笔，
+     * 指令层（收敛指令）无法可靠压制，需由编排层检测残段后机械兜底重流一次 @author H
+     */
+    public static final String CORRECTIVE_ANSWER_INSTRUCTION = "系统检测到你刚才的回复只是一句检索意图声明（如“我需要先检索一下知识库”），并没有实际回答用户的问题。当前对话已经没有任何可用工具，检索请求永远无法执行。请立即直接回答用户最初的问题：基于你已有的知识（包括系统提示中的产品身份信息）给出完整、连贯、结构化的中文回答；如果确实不知道，请如实说明。严禁再次输出检索意图声明、任何形式的工具调用，或“我需要先……”之后停止作答的残句。";
 
     /** 文本形式工具调用标记（部分模型在无工具定义阶段会退化为此格式） */
     private static final String TEXT_TOOL_CALL_MARKER = "<tool_call>";
@@ -77,6 +96,12 @@ public class AgentToolLoopService {
 
     /** 流式剥离用结束标记 */
     private static final String STRIP_END_MARKER = "</tool_call>";
+
+    /** 流式剥离用 think 块起始标记（推理模型在正文通道内联输出思考块时出现） */
+    private static final String THINK_OPEN_MARKER = "<think>";
+
+    /** 流式剥离用 think 块结束标记（正文通道无配对 <think> 时为孤儿标记，仅剥离标记本身保留正文） */
+    private static final String THINK_CLOSE_MARKER = "</think>";
 
     /** 文本形式工具调用解析：<function=name> */
     private static final Pattern TEXT_FUNCTION_PATTERN = Pattern.compile("<function=([\\w.-]+)\\s*>");
@@ -214,11 +239,22 @@ public class AgentToolLoopService {
         String lastToolName = null;
         String lastToolArgsNormalized = null;
         int repeatCount = 0;
+        // 连续知识检索无相关结果计数：达到 RAG_MISS_LIMIT 强制收敛（P1-2）
+        int ragMissCount = 0;
+        // 工具循环起始时间：总时间预算超时强制收敛（P2）
+        long loopStartMs = System.currentTimeMillis();
         int effectiveMax = effectiveMaxIterations();
         for (int i = 0; i < effectiveMax; i++) {
             // 客户端断连后终止工具循环，避免继续消耗模型token
             if (sink.isCancelled()) {
                 log.info("SSE已取消，终止工具调用循环");
+                return;
+            }
+            // 总时间预算超时：强制收敛进入流式阶段（P2，防慢模型拖满 SSE 5 分钟超时后被动中断）
+            long elapsedMs = System.currentTimeMillis() - loopStartMs;
+            if (elapsedMs > TOOL_LOOP_BUDGET_MS) {
+                log.warn("工具循环超时（{}ms > 预算 {}ms），强制收敛进入流式阶段", elapsedMs, TOOL_LOOP_BUDGET_MS);
+                injectConvergenceMessage(messages);
                 return;
             }
             // 已注入收敛指令（模型陷入重复调用被强制收尾），直接结束工具循环
@@ -326,6 +362,13 @@ public class AgentToolLoopService {
                                 .responses(List.of(new ToolResponseMessage.ToolResponse(
                                         synthetic.id(), synthetic.name(), truncateResult(result))))
                                 .build());
+                        // 连续知识检索无相关结果：达到阈值强制收敛（P1-2）
+                        ragMissCount = updateRagMissCount(ragMissCount, synthetic.name(), result);
+                        if (ragMissCount >= RAG_MISS_LIMIT) {
+                            log.warn("连续 {} 次知识检索无相关结果，强制收敛引导直接回答", ragMissCount);
+                            injectConvergenceMessage(messages);
+                            return;
+                        }
                         continue;
                     }
                 }
@@ -376,6 +419,14 @@ public class AgentToolLoopService {
                                 toolCall.id(), toolCall.name(), truncatedResult
                         )))
                         .build());
+
+                // 连续知识检索无相关结果：达到阈值先回填本次工具结果保持协议链完整，再注入收敛指令终止循环（P1-2）
+                ragMissCount = updateRagMissCount(ragMissCount, toolCall.name(), truncatedResult);
+                if (ragMissCount >= RAG_MISS_LIMIT) {
+                    log.warn("连续 {} 次知识检索无相关结果，强制收敛引导直接回答", ragMissCount);
+                    injectConvergenceMessage(messages);
+                    return;
+                }
             }
         }
         // 循环结束后（无论自然退出还是达到上限），确保流式阶段始终带有收敛指令，避免模型再以文本形式输出工具调用
@@ -395,6 +446,25 @@ public class AgentToolLoopService {
             return;
         }
         messages.add(new org.springframework.ai.chat.messages.SystemMessage(CONVERGE_INSTRUCTION));
+    }
+
+    /**
+     * 更新知识检索连续未命中计数
+     * searchKnowledge 返回以 RAG_MISS_MARKER 开头的空结果提示时计数+1；
+     * 命中内容或调用其他工具均重置为 0（仅"连续"未命中才收敛，避免误伤正常多轮检索场景）
+     *
+     * @param ragMissCount 当前计数
+     * @param toolName     工具名
+     * @param result       工具结果文本
+     * @return 更新后的计数
+     * @author H
+     */
+    private int updateRagMissCount(int ragMissCount, String toolName, String result) {
+        if (ThinkingStageSupport.RAG_TOOL_NAME.equals(toolName)
+                && result != null && result.startsWith(RAG_MISS_MARKER)) {
+            return ragMissCount + 1;
+        }
+        return 0;
     }
 
     /**
@@ -572,6 +642,90 @@ public class AgentToolLoopService {
             }
         }
         return 0;
+    }
+
+    /**
+     * 剥离流式正文中的 think 标签（推理模型在正文通道泄漏的思考标记）
+     * 两种情况：① 内联 <think>...</think> 成对出现（可能被拆分到多个 token）——思考内容不属于正文，整块抑制；
+     * ② 孤儿 </think>（开标签已被网关抽到 reasoning_content 通道时常见）——仅剥离标记本身，正文保留。
+     * 跨分片处理与 stripToolCallBlock 同构：块内累积等待结束标记，非块内暂存尾部疑似前缀待下一分片联合判定。
+     *
+     * @param chunk   当前 token 的文本增量
+     * @param inThink 是否正处于 <think> 块内（跨 token 状态）
+     * @param buf     跨 token 缓冲：块内累积内容，非块内暂存尾部疑似前缀
+     * @return 剥离后的正文增量
+     * @author H
+     */
+    public static String stripThinkTags(String chunk, boolean[] inThink, StringBuilder buf) {
+        // 跨分片联合：先将上轮暂存的疑似前缀/块内累积与本轮拼接后再扫描
+        String data = chunk;
+        if (buf.length() > 0) {
+            data = buf.toString() + chunk;
+            buf.setLength(0);
+        }
+        StringBuilder out = new StringBuilder();
+        int i = 0;
+        while (i < data.length()) {
+            if (inThink[0]) {
+                int end = data.indexOf(THINK_CLOSE_MARKER, i);
+                if (end < 0) {
+                    // 块内未见完整结束标记（含被切碎的情况），整体累积后等待下一个分片
+                    buf.append(data.substring(i));
+                    return out.toString();
+                }
+                // 思考内容整体丢弃（含结束标记本身）
+                inThink[0] = false;
+                i = end + THINK_CLOSE_MARKER.length();
+            } else {
+                int open = data.indexOf(THINK_OPEN_MARKER, i);
+                int close = data.indexOf(THINK_CLOSE_MARKER, i);
+                if (open >= 0 && (close < 0 || open < close)) {
+                    // 成对 think 块开始：保留块前正文，进入块内抑制状态
+                    out.append(data, i, open);
+                    inThink[0] = true;
+                    i = open + THINK_OPEN_MARKER.length();
+                } else if (close >= 0) {
+                    // 孤儿 </think>（正文通道无配对开标签）：仅剥离标记，正文保留
+                    out.append(data, i, close);
+                    i = close + THINK_CLOSE_MARKER.length();
+                } else {
+                    // 无标记：尾部可能是被切碎的标记前缀（如 </thi），暂存待下一分片联合判定
+                    String rest = data.substring(i);
+                    int hold = Math.max(
+                            trailingMarkerPrefixLen(rest, THINK_OPEN_MARKER),
+                            trailingMarkerPrefixLen(rest, THINK_CLOSE_MARKER));
+                    out.append(rest, 0, rest.length() - hold);
+                    if (hold > 0) {
+                        buf.append(rest.substring(rest.length() - hold));
+                    }
+                    return out.toString();
+                }
+            }
+        }
+        return out.toString();
+    }
+
+    /**
+     * 判定流式最终回复是否为"意图声明残段"
+     * 推理模型在无工具定义的流式阶段可能重新得出"应先检索知识库"的结论，随后仅输出
+     * "我需要先检索一下知识库中关于 X 的信息。"之类的意图声明即停止作答（该阶段无工具可调，检索永远无法兑现）。
+     * 形态特征：整体很短且含检索/查询意图短语。命中后由调用方注入纠正指令并重流一次兜底 @author H
+     *
+     * @param text 流式最终回复全文
+     * @return true 表示为意图声明残段，需要纠正性重流
+     */
+    public static boolean isIntentStub(String text) {
+        if (text == null) {
+            return false;
+        }
+        String t = text.strip();
+        if (t.isEmpty() || t.length() >= INTENT_STUB_MAX_LEN) {
+            return false;
+        }
+        return t.contains("先检索") || t.contains("先搜索") || t.contains("先查询") || t.contains("先查一下")
+                || t.contains("检索一下") || t.contains("搜索一下") || t.contains("查询一下") || t.contains("查一下知识库")
+                || t.contains("需要检索") || t.contains("需要搜索") || t.contains("需要查询")
+                || t.contains("先从知识库") || t.contains("检索知识库") || t.contains("搜索知识库") || t.contains("查询知识库");
     }
 
     /**

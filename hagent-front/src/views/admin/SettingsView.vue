@@ -140,6 +140,29 @@
               </n-form>
             </section>
 
+            <!-- 检索查询改写：P0-4 轻量版（同义词映射 + LLM 指代补全），对应 system_config ai.query-rewrite.* -->
+            <section class="block">
+              <h3 class="block__title">检索查询改写</h3>
+              <n-form :model="aiForm" label-placement="left" label-width="110" size="large">
+                <div class="form-grid">
+                  <n-form-item label="启用改写" class="span-1">
+                    <n-switch v-model:value="aiForm.queryRewriteEnabled" />
+                  </n-form-item>
+                  <n-form-item label="同义词映射" class="span-full">
+                    <div class="field-stack">
+                      <n-input
+                        v-model:value="aiForm.queryRewriteSynonyms"
+                        type="textarea"
+                        :rows="4"
+                        placeholder="每行一条：口语词=文档标准词，如&#10;小助手=HAgent&#10;退款=退货退款流程"
+                      />
+                      <span class="field-hint">可选项。检索前把口语叫法替换为文档术语（分号或换行分隔，键长的先替换），留空则只做 LLM 指代补全；改写失败自动回退原查询，不影响检索主链路。</span>
+                    </div>
+                  </n-form-item>
+                </div>
+              </n-form>
+            </section>
+
             <section class="block">
               <h3 class="block__title">多模态 / 视觉大模型</h3>
               <n-form :model="aiForm" label-placement="left" label-width="110" size="large">
@@ -305,6 +328,7 @@ import {
   NInput,
   NInputNumber,
   NSlider,
+  NSwitch,
   NTabPane,
   NTabs,
   NTag,
@@ -398,6 +422,8 @@ async function loadSettings() {
     aiForm.rerankModel = pick(['ai.rerank.model'], 'qwen3.7-text-rerank')
     aiForm.rerankBaseUrl = pick(['ai.rerank.base-url'], 'https://dashscope.aliyuncs.com/api/v1')
     aiForm.rerankApiKey = pick(['ai.rerank.api-key'], '')
+    aiForm.queryRewriteEnabled = pick(['ai.query-rewrite.enabled'], 'true') !== 'false'
+    aiForm.queryRewriteSynonyms = pick(['ai.query-rewrite.synonyms'], '')
     aiForm.visModel = pick(['ai.vision.model'], 'mimo-v2.5')
     aiForm.visBaseUrl = pick(['ai.vision.base-url'], '')
     aiForm.visApiKey = pick(['ai.vision.api-key'], '')
@@ -475,6 +501,8 @@ interface AiForm {
   rerankModel: string
   rerankBaseUrl: string
   rerankApiKey: string
+  queryRewriteEnabled: boolean
+  queryRewriteSynonyms: string
   visModel: string
   visBaseUrl: string
   visApiKey: string
@@ -499,6 +527,8 @@ const aiForm = reactive<AiForm>({
   rerankModel: 'qwen3.7-text-rerank',
   rerankBaseUrl: 'https://dashscope.aliyuncs.com/api/v1',
   rerankApiKey: '',
+  queryRewriteEnabled: true,
+  queryRewriteSynonyms: '',
   visModel: 'mimo-v2.5',
   visBaseUrl: '',
   visApiKey: '',
@@ -591,6 +621,8 @@ async function saveAi() {
       'ai.rerank.model': aiForm.rerankModel,
       'ai.rerank.base-url': aiForm.rerankBaseUrl,
       'ai.rerank.api-key': aiForm.rerankApiKey,
+      'ai.query-rewrite.enabled': aiForm.queryRewriteEnabled ? 'true' : 'false',
+      'ai.query-rewrite.synonyms': aiForm.queryRewriteSynonyms.trim(),
       'ai.vision.model': aiForm.visModel,
       'ai.vision.base-url': aiForm.visBaseUrl,
       'ai.vision.api-key': aiForm.visApiKey,
