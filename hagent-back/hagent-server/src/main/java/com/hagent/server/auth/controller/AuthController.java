@@ -3,7 +3,9 @@ package com.hagent.server.auth.controller;
 import com.hagent.common.Result;
 import com.hagent.common.annotation.OperationLog;
 import com.hagent.common.annotation.RateLimit;
+import com.hagent.server.auth.model.dto.ChangePasswordRequest;
 import com.hagent.server.auth.model.dto.LoginRequest;
+import com.hagent.server.auth.model.dto.ProfileUpdateRequest;
 import com.hagent.server.auth.model.vo.CurrentUserVO;
 import com.hagent.server.auth.model.vo.LoginVO;
 import com.hagent.server.auth.service.AuthService;
@@ -14,6 +16,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -73,5 +76,37 @@ public class AuthController {
     public Result<Void> logout() {
         authService.logout();
         return Result.success();
+    }
+
+    /**
+     * 修改当前登录用户密码
+     * 操作日志关闭参数入库，避免密码明文落库 system_log；
+     * 频控防暴力试旧密码（60 秒 5 次/IP，与登录同量级）。
+     *
+     * @param request 修改密码请求（旧密码、新密码）
+     * @return 修改结果
+     * @author H
+     */
+    @PutMapping("/password")
+    @Operation(summary = "修改密码", description = "校验旧密码后更新为新密码")
+    @RateLimit(window = 60, limit = 5, message = "操作过于频繁，请稍后再试")
+    @OperationLog(module = "auth", operationType = "UPDATE", description = "修改密码", saveParams = false, saveResult = false)
+    public Result<Void> changePassword(@Valid @RequestBody ChangePasswordRequest request) {
+        authService.changePassword(request);
+        return Result.success();
+    }
+
+    /**
+     * 更新当前登录用户个人资料（昵称/头像，字段可选）
+     *
+     * @param request 个人资料更新请求
+     * @return 更新后的当前用户信息（不含密码）
+     * @author H
+     */
+    @PutMapping("/profile")
+    @Operation(summary = "更新个人资料", description = "更新昵称/头像并返回最新用户信息")
+    @OperationLog(module = "auth", operationType = "UPDATE", description = "更新个人资料", saveParams = false, saveResult = false)
+    public Result<CurrentUserVO> updateProfile(@Valid @RequestBody ProfileUpdateRequest request) {
+        return Result.success(authService.updateProfile(request));
     }
 }

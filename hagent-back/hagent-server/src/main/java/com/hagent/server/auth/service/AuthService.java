@@ -1,6 +1,8 @@
 package com.hagent.server.auth.service;
 
+import com.hagent.server.auth.model.dto.ChangePasswordRequest;
 import com.hagent.server.auth.model.dto.LoginRequest;
+import com.hagent.server.auth.model.dto.ProfileUpdateRequest;
 import com.hagent.server.auth.model.vo.CurrentUserVO;
 import com.hagent.server.auth.model.vo.LoginVO;
 
@@ -34,4 +36,21 @@ public interface AuthService {
      * @author H
      */
     CurrentUserVO getCurrentUser();
+
+    /**
+     * 修改当前登录用户密码：校验旧密码后以 BCrypt 更新为新密码
+     *
+     * @param request 修改密码请求（旧密码、新密码）
+     * @author H
+     */
+    void changePassword(ChangePasswordRequest request);
+
+    /**
+     * 更新当前登录用户个人资料（昵称/头像，字段可选，至少一项生效）
+     *
+     * @param request 个人资料更新请求
+     * @return 更新后的当前用户信息（不含密码）
+     * @author H
+     */
+    CurrentUserVO updateProfile(ProfileUpdateRequest request);
 }
