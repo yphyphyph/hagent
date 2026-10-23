@@ -1,0 +1,302 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1320 760" width="1320" height="760" role="img" aria-labelledby="archTitle archDesc" font-family="'Inter','Helvetica Neue',Arial,sans-serif">
+  <title id="archTitle">HAgent 架构全景</title>
+  <desc id="archDesc">六层架构：Frontend → API &amp; Streaming → RAG Pipeline 六步 → Platform Services → Infra-AI → Storage &amp; Infrastructure</desc>
+
+  <defs>
+    <!-- 阴影 -->
+    <filter id="cardShadow" x="-10%" y="-15%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="1.5" stdDeviation="2.5" flood-color="#0f172a" flood-opacity="0.07"/>
+    </filter>
+    <filter id="sideShadow" x="-15%" y="-15%" width="130%" height="130%">
+      <feDropShadow dx="0" dy="1" stdDeviation="1.5" flood-color="#0f172a" flood-opacity="0.10"/>
+    </filter>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#fbfcfd"/>
+      <stop offset="100%" stop-color="#f3f6fa"/>
+    </linearGradient>
+    <!-- 通用箭头 -->
+    <marker id="arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+    </marker>
+  </defs>
+
+  <!-- 背景 -->
+  <rect width="1320" height="760" rx="20" fill="url(#bgGrad)" stroke="#e2e8f0" stroke-width="1"/>
+
+  <!-- ==================== 顶部标题 ==================== -->
+  <g id="header">
+    <text x="660" y="34" text-anchor="middle" font-size="22" font-weight="800" fill="#0f172a" letter-spacing="0.01em">HAgent 架构全景</text>
+    <text x="660" y="52" text-anchor="middle" font-size="10.5" font-weight="600" fill="#64748b" letter-spacing="0.22em">FRONTEND · API &amp; STREAMING · RAG PIPELINE · PLATFORM · INFRA-AI · STORAGE</text>
+    <line x1="540" y1="62" x2="780" y2="62" stroke="#cbd5e1" stroke-width="1" stroke-linecap="round"/>
+  </g>
+
+  <!-- ==================== 1. Frontend（蓝） ==================== -->
+  <g id="layer-frontend" color="#3b82f6">
+    <rect x="20" y="76" width="1280" height="74" rx="14" fill="#eff6ff" stroke="#dbeafe" stroke-width="1"/>
+    <rect x="28" y="84" width="180" height="58" rx="10" fill="#2563eb" filter="url(#sideShadow)"/>
+    <text x="118" y="106" text-anchor="middle" font-size="14.5" font-weight="800" fill="#ffffff" letter-spacing="0.02em">Frontend</text>
+    <text x="118" y="124" text-anchor="middle" font-size="10.5" font-weight="600" fill="#bfdbfe" letter-spacing="0.06em">前端交互层</text>
+
+    <!-- Chat -->
+    <g filter="url(#cardShadow)">
+      <rect x="224" y="90" width="516" height="46" rx="10" fill="#ffffff" stroke="#dbeafe" stroke-width="1"/>
+      <circle cx="248" cy="113" r="6" fill="#2563eb" opacity="0.12"/>
+      <circle cx="248" cy="113" r="2.6" fill="#2563eb"/>
+      <text x="266" y="109" font-size="12.5" font-weight="700" fill="#1e3a8a">Chat 对话界面</text>
+      <text x="266" y="125" font-size="10" font-weight="500" fill="#64748b">流式对话 · 溯源展示 · 多轮记忆</text>
+    </g>
+    <!-- Admin -->
+    <g filter="url(#cardShadow)">
+      <rect x="752" y="90" width="516" height="46" rx="10" fill="#ffffff" stroke="#dbeafe" stroke-width="1"/>
+      <circle cx="776" cy="113" r="6" fill="#2563eb" opacity="0.12"/>
+      <circle cx="776" cy="113" r="2.6" fill="#2563eb"/>
+      <text x="794" y="109" font-size="12.5" font-weight="700" fill="#1e3a8a">Admin 管理后台</text>
+      <text x="794" y="125" font-size="10" font-weight="500" fill="#64748b">知识库 · 会话 · 系统配置</text>
+    </g>
+  </g>
+
+  <!-- L1 → L2 箭头 -->
+  <line x1="660" y1="150" x2="660" y2="170" stroke="#3b82f6" stroke-width="2" stroke-linecap="round" marker-end="url(#arr)" color="#3b82f6"/>
+
+  <!-- ==================== 2. API &amp; Streaming（绿） ==================== -->
+  <g id="layer-api">
+    <rect x="20" y="178" width="1280" height="74" rx="14" fill="#ecfdf5" stroke="#d1fae5" stroke-width="1"/>
+    <rect x="28" y="186" width="180" height="58" rx="10" fill="#16a34a" filter="url(#sideShadow)"/>
+    <text x="118" y="208" text-anchor="middle" font-size="10.5" font-weight="800" fill="#ffffff" letter-spacing="0.18em">API &amp; STREAMING</text>
+    <text x="118" y="226" text-anchor="middle" font-size="10.5" font-weight="600" fill="#bbf7d0" letter-spacing="0.06em">接口与流式层</text>
+
+    <!-- RESTful -->
+    <g filter="url(#cardShadow)">
+      <rect x="224" y="192" width="340" height="46" rx="10" fill="#ffffff" stroke="#d1fae5" stroke-width="1"/>
+      <text x="394" y="210" text-anchor="middle" font-size="12" font-weight="700" fill="#14532d">RESTful API</text>
+      <text x="394" y="226" text-anchor="middle" font-size="9.5" font-weight="500" fill="#64748b">OpenAPI · 统一返回</text>
+    </g>
+    <!-- SSE -->
+    <g filter="url(#cardShadow)">
+      <rect x="576" y="192" width="340" height="46" rx="10" fill="#ffffff" stroke="#d1fae5" stroke-width="1"/>
+      <text x="746" y="210" text-anchor="middle" font-size="12" font-weight="700" fill="#14532d">SSE 流式推送</text>
+      <text x="746" y="226" text-anchor="middle" font-size="9.5" font-weight="500" fill="#64748b">8 阶段思考 · 增量渲染</text>
+    </g>
+    <!-- SA-Token -->
+    <g filter="url(#cardShadow)">
+      <rect x="928" y="192" width="340" height="46" rx="10" fill="#ffffff" stroke="#d1fae5" stroke-width="1"/>
+      <text x="1098" y="210" text-anchor="middle" font-size="12" font-weight="700" fill="#14532d">认证鉴权 SA-Token</text>
+      <text x="1098" y="226" text-anchor="middle" font-size="9.5" font-weight="500" fill="#64748b">RBAC · 权限过滤 · 限流</text>
+    </g>
+  </g>
+
+  <line x1="660" y1="252" x2="660" y2="272" stroke="#22c55e" stroke-width="2" stroke-linecap="round" marker-end="url(#arr)"/>
+
+  <!-- ==================== 3. RAG Pipeline（紫） ==================== -->
+  <g id="layer-rag">
+    <rect x="20" y="280" width="1280" height="148" rx="14" fill="#faf5ff" stroke="#f3e8ff" stroke-width="1"/>
+    <rect x="28" y="288" width="180" height="132" rx="10" fill="#9333ea" filter="url(#sideShadow)"/>
+    <text x="118" y="312" text-anchor="middle" font-size="11" font-weight="800" fill="#ffffff" letter-spacing="0.18em">RAG PIPELINE</text>
+    <text x="118" y="332" text-anchor="middle" font-size="13.5" font-weight="800" fill="#ffffff">检索生成管线</text>
+    <text x="118" y="350" text-anchor="middle" font-size="9.5" font-weight="600" fill="#e9d5ff" letter-spacing="0.04em">6 阶段流式闭环</text>
+    <line x1="58" y1="368" x2="178" y2="368" stroke="#c084fc" stroke-width="1" opacity="0.45"/>
+    <text x="118" y="384" text-anchor="middle" font-size="8.5" font-weight="700" fill="#f5d0fe" letter-spacing="0.22em">STREAMING</text>
+
+    <!-- 6 STEP（统一 168 宽 / 间距 8 / 起始 x=224；徽章顶部居中独占一行，标题下移避让） -->
+
+    <!-- STEP 1 -->
+    <g filter="url(#cardShadow)">
+      <rect x="224" y="298" width="168" height="120" rx="10" fill="#ffffff" stroke="#f3e8ff" stroke-width="1"/>
+      <rect x="282" y="306" width="52" height="18" rx="9" fill="#9333ea"/>
+      <text x="308" y="318.5" text-anchor="middle" font-size="9" font-weight="800" fill="#ffffff" letter-spacing="0.10em">STEP 1</text>
+      <text x="308" y="346" text-anchor="middle" font-size="11.5" font-weight="700" fill="#6b21a8">会话记忆加载</text>
+      <text x="308" y="361" text-anchor="middle" font-size="9" font-weight="500" fill="#c084fc" letter-spacing="0.02em">Memory Load</text>
+      <line x1="240" y1="374" x2="376" y2="374" stroke="#f3e8ff" stroke-width="1"/>
+      <text x="308" y="390" text-anchor="middle" font-size="9.5" font-weight="500" fill="#a855f7">历史 + 摘要压缩</text>
+      <rect x="240" y="398" width="136" height="14" rx="7" fill="#faf5ff" stroke="#f3e8ff"/>
+      <text x="308" y="408.5" text-anchor="middle" font-size="8" font-weight="600" fill="#7e22ce">Redis 摘要缓存</text>
+    </g>
+    <line x1="392" y1="358" x2="408" y2="358" stroke="#c084fc" stroke-width="1.6" stroke-linecap="round" marker-end="url(#arr)"/>
+
+    <!-- STEP 2 -->
+    <g filter="url(#cardShadow)">
+      <rect x="400" y="298" width="168" height="120" rx="10" fill="#ffffff" stroke="#f3e8ff" stroke-width="1"/>
+      <rect x="458" y="306" width="52" height="18" rx="9" fill="#9333ea"/>
+      <text x="484" y="318.5" text-anchor="middle" font-size="9" font-weight="800" fill="#ffffff" letter-spacing="0.10em">STEP 2</text>
+      <text x="484" y="346" text-anchor="middle" font-size="11.5" font-weight="700" fill="#6b21a8">Query 改写拆分</text>
+      <text x="484" y="361" text-anchor="middle" font-size="9" font-weight="500" fill="#c084fc" letter-spacing="0.02em">LLM Rewrite</text>
+      <line x1="416" y1="374" x2="552" y2="374" stroke="#f3e8ff" stroke-width="1"/>
+      <text x="484" y="390" text-anchor="middle" font-size="9.5" font-weight="500" fill="#a855f7">子问题分解</text>
+      <rect x="416" y="398" width="136" height="14" rx="7" fill="#faf5ff" stroke="#f3e8ff"/>
+      <text x="484" y="408.5" text-anchor="middle" font-size="8" font-weight="600" fill="#7e22ce">意图树结构化</text>
+    </g>
+    <line x1="568" y1="358" x2="584" y2="358" stroke="#c084fc" stroke-width="1.6" stroke-linecap="round" marker-end="url(#arr)"/>
+
+    <!-- STEP 3 -->
+    <g filter="url(#cardShadow)">
+      <rect x="576" y="298" width="168" height="120" rx="10" fill="#ffffff" stroke="#f3e8ff" stroke-width="1"/>
+      <rect x="634" y="306" width="52" height="18" rx="9" fill="#9333ea"/>
+      <text x="660" y="318.5" text-anchor="middle" font-size="9" font-weight="800" fill="#ffffff" letter-spacing="0.10em">STEP 3</text>
+      <text x="660" y="346" text-anchor="middle" font-size="11.5" font-weight="700" fill="#6b21a8">意图识别与分类</text>
+      <text x="660" y="361" text-anchor="middle" font-size="9" font-weight="500" fill="#c084fc" letter-spacing="0.02em">Router · Intent</text>
+      <line x1="592" y1="374" x2="728" y2="374" stroke="#f3e8ff" stroke-width="1"/>
+      <text x="660" y="390" text-anchor="middle" font-size="9.5" font-weight="500" fill="#a855f7">12 类意图路由</text>
+      <rect x="592" y="398" width="136" height="14" rx="7" fill="#faf5ff" stroke="#f3e8ff"/>
+      <text x="660" y="408.5" text-anchor="middle" font-size="8" font-weight="600" fill="#7e22ce">Few-shot 分类器</text>
+    </g>
+    <line x1="744" y1="358" x2="760" y2="358" stroke="#c084fc" stroke-width="1.6" stroke-linecap="round" marker-end="url(#arr)"/>
+
+    <!-- STEP 4 -->
+    <g filter="url(#cardShadow)">
+      <rect x="752" y="298" width="168" height="120" rx="10" fill="#ffffff" stroke="#f3e8ff" stroke-width="1"/>
+      <rect x="810" y="306" width="52" height="18" rx="9" fill="#9333ea"/>
+      <text x="836" y="318.5" text-anchor="middle" font-size="9" font-weight="800" fill="#ffffff" letter-spacing="0.10em">STEP 4</text>
+      <text x="836" y="346" text-anchor="middle" font-size="11.5" font-weight="700" fill="#6b21a8">歧义引导判断</text>
+      <text x="836" y="361" text-anchor="middle" font-size="9" font-weight="500" fill="#c084fc" letter-spacing="0.02em">Clarify</text>
+      <line x1="768" y1="374" x2="904" y2="374" stroke="#f3e8ff" stroke-width="1"/>
+      <text x="836" y="390" text-anchor="middle" font-size="9.5" font-weight="500" fill="#a855f7">置信度阈值</text>
+      <rect x="768" y="398" width="136" height="14" rx="7" fill="#faf5ff" stroke="#f3e8ff"/>
+      <text x="836" y="408.5" text-anchor="middle" font-size="8" font-weight="600" fill="#7e22ce">主动反问兜底</text>
+    </g>
+    <line x1="920" y1="358" x2="936" y2="358" stroke="#c084fc" stroke-width="1.6" stroke-linecap="round" marker-end="url(#arr)"/>
+
+    <!-- STEP 5（多通道并行检索 - 关键节点加深描边） -->
+    <g filter="url(#cardShadow)">
+      <rect x="928" y="298" width="168" height="120" rx="10" fill="#ffffff" stroke="#f3e8ff" stroke-width="1"/>
+      <rect x="986" y="306" width="52" height="18" rx="9" fill="#9333ea"/>
+      <text x="1012" y="318.5" text-anchor="middle" font-size="9" font-weight="800" fill="#ffffff" letter-spacing="0.10em">STEP 5</text>
+      <text x="1012" y="346" text-anchor="middle" font-size="11.5" font-weight="700" fill="#6b21a8">多通道并行检索</text>
+      <text x="1012" y="361" text-anchor="middle" font-size="9" font-weight="500" fill="#c084fc" letter-spacing="0.02em">Hybrid Retrieval</text>
+      <line x1="944" y1="374" x2="1080" y2="374" stroke="#e9d5ff" stroke-width="1"/>
+      <text x="1012" y="390" text-anchor="middle" font-size="9.5" font-weight="500" fill="#a855f7">向量 + 关键词 + 工具</text>
+      <rect x="944" y="398" width="136" height="14" rx="7" fill="#faf5ff" stroke="#f3e8ff"/>
+      <text x="1012" y="408.5" text-anchor="middle" font-size="8" font-weight="600" fill="#7e22ce">向量 · 关键词 · MCP</text>
+    </g>
+    <line x1="1096" y1="358" x2="1112" y2="358" stroke="#c084fc" stroke-width="1.6" stroke-linecap="round" marker-end="url(#arr)"/>
+
+    <!-- STEP 6（最终交付节点 - 描边加粗 + 徽章深紫） -->
+    <g filter="url(#cardShadow)">
+      <rect x="1104" y="298" width="168" height="120" rx="10" fill="#ffffff" stroke="#f3e8ff" stroke-width="1"/>
+      <rect x="1162" y="306" width="52" height="18" rx="9" fill="#9333ea"/>
+      <text x="1188" y="318.5" text-anchor="middle" font-size="9" font-weight="800" fill="#ffffff" letter-spacing="0.10em">STEP 6</text>
+      <text x="1188" y="346" text-anchor="middle" font-size="11.5" font-weight="700" fill="#6b21a8">Prompt 组装 &amp; 流式</text>
+      <text x="1188" y="361" text-anchor="middle" font-size="9" font-weight="500" fill="#c084fc" letter-spacing="0.02em">Stream Generate</text>
+      <line x1="1120" y1="374" x2="1256" y2="374" stroke="#e9d5ff" stroke-width="1"/>
+      <text x="1188" y="390" text-anchor="middle" font-size="9.5" font-weight="500" fill="#a855f7">上下文 + 引用注入</text>
+      <rect x="1120" y="398" width="136" height="14" rx="7" fill="#faf5ff" stroke="#f3e8ff"/>
+      <text x="1188" y="408.5" text-anchor="middle" font-size="8" font-weight="600" fill="#7e22ce">幻觉过滤 · 溯源</text>
+    </g>
+  </g>
+
+  <line x1="660" y1="428" x2="660" y2="448" stroke="#a855f7" stroke-width="2" stroke-linecap="round" marker-end="url(#arr)"/>
+
+  <!-- ==================== 4. Platform Services（橙） ==================== -->
+  <g id="layer-platform">
+    <rect x="20" y="456" width="1280" height="92" rx="14" fill="#fff7ed" stroke="#ffedd5" stroke-width="1"/>
+    <rect x="28" y="464" width="180" height="76" rx="10" fill="#ea580c" filter="url(#sideShadow)"/>
+    <text x="118" y="486" text-anchor="middle" font-size="10.5" font-weight="800" fill="#ffffff" letter-spacing="0.18em">PLATFORM</text>
+    <text x="118" y="500" text-anchor="middle" font-size="10.5" font-weight="800" fill="#ffffff" letter-spacing="0.18em">SERVICES</text>
+    <text x="118" y="520" text-anchor="middle" font-size="12.5" font-weight="800" fill="#ffffff">平台服务层</text>
+    <text x="118" y="535" text-anchor="middle" font-size="9" font-weight="600" fill="#fed7aa" letter-spacing="0.06em">6 大能力</text>
+
+    <!-- 6 张能力卡片（统一 168 宽 / 间距 8） -->
+    <g filter="url(#cardShadow)">
+      <rect x="224" y="470" width="168" height="64" rx="10" fill="#ffffff" stroke="#ffedd5" stroke-width="1"/>
+      <text x="308" y="491" text-anchor="middle" font-size="11.5" font-weight="700" fill="#9a3412">知识库管理</text>
+      <text x="308" y="508" text-anchor="middle" font-size="9" font-weight="500" fill="#fb923c">权限 · 版本 · 向量化</text>
+      <text x="308" y="523" text-anchor="middle" font-size="8.5" font-weight="500" fill="#cbd5e1">Knowledge Base</text>
+    </g>
+    <g filter="url(#cardShadow)">
+      <rect x="400" y="470" width="168" height="64" rx="10" fill="#ffffff" stroke="#ffedd5" stroke-width="1"/>
+      <text x="484" y="491" text-anchor="middle" font-size="11.5" font-weight="700" fill="#9a3412">文档 ETL · Tika</text>
+      <text x="484" y="508" text-anchor="middle" font-size="9" font-weight="500" fill="#fb923c">解析 · 切块 · 清洗</text>
+      <text x="484" y="523" text-anchor="middle" font-size="8.5" font-weight="500" fill="#cbd5e1">Document Pipeline</text>
+    </g>
+    <g filter="url(#cardShadow)">
+      <rect x="576" y="470" width="168" height="64" rx="10" fill="#ffffff" stroke="#ffedd5" stroke-width="1"/>
+      <text x="660" y="491" text-anchor="middle" font-size="11.5" font-weight="700" fill="#9a3412">会话记忆管理</text>
+      <text x="660" y="508" text-anchor="middle" font-size="9" font-weight="500" fill="#fb923c">摘要压缩 · 上下文</text>
+      <text x="660" y="523" text-anchor="middle" font-size="8.5" font-weight="500" fill="#cbd5e1">Memory · Summary</text>
+    </g>
+    <g filter="url(#cardShadow)">
+      <rect x="752" y="470" width="168" height="64" rx="10" fill="#ffffff" stroke="#ffedd5" stroke-width="1"/>
+      <text x="836" y="491" text-anchor="middle" font-size="11.5" font-weight="700" fill="#9a3412">模型路由与容错</text>
+      <text x="836" y="508" text-anchor="middle" font-size="9" font-weight="500" fill="#fb923c">多模型 · 重试 · 降级</text>
+      <text x="836" y="523" text-anchor="middle" font-size="8.5" font-weight="500" fill="#cbd5e1">Router · Fallback</text>
+    </g>
+    <g filter="url(#cardShadow)">
+      <rect x="928" y="470" width="168" height="64" rx="10" fill="#ffffff" stroke="#ffedd5" stroke-width="1"/>
+      <text x="1012" y="491" text-anchor="middle" font-size="11.5" font-weight="700" fill="#9a3412">全链路 Trace</text>
+      <text x="1012" y="508" text-anchor="middle" font-size="9" font-weight="500" fill="#fb923c">观测 · 审计 · 调试</text>
+      <text x="1012" y="523" text-anchor="middle" font-size="8.5" font-weight="500" fill="#cbd5e1">Tracing</text>
+    </g>
+    <g filter="url(#cardShadow)">
+      <rect x="1104" y="470" width="168" height="64" rx="10" fill="#ffffff" stroke="#ffedd5" stroke-width="1"/>
+      <text x="1188" y="491" text-anchor="middle" font-size="11.5" font-weight="700" fill="#9a3412">并发控制</text>
+      <text x="1188" y="508" text-anchor="middle" font-size="9" font-weight="500" fill="#fb923c">限流 · 队列 · 熔断</text>
+      <text x="1188" y="523" text-anchor="middle" font-size="8.5" font-weight="500" fill="#cbd5e1">Rate Limit</text>
+    </g>
+  </g>
+
+  <line x1="660" y1="548" x2="660" y2="568" stroke="#f97316" stroke-width="2" stroke-linecap="round" marker-end="url(#arr)"/>
+
+  <!-- ==================== 5. Infra-AI（蓝） ==================== -->
+  <g id="layer-infra">
+    <rect x="20" y="576" width="1280" height="80" rx="14" fill="#f0f9ff" stroke="#e0f2fe" stroke-width="1"/>
+    <rect x="28" y="584" width="180" height="64" rx="10" fill="#0284c7" filter="url(#sideShadow)"/>
+    <text x="118" y="606" text-anchor="middle" font-size="11" font-weight="800" fill="#ffffff" letter-spacing="0.22em">INFRA-AI</text>
+    <text x="118" y="626" text-anchor="middle" font-size="12.5" font-weight="800" fill="#ffffff">智能基座</text>
+    <text x="118" y="640" text-anchor="middle" font-size="8.5" font-weight="600" fill="#bae6fd" letter-spacing="0.10em">LLM · EMBED · MCP</text>
+
+    <g filter="url(#cardShadow)">
+      <rect x="224" y="590" width="340" height="52" rx="10" fill="#ffffff" stroke="#e0f2fe" stroke-width="1"/>
+      <text x="394" y="608" text-anchor="middle" font-size="12" font-weight="700" fill="#0c4a6e">LLM 多模型</text>
+      <text x="394" y="624" text-anchor="middle" font-size="9.5" font-weight="600" fill="#0284c7">通义千问 · SiliconFlow · Ollama</text>
+      <text x="394" y="637" text-anchor="middle" font-size="8.5" font-weight="500" fill="#94a3b8">统一接口 · 故障转移</text>
+    </g>
+    <g filter="url(#cardShadow)">
+      <rect x="576" y="590" width="340" height="52" rx="10" fill="#ffffff" stroke="#e0f2fe" stroke-width="1"/>
+      <text x="746" y="608" text-anchor="middle" font-size="12" font-weight="700" fill="#0c4a6e">Embedding &amp; Rerank</text>
+      <text x="746" y="624" text-anchor="middle" font-size="9.5" font-weight="600" fill="#0284c7">向量化 · 语义重排</text>
+      <text x="746" y="637" text-anchor="middle" font-size="8.5" font-weight="500" fill="#94a3b8">pgvector 检索加速</text>
+    </g>
+    <g filter="url(#cardShadow)">
+      <rect x="928" y="590" width="340" height="52" rx="10" fill="#ffffff" stroke="#e0f2fe" stroke-width="1"/>
+      <text x="1098" y="608" text-anchor="middle" font-size="12" font-weight="700" fill="#0c4a6e">MCP 协议</text>
+      <text x="1098" y="624" text-anchor="middle" font-size="9.5" font-weight="600" fill="#0284c7">天气 · 销售 · 工单</text>
+      <text x="1098" y="637" text-anchor="middle" font-size="8.5" font-weight="500" fill="#94a3b8">工具调用 · 外部能力</text>
+    </g>
+  </g>
+
+  <line x1="660" y1="656" x2="660" y2="676" stroke="#0ea5e9" stroke-width="2" stroke-linecap="round" marker-end="url(#arr)"/>
+
+  <!-- ==================== 6. Storage &amp; Infrastructure（灰） ==================== -->
+  <g id="layer-storage">
+    <rect x="20" y="684" width="1280" height="64" rx="14" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1"/>
+    <rect x="28" y="692" width="180" height="48" rx="10" fill="#475569" filter="url(#sideShadow)"/>
+    <text x="118" y="711" text-anchor="middle" font-size="10" font-weight="800" fill="#ffffff" letter-spacing="0.22em">STORAGE &amp; INFRA</text>
+    <text x="118" y="727" text-anchor="middle" font-size="10" font-weight="600" fill="#cbd5e1" letter-spacing="0.06em">存储与基础设施</text>
+
+    <g filter="url(#cardShadow)">
+      <rect x="224" y="696" width="340" height="40" rx="10" fill="#ffffff" stroke="#e2e8f0" stroke-width="1"/>
+      <circle cx="248" cy="716" r="11" fill="#475569" opacity="0.10"/>
+      <text x="248" y="720" text-anchor="middle" font-size="9" font-weight="800" fill="#475569">PG</text>
+      <text x="268" y="714" font-size="11.5" font-weight="700" fill="#334155">PostgreSQL 18 + pgvector</text>
+      <text x="268" y="728" font-size="9" font-weight="500" fill="#64748b">同库向量 · 零管道同步</text>
+    </g>
+    <g filter="url(#cardShadow)">
+      <rect x="576" y="696" width="340" height="40" rx="10" fill="#ffffff" stroke="#e2e8f0" stroke-width="1"/>
+      <circle cx="600" cy="716" r="11" fill="#dc2626" opacity="0.10"/>
+      <text x="600" y="720" text-anchor="middle" font-size="8.5" font-weight="800" fill="#dc2626">RDS</text>
+      <text x="620" y="714" font-size="11.5" font-weight="700" fill="#334155">Redis</text>
+      <text x="620" y="728" font-size="9" font-weight="500" fill="#64748b">会话 · 缓存 · 限流</text>
+    </g>
+    <g filter="url(#cardShadow)">
+      <rect x="928" y="696" width="340" height="40" rx="10" fill="#ffffff" stroke="#e2e8f0" stroke-width="1"/>
+      <circle cx="952" cy="716" r="11" fill="#2563eb" opacity="0.10"/>
+      <text x="952" y="720" text-anchor="middle" font-size="9" font-weight="800" fill="#2563eb">S3</text>
+      <text x="972" y="714" font-size="11.5" font-weight="700" fill="#334155">S3 对象存储</text>
+      <text x="972" y="728" font-size="9" font-weight="500" fill="#64748b">文档 · 文件 · 静态资源</text>
+    </g>
+  </g>
+
+  <!-- 落款 -->
+  <g id="footer">
+    <text x="1300" y="754" text-anchor="end" font-size="10" font-weight="600" fill="#94a3b8" letter-spacing="0.10em">Powered by HSpace</text>
+  </g>
+</svg>
